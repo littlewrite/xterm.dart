@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'package:xterm/src/utils/debugger.dart';
 
 class ByteConsumer {
   final _queue = ListQueue<List<int>>();
@@ -14,6 +15,10 @@ class ByteConsumer {
   void add(String data) {
     if (data.isEmpty) return;
     final runes = data.runes.toList(growable: false);
+    print(" get runes ${formatIntList(runes)}");
+    for (var i = 0; i < _queue.length; i++) {
+      print("_queue get runes [[${formatIntList(_queue.elementAt(i))}]]");
+    }
     _queue.addLast(runes);
     _length += runes.length;
   }

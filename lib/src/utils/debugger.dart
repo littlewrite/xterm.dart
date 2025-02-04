@@ -592,4 +592,66 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   void unknownOSC(String code, List<String> args) {
     onCommand('unknownOSC($code, $args)', error: true);
   }
+
+  @override
+  void setTypingCommand(String command) {
+    // Provide the implementation for setTypingCommand
+    // You can add your logic here
+    print('Typing command set: $command');
+  }
+}
+
+bool _isAscii(String char) {
+  return char.codeUnitAt(0) <= 0x7F;
+}
+
+bool _isChinese(String char) {
+  final code = char.codeUnitAt(0);
+  return (code >= 0x4E00 && code <= 0x9FFF) ||
+      (code >= 0x3400 && code <= 0x4DBF);
+}
+
+bool _isControlChar(String char) {
+  final code = char.codeUnitAt(0);
+  return (code < 0x20 || code == 0x7F); // ASCII control characters
+}
+
+String formatChunk(String chunk) {
+  final buffer = StringBuffer();
+  for (var i = 0; i < chunk.length; i++) {
+    final char = chunk[i];
+    if (_isControlChar(char)) {
+      buffer
+          .write('\\x${char.codeUnitAt(0).toRadixString(16).padLeft(2, '0')}');
+    } else {
+      buffer.write(char);
+    }
+  }
+  return buffer.toString();
+}
+
+String formatIntList(List<int> intList) {
+  final buffer = StringBuffer();
+  for (var i = 0; i < intList.length; i++) {
+    final code = intList[i];
+    if (_isControlCode(code)) {
+      buffer.write('\\x${code.toRadixString(16).padLeft(2, '0')}');
+    } else {
+      buffer.write(String.fromCharCode(code));
+    }
+  }
+  return buffer.toString();
+}
+
+String formatInt(int code) {
+  if (_isControlCode(code)) {
+    return '\\x${code.toRadixString(16).padLeft(2, '0')}';
+  } else {
+    return String.fromCharCode(code);
+  }
+  return "";
+}
+
+bool _isControlCode(int code) {
+  return (code < 0x20 || code == 0x7F); // ASCII control characters
 }

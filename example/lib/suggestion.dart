@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:xterm/xterm.dart';
 import 'package:xterm/suggestion.dart';
+import 'package:xterm/src/core/buffer/line.dart';
 
 final engine = SuggestionEngine();
 
@@ -117,9 +118,12 @@ class _HomeState extends State<Home> {
   CellAnchor? _commandFinished;
 
   void _handlePrivateOSC(String code, List<String> args) {
+    print(" call osc ${code} args\t ${args}");
     switch (code) {
       case '133':
         _handleFinalTermOSC(args);
+      case '697':
+        _handleMacTermOSC(args);
     }
   }
 
@@ -151,6 +155,35 @@ class _HomeState extends State<Home> {
     }
   }
 
+  void _handleMacTermOSC(List<String> args) {
+    switch (args) {
+      case ['StartPrompt']:
+        print(" start prompt");
+        _promptStart?.dispose();
+        _promptStart = terminal.buffer.createAnchorFromCursor();
+        print(" get prompt start ${_promptStart}");
+        _commandEnd?.dispose();
+        _commandEnd = null;
+        _commandFinished?.dispose();
+        _commandFinished = null;
+      case ['EndPrompt']:
+        print(" end prompt");
+        var commandStart = terminal.buffer.createAnchorFromCursor();
+        var xy = [terminal.buffer.cursorX, terminal.buffer.absoluteCursorY];
+        print(" get command start: ${commandStart} , end: ${xy}");
+        var prompt = terminal.buffer
+            .getText(
+                BufferRangeLine(_promptStart!.offset, CellOffset(xy[0], xy[1])))
+            .toString();
+        print(" get prompt [${prompt}]");
+        if (prompt != "" && prompt.isNotEmpty) {
+          _commandStart = CellAnchor(xy[0], owner: terminal.buffer.currentLine);
+          print(' set start ${commandBuffer.toString()} -- ${ terminal.buffer.currentLine.toString()}');
+        }
+        break;
+    }
+  }
+
   void _handleCommandEnd() {
     if (_commandStart == null || _commandEnd == null) return;
     final command = terminal.buffer
@@ -171,11 +204,14 @@ class _HomeState extends State<Home> {
   final suggestionView = SuggestionViewController();
 
   String? get commandBuffer {
+    print(' try get command buffer ${_commandStart}');
     final commandStart = _commandStart;
     if (commandStart == null || _commandEnd != null) {
       return null;
     }
 
+    var cmd = terminal.buffer.getText(BufferRangeLine(_commandStart!.offset, CellOffset(0,0)));
+    print(' get command  [${cmd}] ${terminal.buffer.cursorX}, ${terminal.buffer.absoluteCursorY},');
     var commandRange = BufferRangeLine(
       commandStart.offset,
       CellOffset(

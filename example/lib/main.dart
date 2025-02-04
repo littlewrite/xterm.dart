@@ -62,6 +62,7 @@ class _HomeState extends State<Home> {
   }
 
   void _startPty() {
+    print("debug get shell ${shell}");
     pty = Pty.start(
       shell,
       columns: terminal.viewWidth,

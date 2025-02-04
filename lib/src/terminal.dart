@@ -1,4 +1,5 @@
 import 'dart:math' show max;
+import 'dart:async';
 
 import 'package:xterm/src/base/observable.dart';
 import 'package:xterm/src/core/buffer/buffer.dart';
@@ -19,6 +20,7 @@ import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
+import 'package:xterm/src/utils/debugger.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
 /// translates escape sequences from the application into updates to the
@@ -50,6 +52,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// Function that is called when the dimensions of the terminal change.
   void Function(int width, int height, int pixelWidth, int pixelHeight)?
       onResize;
+
+  /// Function that is called when the user types a command. This is typically
+  void Function(String title)? onTypingCommand;
 
   /// The [TerminalInputHandler] used by this terminal. [defaultInputHandler] is
   /// used when not specified. User of this class can provide their own
@@ -83,7 +88,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     this.onPrivateOSC,
     this.reflowEnabled = true,
     this.wordSeparators,
-  });
+    this.onTypingCommand,
+  }) {
+    _startTimer(); // 启动定时器
+  }
+
+  Timer? _timer; // 定时触发器
 
   late final _parser = EscapeParser(this);
 
@@ -146,6 +156,18 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _altBufferMouseScrollMode = false;
 
   bool _bracketedPasteMode = false;
+
+  DateTime? _lastCursorChangeTime; // 上次光标变化时间
+
+  DateTime? _lastTypingtime; // 上次键盘事件时间
+
+  final int _typingDelay = 200; // 延迟时间，单位为毫秒
+
+  DateTime? _lastOutputTime; // 上次输出变化时间
+
+  DateTime? _lastGetOutputTime; // 上次获取输出时间
+
+  bool _running = true; // 标志位，用于控制任务的运行状态
 
   /* State getters */
 
@@ -252,6 +274,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         platform: platform,
       ),
     );
+
+    _lastTypingtime = DateTime.now(); // 上次键盘事件时间
 
     if (output != null) {
       onOutput?.call(output);
@@ -387,6 +411,95 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   void writeChar(int char) {
     _precedingCodepoint = char;
     _buffer.writeChar(char);
+
+    // 更新最后输入时间
+    _lastOutputTime = DateTime.now();
+  }
+
+  void _startTimer() {
+    _timer?.cancel(); // 取消之前的定时器
+    _timer = Timer.periodic(Duration(milliseconds: 100), (timer) {
+      if (!_running) {
+        timer.cancel();
+        return;
+      }
+      _ifCheckBuffer();
+    });
+  }
+
+  // 判断， 检查 是否需要检查 buffer
+  void _ifCheckBuffer() {
+    if (!_running) {
+      return;
+    }
+
+    if (_lastOutputTime == null) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final elapsed = now.difference(_lastOutputTime!).inMilliseconds;
+
+    if (elapsed >= _typingDelay) {
+      if (_lastGetOutputTime == null || _lastGetOutputTime != _lastOutputTime) {
+        _lastGetOutputTime = _lastOutputTime;
+        _checkBuffer();
+      } else {
+        return;
+      }
+    }
+  }
+
+  void _checkBuffer() {
+    return ;
+    // 读取整个 buffer 数据进行检查
+    var bufferData = _buffer.lines.toList();
+    var _x = _buffer.cursorX, _y = _buffer.cursorY;
+    var part = _buffer.lines.getRange(y1: _y);
+
+    // 打印 buffer 数据
+    print("Check Buffer data: $part");
+
+    // 检查 part 是否为空
+    if (part.isNotEmpty) {
+      // 获取 part 的第一个元素
+      var firstElement = part.first;
+      print("First element: $firstElement");
+
+      // 正则发现 firstElement 第一个特殊字符+空格
+      var regex = RegExp(r'[^a-zA-Z0-9\s]+ ');
+      var match = regex.firstMatch(firstElement.toString());
+
+      if (match != null) {
+        // 获取匹配的内容
+        var specialCharWithSpace = match.group(0);
+        print("Matched special character with space: $specialCharWithSpace");
+
+        // 使用匹配的特殊字符和空格分割字符串
+        var splitParts = firstElement.toString().split(specialCharWithSpace!);
+        if (splitParts.length > 1) {
+          var command = splitParts[1];
+          print("Command: $command");
+          onTypingCommand?.call(command);
+        } else {
+          print("No command found after special character with space");
+        }
+      } else {
+        print("No special character followed by space found");
+      }
+    } else {
+      print("Part is empty");
+    }
+
+    // 更新最后获取输出时间
+    // _lastGetOutputTime = DateTime.now();
+  }
+
+  void _getTyping(int char) {
+    var _x = _buffer.cursorX, _y = _buffer.cursorY;
+    var part = _buffer.lines.getRange(y1: _y);
+    // print("get all ${_x}, $_y, ${part}");
+    return;
   }
 
   /* SBC */
@@ -902,5 +1015,22 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void unknownOSC(String ps, List<String> pt) {
     onPrivateOSC?.call(ps, pt);
+  }
+
+  // get shell
+  String getTypingCommand() {
+    return "git ";
+  }
+
+  @override
+  void setTypingCommand(String command) {
+    onTypingCommand?.call(command);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _timer = null;
+    _running = false;
   }
 }

@@ -270,6 +270,24 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
     return List<T>.generate(length, (index) => this[index]);
   }
 
+  List<T> getRange({int? x1, int? x2, int? y1, int? y2}) {
+    final result = <T>[];
+    final startX = x1 ?? 0;
+    final endX = x2 ?? _length;
+    final startY = y1 ?? 0;
+    final endY = y2 ?? _length;
+
+    for (int j = startY; j < endY && j < _length; j++) {
+      final row = _getChild(j);
+      if (row == null) {
+        continue;
+      }
+      result.add(row);
+    }
+
+    return result;
+  }
+
   String debugDump() {
     final buffer = StringBuffer();
     buffer.writeln('CircularList:');

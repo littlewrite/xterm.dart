@@ -6,6 +6,8 @@ import 'package:xterm/src/utils/byte_consumer.dart';
 import 'package:xterm/src/utils/char_code.dart';
 import 'package:xterm/src/utils/lookup_table.dart';
 
+import 'package:xterm/src/utils/debugger.dart';
+
 /// [EscapeParser] translates control characters and escape sequences into
 /// function calls that the terminal can handle.
 ///
@@ -1056,6 +1058,7 @@ class EscapeParser {
       return true;
     }
 
+    print("OSC: $_osc");
     // Common OSCs
     if (_osc.length >= 2) {
       final ps = _osc[0];
