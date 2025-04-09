@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:xterm/src/utils/debugger.dart';
 
 class TerminalDebuggerView extends StatefulWidget {
@@ -21,10 +22,12 @@ class TerminalDebuggerView extends StatefulWidget {
 
 class _TerminalDebuggerViewState extends State<TerminalDebuggerView> {
   int? selectedCommand;
+  late final FocusNode _focusNode;
 
   @override
   void initState() {
     widget.debugger.addListener(_onDebuggerChanged);
+    _focusNode = FocusNode();
     super.initState();
   }
 
@@ -40,6 +43,7 @@ class _TerminalDebuggerViewState extends State<TerminalDebuggerView> {
   @override
   void dispose() {
     widget.debugger.removeListener(_onDebuggerChanged);
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -47,29 +51,68 @@ class _TerminalDebuggerViewState extends State<TerminalDebuggerView> {
     setState(() {});
   }
 
+  void _handleKeyEvent(KeyEvent event) {
+    final commands = widget.debugger.commands;
+    if (commands.isEmpty) return;
+    
+    if (event is KeyDownEvent) {
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        setState(() {
+          if (selectedCommand == null) {
+            // 如果没有选择，不执行任何操作
+            return;
+          }
+          // 向上选择
+          selectedCommand = (selectedCommand! > 0) ? selectedCommand! - 1 : 0;
+          widget.onSeek?.call(selectedCommand);
+        });
+      } else if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        setState(() {
+          if (selectedCommand == null) {
+            // 如果没有选择，不执行任何操作
+            return;
+          }
+          // 向下选择
+          selectedCommand = (selectedCommand! < commands.length - 1) 
+              ? selectedCommand! + 1 
+              : commands.length - 1;
+          widget.onSeek?.call(selectedCommand);
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final commands = widget.debugger.commands;
-    return ListView.builder(
-      itemExtent: 20,
-      controller: widget.scrollController,
-      itemCount: commands.length,
-      itemBuilder: (context, index) {
-        final command = commands[index];
-        return _CommandItem(
-          index,
-          command,
-          selected: selectedCommand == index,
-          onTap: () {
-            if (selectedCommand == index) {
-              selectedCommand = null;
-            } else {
-              setState(() => selectedCommand = index);
-            }
-            widget.onSeek?.call(selectedCommand);
-          },
-        );
+    return Focus(
+      focusNode: _focusNode,
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        _handleKeyEvent(event);
+        return KeyEventResult.handled;
       },
+      child: ListView.builder(
+        itemExtent: 20,
+        controller: widget.scrollController,
+        itemCount: commands.length,
+        itemBuilder: (context, index) {
+          final command = commands[index];
+          return _CommandItem(
+            index,
+            command,
+            selected: selectedCommand == index,
+            onTap: () {
+              if (selectedCommand == index) {
+                selectedCommand = null;
+              } else {
+                setState(() => selectedCommand = index);
+              }
+              widget.onSeek?.call(selectedCommand);
+            },
+          );
+        },
+      ),
     );
   }
 }

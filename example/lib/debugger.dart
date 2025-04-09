@@ -7,10 +7,10 @@ import 'package:flutter/cupertino.dart';
 import 'package:xterm/utils.dart';
 import 'package:xterm/xterm.dart';
 
-const host = 'localhost';
+const host = '104.168.87.126';
 const port = 22;
-const username = '<your username>';
-const password = '<your password>';
+const username = 'root';
+const password = 'a0A0eaW768yjK8yGJV';
 
 void main() {
   runApp(MyApp());
