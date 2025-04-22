@@ -620,9 +620,22 @@ String formatChunk(String chunk) {
   final buffer = StringBuffer();
   for (var i = 0; i < chunk.length; i++) {
     final char = chunk[i];
-    if (_isControlChar(char)) {
-      buffer
-          .write('\\x${char.codeUnitAt(0).toRadixString(16).padLeft(2, '0')}');
+    final code = char.codeUnitAt(0);
+    
+    if (code == 0x1b) {
+      buffer.write('\\e');
+    } else if (code == 0x07) {
+      buffer.write('\\a');
+    } else if (code == 0x08) {
+      buffer.write('\\b');
+    } else if (code == 0x09) {
+      buffer.write('\\t');
+    } else if (code == 0x0A) {
+      buffer.write('\\n');
+    } else if (code == 0x0D) {
+      buffer.write('\\r');
+    } else if (code < 0x20 || code == 0x7F) {
+      buffer.write('\\x${code.toRadixString(16).padLeft(2, '0')}');
     } else {
       buffer.write(char);
     }
@@ -634,7 +647,20 @@ String formatIntList(List<int> intList) {
   final buffer = StringBuffer();
   for (var i = 0; i < intList.length; i++) {
     final code = intList[i];
-    if (_isControlCode(code)) {
+    
+    if (code == 0x1b) {
+      buffer.write('\\e');
+    } else if (code == 0x07) {
+      buffer.write('\\a');
+    } else if (code == 0x08) {
+      buffer.write('\\b');
+    } else if (code == 0x09) {
+      buffer.write('\\t');
+    } else if (code == 0x0A) {
+      buffer.write('\\n');
+    } else if (code == 0x0D) {
+      buffer.write('\\r');
+    } else if (code < 0x20 || code == 0x7F) {
       buffer.write('\\x${code.toRadixString(16).padLeft(2, '0')}');
     } else {
       buffer.write(String.fromCharCode(code));
@@ -654,4 +680,64 @@ String formatInt(int code) {
 
 bool _isControlCode(int code) {
   return (code < 0x20 || code == 0x7F); // ASCII control characters
+}
+
+String unescapeTerminalControl(String input) {
+  final buffer = StringBuffer();
+  int i = 0;
+  
+  while (i < input.length) {
+    if (input[i] == '\\') {
+      if (i + 1 < input.length) {
+        switch (input[i + 1]) {
+          case 'e':
+            buffer.writeCharCode(0x1b); // ESC
+            i += 2;
+            break;
+          case 'a':
+            buffer.writeCharCode(0x07); // BEL
+            i += 2;
+            break;
+          case 'b':
+            buffer.writeCharCode(0x08); // BS
+            i += 2;
+            break;
+          case 't':
+            buffer.writeCharCode(0x09); // TAB
+            i += 2;
+            break;
+          case 'n':
+            buffer.writeCharCode(0x0A); // LF
+            i += 2;
+            break;
+          case 'r':
+            buffer.writeCharCode(0x0D); // CR
+            i += 2;
+            break;
+          case 'x':
+            if (i + 3 < input.length) {
+              final hex = input.substring(i + 2, i + 4);
+              final code = int.parse(hex, radix: 16);
+              buffer.writeCharCode(code);
+              i += 4;
+            } else {
+              buffer.write(input[i]);
+              i++;
+            }
+            break;
+          default:
+            buffer.write(input[i]);
+            i++;
+        }
+      } else {
+        buffer.write(input[i]);
+        i++;
+      }
+    } else {
+      buffer.write(input[i]);
+      i++;
+    }
+  }
+  
+  return buffer.toString();
 }
