@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
 import 'package:xterm/src/core/mouse/button.dart';
@@ -255,6 +256,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   /// Selects entire words in the terminal that contains [from] and [to].
   void selectWord(Offset from, [Offset? to]) {
+    print('selectWord: $from, $to');
     final fromOffset = getCellOffset(from);
     final fromBoundary = _terminal.buffer.getWordBoundary(fromOffset);
     if (fromBoundary == null) return;
@@ -277,25 +279,82 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     }
   }
 
+  int lastSelectX = 0;
+  int lastSelectY = 0;
+
   /// Selects characters in the terminal that starts from [from] to [to]. At
   /// least one cell is selected even if [from] and [to] are same.
   void selectCharacters(Offset from, [Offset? to]) {
-    final fromPosition = getCellOffset(from);
+    // Convert from position to a buffer anchor - this maintains the absolute position
+    // regardless of scrolling
+    var fromPosition = getCellOffset(from);
+
     if (to == null) {
+      // Single character selection, it's start.
+      lastSelectX = fromPosition.x;
+      lastSelectY = fromPosition.y;
       _controller.setSelection(
         _terminal.buffer.createAnchorFromOffset(fromPosition),
         _terminal.buffer.createAnchorFromOffset(fromPosition),
       );
-    } else {
-      var toPosition = getCellOffset(to);
-      if (toPosition.x >= fromPosition.x) {
-        toPosition = CellOffset(toPosition.x + 1, toPosition.y);
-      }
-      _controller.setSelection(
-        _terminal.buffer.createAnchorFromOffset(fromPosition),
-        _terminal.buffer.createAnchorFromOffset(toPosition),
-      );
+      return;
     }
+
+    var fromCell = _terminal.buffer.createAnchorFromOffset(fromPosition);
+    if (to != null) {
+      fromCell = _terminal.buffer.lines[lastSelectY].createAnchor(lastSelectX);
+    }
+    // Check if selection is going beyond visible area and scroll accordingly
+    final viewportHeight = _viewportHeight;
+    final cellHeight = _painter.cellSize.height;
+    final currentScroll = _scrollOffset;
+
+    // Calculate the visible area boundaries
+    final visibleTop = currentScroll;
+    final visibleBottom = currentScroll + viewportHeight;
+
+    // Get the current pointer position
+    var toPosition = getCellOffset(to);
+    final selectionY = toPosition.y * cellHeight;
+// Determine if we need to scroll and by how much
+    double scrollDelta = 0.0;
+    bool needsScroll = false;
+
+    if (selectionY < visibleTop) {
+      // Scroll up if selection goes above visible area
+      final newScroll = selectionY - cellHeight; // Show one line above
+      final clampedScroll = newScroll.clamp(0.0, _maxScrollExtent);
+      scrollDelta = clampedScroll - currentScroll;
+      _offset.jumpTo(clampedScroll);
+      needsScroll = true;
+    } else if (selectionY > visibleBottom - cellHeight) {
+      // Scroll down if selection goes below visible area
+      final newScroll =
+          selectionY - viewportHeight + cellHeight * 2; // Show one line below
+      final clampedScroll = newScroll.clamp(0.0, _maxScrollExtent);
+      scrollDelta = clampedScroll - currentScroll;
+      _offset.jumpTo(clampedScroll);
+      needsScroll = true;
+    }
+// Only adjust the from position if we actually scrolled
+    if (needsScroll && scrollDelta != 0.0) {
+      // Adjust the from offset based on the scroll delta
+      from = Offset(from.dx, from.dy + scrollDelta);
+
+      // Create a new anchor from the adjusted position
+      fromPosition = getCellOffset(from);
+    } // Re-calculate toPosition after scrolling
+    toPosition = getCellOffset(to);
+
+    // Create anchors for the selection
+    // Extend selection by one character if needed
+    if (toPosition.x >= fromPosition.x && toPosition.y == fromPosition.y) {
+      toPosition = CellOffset(toPosition.x + 1, toPosition.y);
+    }
+
+    // Set the selection with the anchors
+    _controller.setSelection(
+        fromCell, _terminal.buffer.createAnchorFromOffset(toPosition));
   }
 
   /// Send a mouse event at [offset] with [button] being currently in [buttonState].
