@@ -279,6 +279,11 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     }
   }
 
+  void selectCharsetByCell(CellAnchor from, CellAnchor to) {
+    print('selectCharsetByCell: $from, $to');
+    _controller.setSelection(from, to);
+  }
+
   int lastSelectX = 0;
   int lastSelectY = 0;
 
@@ -288,6 +293,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // Convert from position to a buffer anchor - this maintains the absolute position
     // regardless of scrolling
     var fromPosition = getCellOffset(from);
+    print('selectCharacters: $from, $to');
 
     if (to == null) {
       // Single character selection, it's start.

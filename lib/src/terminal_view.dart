@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:xterm/core.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/terminal.dart';
@@ -19,6 +20,7 @@ import 'package:xterm/src/ui/shortcut/shortcuts.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
 import 'package:xterm/src/ui/themes.dart';
+import 'package:xterm/src/ui/search_box.dart';
 
 class TerminalView extends StatefulWidget {
   const TerminalView(
@@ -161,6 +163,8 @@ class TerminalViewState extends State<TerminalView> {
   late TerminalController _controller;
 
   late ScrollController _scrollController;
+
+  bool _showSearchBox = false;
 
   RenderTerminal get renderTerminal => _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
 
@@ -314,7 +318,17 @@ class TerminalViewState extends State<TerminalView> {
     child = Container(
       color: widget.theme.background.withOpacity(widget.backgroundOpacity),
       padding: widget.padding,
-      child: child,
+      child: Stack(
+        children: [
+          child,
+          if (_showSearchBox)
+            TerminalSearchBox(
+              terminal: widget.terminal,
+              onSearch: _handleSearch,
+              onClose: _hideSearch,
+            ),
+        ],
+      ),
     );
 
     return child;
@@ -356,6 +370,7 @@ class TerminalViewState extends State<TerminalView> {
   void _onSecondaryTapDown(TapDownDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onSecondaryTapDown?.call(details, offset);
+    _showSearch();
   }
 
   void _onSecondaryTapUp(TapUpDetails details) {
@@ -442,6 +457,26 @@ class TerminalViewState extends State<TerminalView> {
     final position = _scrollableKey.currentState?.position;
     if (position != null) {
       position.jumpTo(position.maxScrollExtent);
+    }
+  }
+
+  void _showSearch() {
+    setState(() {
+      _showSearchBox = true;
+    });
+  }
+
+  void _hideSearch() {
+    setState(() {
+      _showSearchBox = false;
+    });
+  }
+
+  void _handleSearch(String text, CellAnchor? start, CellAnchor? end) {
+    if (start != null && end != null) {
+      renderTerminal.selectCharsetByCell(start, end);
+    } else {
+      _controller.clearSelection();
     }
   }
 }
