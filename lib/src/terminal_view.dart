@@ -168,6 +168,8 @@ class TerminalViewState extends State<TerminalView> {
 
   RenderTerminal get renderTerminal => _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
 
+  TerminalSearchBox? _searchBox;
+
   @override
   void initState() {
     _focusNode = widget.focusNode ?? FocusNode();
@@ -177,6 +179,16 @@ class TerminalViewState extends State<TerminalView> {
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
     );
     super.initState();
+    _initSearchBox();
+  }
+
+  void _initSearchBox() {
+    _searchBox = TerminalSearchBox(
+      terminal: widget.terminal,
+      onSearch: _handleSearch,
+      onClose: _closeSearch,
+      onScrollToLine: _scrollToLine,
+    );
   }
 
   @override
@@ -322,11 +334,7 @@ class TerminalViewState extends State<TerminalView> {
         children: [
           child,
           if (_showSearchBox)
-            TerminalSearchBox(
-              terminal: widget.terminal,
-              onSearch: _handleSearch,
-              onClose: _hideSearch,
-            ),
+            _searchBox!,
         ],
       ),
     );
@@ -474,9 +482,22 @@ class TerminalViewState extends State<TerminalView> {
 
   void _handleSearch(String text, CellAnchor? start, CellAnchor? end) {
     if (start != null && end != null) {
-      renderTerminal.selectCharsetByCell(start, end);
+      _controller.setSelection(start, end);
     } else {
       _controller.clearSelection();
+    }
+  }
+
+  void _closeSearch() {
+    setState(() {
+      _searchBox = null;
+    });
+  }
+
+  void _scrollToLine(int line) {
+    final renderTerminal = _viewportKey.currentContext?.findRenderObject() as RenderTerminal?;
+    if (renderTerminal != null) {
+      renderTerminal.scrollToLine(line);
     }
   }
 }

@@ -614,4 +614,40 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     _painter.paintHighlight(canvas, startOffset, end - start, color);
   }
+
+  /// 滚动到指定行
+  void scrollToLine(int line) {
+    print('scrollToLine: $line');
+    final cellHeight = _painter.cellSize.height;
+    final currentScroll = _scrollOffset;
+    final viewportHeight = _viewportHeight;
+    
+    // 计算目标行的像素位置
+    final targetY = line * cellHeight;
+    
+    // 计算视口边界
+    final visibleTop = currentScroll;
+    final visibleBottom = currentScroll + viewportHeight;
+    
+    // 如果目标行不在视口范围内，需要滚动
+    if (targetY < visibleTop || targetY > visibleBottom - cellHeight) {
+      print('scrollToLine: $line, targetY: $targetY, visibleTop: $visibleTop, visibleBottom: $visibleBottom, cellHeight: $cellHeight');
+      // 计算需要滚动的像素距离
+      final scrollDelta = targetY - (visibleTop + viewportHeight / 2);
+      _offset.jumpTo(currentScroll + scrollDelta);
+      markNeedsLayout();
+    }
+  }
+
+  /// 获取当前视口范围（行号）
+  List<int> getViewportRange() {
+    final cellHeight = _painter.cellSize.height;
+    final currentScroll = _scrollOffset;
+    final viewportHeight = _viewportHeight;
+    
+    final startLine = (currentScroll / cellHeight).floor();
+    final endLine = ((currentScroll + viewportHeight) / cellHeight).ceil();
+    
+    return [startLine, endLine];
+  }
 }
