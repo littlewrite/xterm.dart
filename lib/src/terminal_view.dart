@@ -185,6 +185,12 @@ class TerminalViewState extends State<TerminalView> {
   void _initSearchBox() {
     _searchBox = TerminalSearchBox(
       terminal: widget.terminal,
+      searchDelegate: DefaultTerminalSearchBox(controller: TerminalSearchController(
+        terminal: widget.terminal,
+        onSearch: _handleSearch,
+        onClose: _closeSearch,
+        onScrollToLine: _scrollToLine,
+      )),
       onSearch: _handleSearch,
       onClose: _closeSearch,
       onScrollToLine: _scrollToLine,
@@ -490,7 +496,7 @@ class TerminalViewState extends State<TerminalView> {
 
   void _closeSearch() {
     setState(() {
-      _searchBox = null;
+      _showSearchBox = false;
     });
   }
 
