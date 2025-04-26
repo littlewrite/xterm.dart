@@ -10,12 +10,16 @@ class MatchInfo {
   final int y;
   final int length;
   final String matchedText;
+  final bool isWrapped; // 是否是自动换行的匹配
+  final List<CellOffset>? wrappedPositions; // 如果是自动换行，记录所有匹配位置
 
   const MatchInfo({
     required this.x,
     required this.y,
     required this.length,
     required this.matchedText,
+    this.isWrapped = false,
+    this.wrappedPositions,
   });
 }
 
@@ -114,16 +118,31 @@ class TerminalSearchController {
   void _selectCurrentMatch() {
     if (_currentMatchIndex >= 0 && _currentMatchIndex < _matches.length) {
       final match = _matches[_currentMatchIndex];
+      
+      if (match.isWrapped && match.wrappedPositions != null) {
+        // 处理跨行匹配
+        final positions = match.wrappedPositions!;
+        final start = terminal.buffer.createAnchor(positions.first.x, positions.first.y);
+        final end = terminal.buffer.createAnchor(
+          positions.last.x + 1,
+          positions.last.y,
+        );
+        onSearch(_lastSearchText, start, end);
+      } else {
+        // 处理单行匹配
+        final start = terminal.buffer.createAnchor(match.x, match.y);
+        final end = terminal.buffer.createAnchor(
+          match.x + match.length,
+          match.y,
+        );
+        onSearch(_lastSearchText, start, end);
+      }
+      
       onScrollToLine(match.y);
-      final start = terminal.buffer.createAnchor(match.x, match.y);
-      final end = terminal.buffer.createAnchor(
-        match.x + match.length,
-        match.y,
-      );
-      onSearch(_lastSearchText, start, end);
     }
   }
 
+  // 检索文字
   void _handleSearch(String text) {
     if (text.isEmpty) {
       onSearch('', null, null);
@@ -134,97 +153,147 @@ class TerminalSearchController {
 
     _lastSearchText = text;
     final buffer = terminal.buffer;
-    final textContent = buffer.getText();
     _matches.clear();
     _currentMatchIndex = -1;
+
+    // 获取终端宽度
+    final terminalWidth = buffer.viewWidth;
 
     if (_regex) {
       // 正则表达式搜索
       String pattern = text;
       
-      // 处理全词匹配
       if (_wholeWord) {
         pattern = r'\b' + pattern + r'\b';
       }
       
       try {
         final regex = RegExp(pattern, caseSensitive: _caseSensitive);
-        final matches = regex.allMatches(textContent);
         
-        // 预处理：记录所有换行符的位置
-        final newlinePositions = <int>[];
-        for (int i = 0; i < textContent.length; i++) {
-          if (textContent[i] == '\n') {
-            newlinePositions.add(i);
-          }
-        }
-        newlinePositions.add(textContent.length); // 添加文本末尾作为最后一个换行符
+        // 处理自动换行的情况
+        String currentLine = '';
+        int startY = 0;
+        int startX = 0;
+        List<CellOffset> wrappedPositions = [];
         
-        for (final match in matches) {
-          final matchStart = match.start;
-          final matchEnd = match.end;
+        for (int y = 0; y < buffer.lines.length; y++) {
+          final line = buffer.lines[y];
+          final lineText = line.toString();
           
-          // 找到匹配开始位置之前的最后一个换行符
-          int lineStart = 0;
-          int lineNumber = 0;
-          for (int i = 0; i < newlinePositions.length; i++) {
-            if (newlinePositions[i] >= matchStart) {
-              lineNumber = i;
-              lineStart = i > 0 ? newlinePositions[i - 1] + 1 : 0;
-              break;
+          // 检查是否是自动换行
+          bool isWrapped = y > 0 && lineText.length > 0 && 
+                          buffer.lines[y - 1].toString().length >= terminalWidth;
+          
+          if (isWrapped) {
+            // 如果是自动换行，将文本拼接
+            currentLine += lineText;
+            wrappedPositions.add(CellOffset(startX, startY));
+          } else {
+            // 如果不是自动换行，开始新的行
+            currentLine = lineText;
+            startY = y;
+            startX = 0;
+            wrappedPositions = [CellOffset(0, y)];
+          }
+          
+          // 在当前行（可能包含自动换行的文本）中搜索
+          final searchText = _caseSensitive ? currentLine : currentLine.toLowerCase();
+          final matches = regex.allMatches(searchText);
+          
+          for (final match in matches) {
+            if (!_wholeWord || _isWholeWord(currentLine, match.start, match.end)) {
+              // 计算匹配在终端中的实际位置
+              final matchStart = match.start;
+              final matchEnd = match.end;
+              
+              // 检查匹配是否跨越自动换行
+              bool isWrappedMatch = false;
+              List<CellOffset> matchPositions = [];
+              
+              for (int i = matchStart; i < matchEnd; i++) {
+                final lineIndex = i ~/ terminalWidth;
+                final x = i % terminalWidth;
+                final y = startY + lineIndex;
+                matchPositions.add(CellOffset(x, y));
+                
+                if (lineIndex > 0) {
+                  isWrappedMatch = true;
+                }
+              }
+              
+              _matches.add(MatchInfo(
+                x: matchStart % terminalWidth,
+                y: startY + (matchStart ~/ terminalWidth),
+                length: matchEnd - matchStart,
+                matchedText: match.group(0)!,
+                isWrapped: isWrappedMatch,
+                wrappedPositions: isWrappedMatch ? matchPositions : null,
+              ));
             }
           }
-          
-          // 计算列号
-          final column = matchStart - lineStart;
-          
-          _matches.add(MatchInfo(
-            x: column,
-            y: lineNumber,
-            length: matchEnd - matchStart,
-            matchedText: match.group(0)!,
-          ));
         }
       } catch (e) {
-        // 正则表达式语法错误，不进行搜索
         return;
       }
     } else {
       // 普通文本搜索
       final pattern = _caseSensitive ? text : text.toLowerCase();
-      final searchText = _caseSensitive ? textContent : textContent.toLowerCase();
       
-      // 预处理：记录所有换行符的位置
-      final newlinePositions = <int>[];
-      for (int i = 0; i < textContent.length; i++) {
-        if (textContent[i] == '\n') {
-          newlinePositions.add(i);
-        }
-      }
-      newlinePositions.add(textContent.length); // 添加文本末尾作为最后一个换行符
+      // 处理自动换行的情况
+      String currentLine = '';
+      int startY = 0;
+      int startX = 0;
+      List<CellOffset> wrappedPositions = [];
       
-      int lineNumber = 0;
-      int lineStart = 0;
-      
-      for (int i = 0; i < searchText.length; i++) {
-        // 检查是否需要更新行号
-        if (lineNumber < newlinePositions.length - 1 && i >= newlinePositions[lineNumber]) {
-          lineNumber++;
-          lineStart = newlinePositions[lineNumber - 1] + 1;
+      for (int y = 0; y < buffer.lines.length; y++) {
+        final line = buffer.lines[y];
+        final lineText = line.toString();
+        
+        // 检查是否是自动换行
+        bool isWrapped = y > 0 && lineText.length > 0 && 
+                        buffer.lines[y - 1].toString().length >= terminalWidth;
+        
+        if (isWrapped) {
+          // 如果是自动换行，将文本拼接
+          currentLine += lineText;
+          wrappedPositions.add(CellOffset(startX, startY));
+        } else {
+          // 如果不是自动换行，开始新的行
+          currentLine = lineText;
+          startY = y;
+          startX = 0;
+          wrappedPositions = [CellOffset(0, y)];
         }
         
-        if (i + pattern.length <= searchText.length) {
-          final lineText = searchText.substring(i, i + pattern.length);
-          if (lineText == pattern) {
-            if (!_wholeWord || _isWholeWord(textContent, i, i + pattern.length)) {
-              // 计算当前匹配的列号
-              final column = i - lineStart;
+        // 在当前行（可能包含自动换行的文本）中搜索
+        final searchText = _caseSensitive ? currentLine : currentLine.toLowerCase();
+        
+        for (int x = 0; x <= searchText.length - pattern.length; x++) {
+          final substring = searchText.substring(x, x + pattern.length);
+          if (substring == pattern) {
+            if (!_wholeWord || _isWholeWord(currentLine, x, x + pattern.length)) {
+              // 检查匹配是否跨越自动换行
+              bool isWrappedMatch = false;
+              List<CellOffset> matchPositions = [];
+              
+              for (int i = x; i < x + pattern.length; i++) {
+                final lineIndex = i ~/ terminalWidth;
+                final matchX = i % terminalWidth;
+                final matchY = startY + lineIndex;
+                matchPositions.add(CellOffset(matchX, matchY));
+                
+                if (lineIndex > 0) {
+                  isWrappedMatch = true;
+                }
+              }
               
               _matches.add(MatchInfo(
-                x: column,
-                y: lineNumber,
+                x: x % terminalWidth,
+                y: startY + (x ~/ terminalWidth),
                 length: pattern.length,
-                matchedText: textContent.substring(i, i + pattern.length),
+                matchedText: currentLine.substring(x, x + pattern.length),
+                isWrapped: isWrappedMatch,
+                wrappedPositions: isWrappedMatch ? matchPositions : null,
               ));
             }
           }
