@@ -138,43 +138,98 @@ class TerminalSearchController {
     _matches.clear();
     _currentMatchIndex = -1;
 
-    RegExp regex;
     if (_regex) {
+      // 正则表达式搜索
+      String pattern = text;
+      
+      // 处理全词匹配
+      if (_wholeWord) {
+        pattern = r'\b' + pattern + r'\b';
+      }
+      
       try {
-        regex = RegExp(text, caseSensitive: _caseSensitive);
+        final regex = RegExp(pattern, caseSensitive: _caseSensitive);
+        final matches = regex.allMatches(textContent);
+        
+        // 预处理：记录所有换行符的位置
+        final newlinePositions = <int>[];
+        for (int i = 0; i < textContent.length; i++) {
+          if (textContent[i] == '\n') {
+            newlinePositions.add(i);
+          }
+        }
+        newlinePositions.add(textContent.length); // 添加文本末尾作为最后一个换行符
+        
+        for (final match in matches) {
+          final matchStart = match.start;
+          final matchEnd = match.end;
+          
+          // 找到匹配开始位置之前的最后一个换行符
+          int lineStart = 0;
+          int lineNumber = 0;
+          for (int i = 0; i < newlinePositions.length; i++) {
+            if (newlinePositions[i] >= matchStart) {
+              lineNumber = i;
+              lineStart = i > 0 ? newlinePositions[i - 1] + 1 : 0;
+              break;
+            }
+          }
+          
+          // 计算列号
+          final column = matchStart - lineStart;
+          
+          _matches.add(MatchInfo(
+            x: column,
+            y: lineNumber,
+            length: matchEnd - matchStart,
+            matchedText: match.group(0)!,
+          ));
+        }
       } catch (e) {
+        // 正则表达式语法错误，不进行搜索
         return;
       }
     } else {
+      // 普通文本搜索
       final pattern = _caseSensitive ? text : text.toLowerCase();
-      regex = RegExp(RegExp.escape(pattern), caseSensitive: _caseSensitive);
-    }
-
-    int currentLine = 0;
-    int currentColumn = 0;
-    
-    for (int i = 0; i < textContent.length; i++) {
-      if (textContent[i] == '\n') {
-        currentLine++;
-        currentColumn = 0;
-        continue;
-      }
+      final searchText = _caseSensitive ? textContent : textContent.toLowerCase();
       
-      if (i + text.length <= textContent.length) {
-        final lineText = textContent.substring(i, i + text.length);
-        final match = regex.firstMatch(lineText);
-        if (match != null) {
-          if (!_wholeWord || _isWholeWord(textContent, i, i + match.group(0)!.length)) {
-            _matches.add(MatchInfo(
-              x: currentColumn,
-              y: currentLine,
-              length: match.group(0)!.length,
-              matchedText: match.group(0)!,
-            ));
+      // 预处理：记录所有换行符的位置
+      final newlinePositions = <int>[];
+      for (int i = 0; i < textContent.length; i++) {
+        if (textContent[i] == '\n') {
+          newlinePositions.add(i);
+        }
+      }
+      newlinePositions.add(textContent.length); // 添加文本末尾作为最后一个换行符
+      
+      int lineNumber = 0;
+      int lineStart = 0;
+      
+      for (int i = 0; i < searchText.length; i++) {
+        // 检查是否需要更新行号
+        if (lineNumber < newlinePositions.length - 1 && i >= newlinePositions[lineNumber]) {
+          lineNumber++;
+          lineStart = newlinePositions[lineNumber - 1] + 1;
+        }
+        
+        if (i + pattern.length <= searchText.length) {
+          final lineText = searchText.substring(i, i + pattern.length);
+          if (lineText == pattern) {
+            if (!_wholeWord || _isWholeWord(textContent, i, i + pattern.length)) {
+              // 计算当前匹配的列号
+              final column = i - lineStart;
+              
+              _matches.add(MatchInfo(
+                x: column,
+                y: lineNumber,
+                length: pattern.length,
+                matchedText: textContent.substring(i, i + pattern.length),
+              ));
+            }
           }
         }
       }
-      currentColumn++;
     }
 
     if (_matches.isNotEmpty) {
@@ -265,17 +320,38 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
   Offset _position = const Offset(0, 0);
   bool _isDragging = false;
   Offset _dragStartPosition = Offset.zero;
+  bool _caseSensitive = false;
+  bool _wholeWord = false;
+  bool _regex = false;
 
   @override
   void initState() {
     super.initState();
     _controller.text = widget.controller.searchText;
+    _caseSensitive = widget.controller.caseSensitive;
+    _wholeWord = widget.controller.wholeWord;
+    _regex = widget.controller.regex;
   }
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+  void _updateCaseSensitive(bool value) {
+    setState(() {
+      _caseSensitive = value;
+    });
+    widget.controller.setCaseSensitive(value);
+  }
+
+  void _updateWholeWord(bool value) {
+    setState(() {
+      _wholeWord = value;
+    });
+    widget.controller.setWholeWord(value);
+  }
+
+  void _updateRegex(bool value) {
+    setState(() {
+      _regex = value;
+    });
+    widget.controller.setRegex(value);
   }
 
   void _onPanStart(DragStartDetails details) {
@@ -387,28 +463,28 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                   IconButton(
                     icon: Icon(
                       Icons.text_format,
-                      color: widget.controller.caseSensitive ? Colors.blue : Colors.white,
+                      color: _caseSensitive ? Colors.blue : Colors.white,
                     ),
                     onPressed: () {
-                      widget.controller.setCaseSensitive(!widget.controller.caseSensitive);
+                      _updateCaseSensitive(!_caseSensitive);
                     },
                   ),
                   IconButton(
                     icon: Icon(
                       Icons.text_fields,
-                      color: widget.controller.wholeWord ? Colors.blue : Colors.white,
+                      color: _wholeWord ? Colors.blue : Colors.white,
                     ),
                     onPressed: () {
-                      widget.controller.setWholeWord(!widget.controller.wholeWord);
+                      _updateWholeWord(!_wholeWord);
                     },
                   ),
                   IconButton(
                     icon: Icon(
                       Icons.code,
-                      color: widget.controller.regex ? Colors.blue : Colors.white,
+                      color: _regex ? Colors.blue : Colors.white,
                     ),
                     onPressed: () {
-                      widget.controller.setRegex(!widget.controller.regex);
+                      _updateRegex(!_regex);
                     },
                   ),
                 ],
