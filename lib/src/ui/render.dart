@@ -154,6 +154,14 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   var _stickToBottom = true;
 
+  // 添加滚动速率控制变量
+  double _scrollSpeed = 0.2; // 默认滚动速率为1.0
+  set scrollSpeed(double value) {
+    if (value <= 0) return; // 确保速率大于0
+    _scrollSpeed = value;
+  }
+  double get scrollSpeed => _scrollSpeed;
+
   void _onScroll() {
     _stickToBottom = _scrollOffset >= _maxScrollExtent;
     markNeedsLayout();
@@ -290,13 +298,12 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// Selects characters in the terminal that starts from [from] to [to]. At
   /// least one cell is selected even if [from] and [to] are same.
   void selectCharacters(Offset from, [Offset? to]) {
-    // Convert from position to a buffer anchor - this maintains the absolute position
-    // regardless of scrolling
+    // 转换起始位置为缓冲区锚点
     var fromPosition = getCellOffset(from);
     print('selectCharacters: $from, $to');
 
     if (to == null) {
-      // Single character selection, it's start.
+      // 单字符选择
       lastSelectX = fromPosition.x;
       lastSelectY = fromPosition.y;
       _controller.setSelection(
@@ -306,61 +313,58 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       return;
     }
 
-    var fromCell = _terminal.buffer.createAnchorFromOffset(fromPosition);
-    if (to != null) {
-      fromCell = _terminal.buffer.lines[lastSelectY].createAnchor(lastSelectX);
-    }
-    // Check if selection is going beyond visible area and scroll accordingly
+    // 获取视口和单元格尺寸
     final viewportHeight = _viewportHeight;
     final cellHeight = _painter.cellSize.height;
     final currentScroll = _scrollOffset;
 
-    // Calculate the visible area boundaries
+    // 计算视口边界
     final visibleTop = currentScroll;
     final visibleBottom = currentScroll + viewportHeight;
 
-    // Get the current pointer position
+    // 获取当前指针位置
     var toPosition = getCellOffset(to);
     final selectionY = toPosition.y * cellHeight;
-// Determine if we need to scroll and by how much
+
+    // 计算滚动需求
     double scrollDelta = 0.0;
     bool needsScroll = false;
 
+    // 检查是否需要滚动
     if (selectionY < visibleTop) {
-      // Scroll up if selection goes above visible area
-      final newScroll = selectionY - cellHeight; // Show one line above
-      final clampedScroll = newScroll.clamp(0.0, _maxScrollExtent);
-      scrollDelta = clampedScroll - currentScroll;
-      _offset.jumpTo(clampedScroll);
+      // 向上滚动，显示目标行上方一行
+      final newScroll = selectionY - cellHeight;
+      scrollDelta = (newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) * _scrollSpeed;
       needsScroll = true;
     } else if (selectionY > visibleBottom - cellHeight) {
-      // Scroll down if selection goes below visible area
-      final newScroll =
-          selectionY - viewportHeight + cellHeight * 2; // Show one line below
-      final clampedScroll = newScroll.clamp(0.0, _maxScrollExtent);
-      scrollDelta = clampedScroll - currentScroll;
-      _offset.jumpTo(clampedScroll);
+      // 向下滚动，显示目标行下方一行
+      final newScroll = selectionY - viewportHeight + cellHeight * 2;
+      scrollDelta = (newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) * _scrollSpeed;
       needsScroll = true;
     }
-// Only adjust the from position if we actually scrolled
-    if (needsScroll && scrollDelta != 0.0) {
-      // Adjust the from offset based on the scroll delta
-      from = Offset(from.dx, from.dy + scrollDelta);
 
-      // Create a new anchor from the adjusted position
+    // 如果需要滚动，更新滚动位置
+    if (needsScroll) {
+      // 使用平滑滚动
+      _offset.jumpTo(currentScroll + scrollDelta);
+      // 重新计算位置
       fromPosition = getCellOffset(from);
-    } // Re-calculate toPosition after scrolling
-    toPosition = getCellOffset(to);
+      toPosition = getCellOffset(to);
+    }
 
-    // Create anchors for the selection
-    // Extend selection by one character if needed
+    // 创建起始锚点
+    final fromCell = _terminal.buffer.lines[lastSelectY].createAnchor(lastSelectX);
+
+    // 扩展选择范围（如果需要）
     if (toPosition.x >= fromPosition.x && toPosition.y == fromPosition.y) {
       toPosition = CellOffset(toPosition.x + 1, toPosition.y);
     }
 
-    // Set the selection with the anchors
+    // 设置选择
     _controller.setSelection(
-        fromCell, _terminal.buffer.createAnchorFromOffset(toPosition));
+      fromCell,
+      _terminal.buffer.createAnchorFromOffset(toPosition),
+    );
   }
 
   /// Send a mouse event at [offset] with [button] being currently in [buttonState].
