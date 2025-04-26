@@ -1033,4 +1033,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     _timer = null;
     _running = false;
   }
+
+  /// 触发搜索框显示
+  void showSearch() {
+    onSearch?.call();
+  }
+
+  /// 搜索框显示回调
+  void Function()? onSearch;
 }

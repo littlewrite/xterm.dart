@@ -180,6 +180,7 @@ class TerminalViewState extends State<TerminalView> {
     );
     super.initState();
     _initSearchBox();
+    widget.terminal.onSearch = _showSearch;
   }
 
   void _initSearchBox() {
