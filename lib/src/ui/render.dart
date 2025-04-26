@@ -618,6 +618,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// 滚动到指定行
   void scrollToLine(int line) {
     print('scrollToLine: $line');
+    // 余量
+    final above = 10;
     final cellHeight = _painter.cellSize.height;
     final currentScroll = _scrollOffset;
     final viewportHeight = _viewportHeight;
@@ -630,7 +632,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final visibleBottom = currentScroll + viewportHeight;
     
     // 如果目标行不在视口范围内，需要滚动
-    if (targetY < visibleTop || targetY > visibleBottom - cellHeight) {
+    if (targetY < visibleTop - above || targetY > visibleBottom - cellHeight - above) {
       print('scrollToLine: $line, targetY: $targetY, visibleTop: $visibleTop, visibleBottom: $visibleBottom, cellHeight: $cellHeight');
       // 计算需要滚动的像素距离
       final scrollDelta = targetY - (visibleTop + viewportHeight / 2);

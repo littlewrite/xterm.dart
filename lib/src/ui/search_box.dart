@@ -159,6 +159,9 @@ class TerminalSearchController {
     // 获取终端宽度
     final terminalWidth = buffer.viewWidth;
 
+    // 用于记录已经处理过的匹配位置，避免重复
+    final Set<String> processedMatches = {};
+
     if (_regex) {
       // 正则表达式搜索
       String pattern = text;
@@ -180,9 +183,8 @@ class TerminalSearchController {
           final line = buffer.lines[y];
           final lineText = line.toString();
           
-          // 检查是否是自动换行
-          bool isWrapped = y > 0 && lineText.length > 0 && 
-                          buffer.lines[y - 1].toString().length >= terminalWidth;
+          // 使用 isWrapped 属性判断是否是自动换行
+          bool isWrapped = line.isWrapped;
           
           if (isWrapped) {
             // 如果是自动换行，将文本拼接
@@ -221,14 +223,22 @@ class TerminalSearchController {
                 }
               }
               
-              _matches.add(MatchInfo(
-                x: matchStart % terminalWidth,
-                y: startY + (matchStart ~/ terminalWidth),
-                length: matchEnd - matchStart,
-                matchedText: match.group(0)!,
-                isWrapped: isWrappedMatch,
-                wrappedPositions: isWrappedMatch ? matchPositions : null,
-              ));
+              // 生成匹配的唯一标识符
+              final matchKey = '${matchStart}_${matchEnd}_${startY}';
+              
+              // 检查是否已经处理过这个匹配
+              if (!processedMatches.contains(matchKey)) {
+                processedMatches.add(matchKey);
+                
+                _matches.add(MatchInfo(
+                  x: matchStart % terminalWidth,
+                  y: startY + (matchStart ~/ terminalWidth),
+                  length: matchEnd - matchStart,
+                  matchedText: match.group(0)!,
+                  isWrapped: isWrappedMatch,
+                  wrappedPositions: isWrappedMatch ? matchPositions : null,
+                ));
+              }
             }
           }
         }
@@ -249,9 +259,8 @@ class TerminalSearchController {
         final line = buffer.lines[y];
         final lineText = line.toString();
         
-        // 检查是否是自动换行
-        bool isWrapped = y > 0 && lineText.length > 0 && 
-                        buffer.lines[y - 1].toString().length >= terminalWidth;
+        // 使用 isWrapped 属性判断是否是自动换行
+        bool isWrapped = line.isWrapped;
         
         if (isWrapped) {
           // 如果是自动换行，将文本拼接
@@ -287,19 +296,30 @@ class TerminalSearchController {
                 }
               }
               
-              _matches.add(MatchInfo(
-                x: x % terminalWidth,
-                y: startY + (x ~/ terminalWidth),
-                length: pattern.length,
-                matchedText: currentLine.substring(x, x + pattern.length),
-                isWrapped: isWrappedMatch,
-                wrappedPositions: isWrappedMatch ? matchPositions : null,
-              ));
+              // 生成匹配的唯一标识符
+              final matchKey = '${x}_${x + pattern.length}_${startY}';
+              
+              // 检查是否已经处理过这个匹配
+              if (!processedMatches.contains(matchKey)) {
+                processedMatches.add(matchKey);
+                
+                _matches.add(MatchInfo(
+                  x: x % terminalWidth,
+                  y: startY + (x ~/ terminalWidth),
+                  length: pattern.length,
+                  matchedText: currentLine.substring(x, x + pattern.length),
+                  isWrapped: isWrappedMatch,
+                  wrappedPositions: isWrappedMatch ? matchPositions : null,
+                ));
+              }
             }
           }
         }
       }
     }
+
+    // 过滤重复的匹配
+    _matches = _filterDuplicateMatches(_matches);
 
     if (_matches.isNotEmpty) {
       _currentMatchIndex = 0;
@@ -307,6 +327,24 @@ class TerminalSearchController {
     } else {
       onSearch('', null, null);
     }
+  }
+
+  // 过滤重复的匹配
+  List<MatchInfo> _filterDuplicateMatches(List<MatchInfo> matches) {
+    final Set<String> uniqueMatches = {};
+    final List<MatchInfo> filteredMatches = [];
+
+    for (final match in matches) {
+      // 生成唯一标识符，包含位置和文本内容
+      final matchKey = '${match.x}_${match.y}_${match.length}_${match.matchedText}';
+      
+      if (!uniqueMatches.contains(matchKey)) {
+        uniqueMatches.add(matchKey);
+        filteredMatches.add(match);
+      }
+    }
+
+    return filteredMatches;
   }
 
   bool _isWholeWord(String text, int start, int end) {
