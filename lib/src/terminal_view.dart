@@ -415,7 +415,6 @@ class TerminalViewState extends State<TerminalView> {
   void _onSecondaryTapDown(TapDownDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onSecondaryTapDown?.call(details, offset);
-    _showSearch();
   }
 
   void _onSecondaryTapUp(TapUpDetails details) {
