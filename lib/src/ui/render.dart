@@ -621,7 +621,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   /// 滚动到指定行
   void scrollToLine(int line) {
-    print('scrollToLine: $line');
     // 余量
     final above = 10;
     final cellHeight = _painter.cellSize.height;

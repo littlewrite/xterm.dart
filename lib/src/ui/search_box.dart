@@ -4,6 +4,7 @@ import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/render.dart';
+import 'package:xterm/src/ui/controller.dart';
 
 class MatchInfo {
   final int x;
@@ -36,14 +37,17 @@ abstract class TerminalSearchDelegate {
 
   /// 隐藏搜索框
   void hide();
+
+  /// 获取搜索控制器
+  TerminalSearchController get searchController;
 }
 
 /// 搜索控制器，提供搜索相关的功能
-class TerminalSearchController {
+class TerminalSearchController extends ChangeNotifier {
   final Terminal terminal;
-  final void Function(String text, CellAnchor? start, CellAnchor? end) onSearch;
-  final void Function(int line) onScrollToLine;
-  final VoidCallback onClose;
+  final TerminalController controller;
+  final void Function(int line) scrollToLine;
+  final void Function(bool show) setShowSearch;
 
   String _lastSearchText = '';
   bool _caseSensitive = false;
@@ -54,9 +58,9 @@ class TerminalSearchController {
 
   TerminalSearchController({
     required this.terminal,
-    required this.onSearch,
-    required this.onClose,
-    required this.onScrollToLine,
+    required this.controller,
+    required this.scrollToLine,
+    required this.setShowSearch,
   });
 
   /// 获取当前搜索文本
@@ -77,28 +81,35 @@ class TerminalSearchController {
   /// 匹配总数
   int get matchCount => _matches.length;
 
+  /// 当前匹配索引
+  int get currentIdx => _currentMatchIndex % _matches.length;
+
   /// 设置搜索文本
   void setSearchText(String text) {
     _lastSearchText = text;
     _handleSearch(text);
+    notifyListeners();
   }
 
   /// 设置是否区分大小写
   void setCaseSensitive(bool value) {
     _caseSensitive = value;
     _handleSearch(_lastSearchText);
+    notifyListeners();
   }
 
   /// 设置是否全词匹配
   void setWholeWord(bool value) {
     _wholeWord = value;
     _handleSearch(_lastSearchText);
+    notifyListeners();
   }
 
   /// 设置是否使用正则表达式
   void setRegex(bool value) {
     _regex = value;
     _handleSearch(_lastSearchText);
+    notifyListeners();
   }
 
   /// 查找下一个匹配
@@ -106,28 +117,38 @@ class TerminalSearchController {
     if (_matches.isEmpty) return;
     _currentMatchIndex = (_currentMatchIndex + 1) % _matches.length;
     _selectCurrentMatch();
+    notifyListeners();
   }
 
   /// 查找上一个匹配
   void findPrevious() {
     if (_matches.isEmpty) return;
-    _currentMatchIndex = (_currentMatchIndex - 1 + _matches.length) % _matches.length;
+    _currentMatchIndex =
+        (_currentMatchIndex - 1 + _matches.length) % _matches.length;
     _selectCurrentMatch();
+    notifyListeners();
+  }
+
+  void close() {
+    setShowSearch(false);
+    controller.clearSelection();
+    notifyListeners();
   }
 
   void _selectCurrentMatch() {
     if (_currentMatchIndex >= 0 && _currentMatchIndex < _matches.length) {
       final match = _matches[_currentMatchIndex];
-      
+
       if (match.isWrapped && match.wrappedPositions != null) {
         // 处理跨行匹配
         final positions = match.wrappedPositions!;
-        final start = terminal.buffer.createAnchor(positions.first.x, positions.first.y);
+        final start =
+            terminal.buffer.createAnchor(positions.first.x, positions.first.y);
         final end = terminal.buffer.createAnchor(
           positions.last.x + 1,
           positions.last.y,
         );
-        onSearch(_lastSearchText, start, end);
+        controller.setSelection(start, end);
       } else {
         // 处理单行匹配
         final start = terminal.buffer.createAnchor(match.x, match.y);
@@ -135,17 +156,19 @@ class TerminalSearchController {
           match.x + match.length,
           match.y,
         );
-        onSearch(_lastSearchText, start, end);
+        controller.setSelection(start, end);
       }
-      
-      onScrollToLine(match.y);
+
+      // 滚动到匹配行
+      scrollToLine(match.y);
     }
   }
 
   // 检索文字
   void _handleSearch(String text) {
+    print(' search ctrl  _handleSearch: $text');
     if (text.isEmpty) {
-      onSearch('', null, null);
+      controller.clearSelection();
       _matches.clear();
       _currentMatchIndex = -1;
       return;
@@ -165,27 +188,27 @@ class TerminalSearchController {
     if (_regex) {
       // 正则表达式搜索
       String pattern = text;
-      
+
       if (_wholeWord) {
         pattern = r'\b' + pattern + r'\b';
       }
-      
+
       try {
         final regex = RegExp(pattern, caseSensitive: _caseSensitive);
-        
+
         // 处理自动换行的情况
         String currentLine = '';
         int startY = 0;
         int startX = 0;
         List<CellOffset> wrappedPositions = [];
-        
+
         for (int y = 0; y < buffer.lines.length; y++) {
           final line = buffer.lines[y];
           final lineText = line.toString();
-          
+
           // 使用 isWrapped 属性判断是否是自动换行
           bool isWrapped = line.isWrapped;
-          
+
           if (isWrapped) {
             // 如果是自动换行，将文本拼接
             currentLine += lineText;
@@ -197,39 +220,41 @@ class TerminalSearchController {
             startX = 0;
             wrappedPositions = [CellOffset(0, y)];
           }
-          
+
           // 在当前行（可能包含自动换行的文本）中搜索
-          final searchText = _caseSensitive ? currentLine : currentLine.toLowerCase();
+          final searchText =
+              _caseSensitive ? currentLine : currentLine.toLowerCase();
           final matches = regex.allMatches(searchText);
-          
+
           for (final match in matches) {
-            if (!_wholeWord || _isWholeWord(currentLine, match.start, match.end)) {
+            if (!_wholeWord ||
+                _isWholeWord(currentLine, match.start, match.end)) {
               // 计算匹配在终端中的实际位置
               final matchStart = match.start;
               final matchEnd = match.end;
-              
+
               // 检查匹配是否跨越自动换行
               bool isWrappedMatch = false;
               List<CellOffset> matchPositions = [];
-              
+
               for (int i = matchStart; i < matchEnd; i++) {
                 final lineIndex = i ~/ terminalWidth;
                 final x = i % terminalWidth;
                 final y = startY + lineIndex;
                 matchPositions.add(CellOffset(x, y));
-                
+
                 if (lineIndex > 0) {
                   isWrappedMatch = true;
                 }
               }
-              
+
               // 生成匹配的唯一标识符
               final matchKey = '${matchStart}_${matchEnd}_${startY}';
-              
+
               // 检查是否已经处理过这个匹配
               if (!processedMatches.contains(matchKey)) {
                 processedMatches.add(matchKey);
-                
+
                 _matches.add(MatchInfo(
                   x: matchStart % terminalWidth,
                   y: startY + (matchStart ~/ terminalWidth),
@@ -248,20 +273,20 @@ class TerminalSearchController {
     } else {
       // 普通文本搜索
       final pattern = _caseSensitive ? text : text.toLowerCase();
-      
+
       // 处理自动换行的情况
       String currentLine = '';
       int startY = 0;
       int startX = 0;
       List<CellOffset> wrappedPositions = [];
-      
+
       for (int y = 0; y < buffer.lines.length; y++) {
         final line = buffer.lines[y];
         final lineText = line.toString();
-        
+
         // 使用 isWrapped 属性判断是否是自动换行
         bool isWrapped = line.isWrapped;
-        
+
         if (isWrapped) {
           // 如果是自动换行，将文本拼接
           currentLine += lineText;
@@ -273,36 +298,38 @@ class TerminalSearchController {
           startX = 0;
           wrappedPositions = [CellOffset(0, y)];
         }
-        
+
         // 在当前行（可能包含自动换行的文本）中搜索
-        final searchText = _caseSensitive ? currentLine : currentLine.toLowerCase();
-        
+        final searchText =
+            _caseSensitive ? currentLine : currentLine.toLowerCase();
+
         for (int x = 0; x <= searchText.length - pattern.length; x++) {
           final substring = searchText.substring(x, x + pattern.length);
           if (substring == pattern) {
-            if (!_wholeWord || _isWholeWord(currentLine, x, x + pattern.length)) {
+            if (!_wholeWord ||
+                _isWholeWord(currentLine, x, x + pattern.length)) {
               // 检查匹配是否跨越自动换行
               bool isWrappedMatch = false;
               List<CellOffset> matchPositions = [];
-              
+
               for (int i = x; i < x + pattern.length; i++) {
                 final lineIndex = i ~/ terminalWidth;
                 final matchX = i % terminalWidth;
                 final matchY = startY + lineIndex;
                 matchPositions.add(CellOffset(matchX, matchY));
-                
+
                 if (lineIndex > 0) {
                   isWrappedMatch = true;
                 }
               }
-              
+
               // 生成匹配的唯一标识符
               final matchKey = '${x}_${x + pattern.length}_${startY}';
-              
+
               // 检查是否已经处理过这个匹配
               if (!processedMatches.contains(matchKey)) {
                 processedMatches.add(matchKey);
-                
+
                 _matches.add(MatchInfo(
                   x: x % terminalWidth,
                   y: startY + (x ~/ terminalWidth),
@@ -321,11 +348,12 @@ class TerminalSearchController {
     // 过滤重复的匹配
     _matches = _filterDuplicateMatches(_matches);
 
+    print(' search ctrl  _handleSearch: ${_matches.length}');
     if (_matches.isNotEmpty) {
       _currentMatchIndex = 0;
       _selectCurrentMatch();
     } else {
-      onSearch('', null, null);
+      controller.clearSelection();
     }
   }
 
@@ -336,8 +364,9 @@ class TerminalSearchController {
 
     for (final match in matches) {
       // 生成唯一标识符，包含位置和文本内容
-      final matchKey = '${match.x}_${match.y}_${match.length}_${match.matchedText}';
-      
+      final matchKey =
+          '${match.x}_${match.y}_${match.length}_${match.matchedText}';
+
       if (!uniqueMatches.contains(matchKey)) {
         uniqueMatches.add(matchKey);
         filteredMatches.add(match);
@@ -367,21 +396,26 @@ class TerminalSearchController {
     if (char.isEmpty) return false;
     final codeUnit = char.codeUnitAt(0);
     return (codeUnit >= 0x30 && codeUnit <= 0x39) || // 数字 0-9
-           (codeUnit >= 0x41 && codeUnit <= 0x5A) || // 大写字母 A-Z
-           (codeUnit >= 0x61 && codeUnit <= 0x7A);   // 小写字母 a-z
+        (codeUnit >= 0x41 && codeUnit <= 0x5A) || // 大写字母 A-Z
+        (codeUnit >= 0x61 && codeUnit <= 0x7A); // 小写字母 a-z
   }
 }
 
 /// 默认的搜索框实现
-class DefaultTerminalSearchBox extends StatefulWidget implements TerminalSearchDelegate {
-  final TerminalSearchController controller;
+class DefaultTerminalSearchBox extends StatefulWidget
+    implements TerminalSearchDelegate {
+  final TerminalSearchController _searchController;
   final bool isVisible;
+  final VoidCallback? onHide;
+  final VoidCallback? onClose;
 
   const DefaultTerminalSearchBox({
     super.key,
-    required this.controller,
+    required TerminalSearchController searchController,
     this.isVisible = true,
-  });
+    this.onHide,
+    this.onClose,
+  }) : _searchController = searchController;
 
   @override
   Widget build(BuildContext context, TerminalSearchController controller) {
@@ -393,111 +427,71 @@ class DefaultTerminalSearchBox extends StatefulWidget implements TerminalSearchD
 
   @override
   void show() {
-    // 默认实现不需要额外操作
+    // 自定义实现
   }
 
   @override
   void hide() {
-    // 默认实现不需要额外操作
+    onHide?.call();
   }
 
-  Offset get position {
-    final state = _DefaultTerminalSearchBoxState();
-    return state._position;
-  }
-
-  void onPanStart(DragStartDetails details) {
-    final state = _DefaultTerminalSearchBoxState();
-    state._onPanStart(details);
-  }
-
-  void onPanUpdate(DragUpdateDetails details) {
-    final state = _DefaultTerminalSearchBoxState();
-    state._onPanUpdate(details);
-  }
-
-  void onPanEnd(DragEndDetails details) {
-    final state = _DefaultTerminalSearchBoxState();
-    state._onPanEnd(details);
-  }
+  @override
+  TerminalSearchController get searchController => _searchController;
 }
 
 class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
   final _controller = TextEditingController();
-  Offset _position = const Offset(0, 0);
-  bool _isDragging = false;
-  Offset _dragStartPosition = Offset.zero;
   bool _caseSensitive = false;
   bool _wholeWord = false;
   bool _regex = false;
 
   @override
   void initState() {
+    print(' initState default search box');
     super.initState();
-    _controller.text = widget.controller.searchText;
-    _caseSensitive = widget.controller.caseSensitive;
-    _wholeWord = widget.controller.wholeWord;
-    _regex = widget.controller.regex;
+    _controller.text = widget.searchController.searchText;
+    _caseSensitive = widget.searchController.caseSensitive;
+    _wholeWord = widget.searchController.wholeWord;
+    _regex = widget.searchController.regex;
+
+    // 添加监听器
+    widget.searchController.addListener(_onControllerChanged);
+  }
+
+  @override
+  void dispose() {
+    // 移除监听器
+    widget.searchController.removeListener(_onControllerChanged);
+    super.dispose();
+  }
+
+  void _onControllerChanged() {
+    setState(() {
+      _caseSensitive = widget.searchController.caseSensitive;
+      _wholeWord = widget.searchController.wholeWord;
+      _regex = widget.searchController.regex;
+    });
   }
 
   void _updateCaseSensitive(bool value) {
     setState(() {
       _caseSensitive = value;
     });
-    widget.controller.setCaseSensitive(value);
+    widget.searchController.setCaseSensitive(value);
   }
 
   void _updateWholeWord(bool value) {
     setState(() {
       _wholeWord = value;
     });
-    widget.controller.setWholeWord(value);
+    widget.searchController.setWholeWord(value);
   }
 
   void _updateRegex(bool value) {
     setState(() {
       _regex = value;
     });
-    widget.controller.setRegex(value);
-  }
-
-  void _onPanStart(DragStartDetails details) {
-    _isDragging = true;
-    _dragStartPosition = details.globalPosition;
-  }
-
-  void _onPanUpdate(DragUpdateDetails details) {
-    if (_isDragging) {
-      setState(() {
-        _position += details.delta;
-        
-        // 获取父容器大小
-        final renderBox = context.findRenderObject() as RenderBox?;
-        if (renderBox != null) {
-          final parent = renderBox.parent as RenderBox?;
-          if (parent != null) {
-            final parentSize = parent.size;
-            // 限制水平范围
-            if (_position.dx < 0) {
-              _position = Offset(0, _position.dy);
-            } else if (_position.dx + 300 > parentSize.width) {
-              _position = Offset(parentSize.width - 300, _position.dy);
-            }
-            
-            // 限制垂直范围
-            if (_position.dy < 0) {
-              _position = Offset(_position.dx, 0);
-            } else if (_position.dy + 100 > parentSize.height) {
-              _position = Offset(_position.dx, parentSize.height - 100);
-            }
-          }
-        }
-      });
-    }
-  }
-
-  void _onPanEnd(DragEndDetails details) {
-    _isDragging = false;
+    widget.searchController.setRegex(value);
   }
 
   @override
@@ -506,130 +500,125 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
       return const SizedBox.shrink();
     }
 
-    return Positioned(
-      left: _position.dx,
-      top: _position.dy,
-      child: GestureDetector(
-        onPanStart: _onPanStart,
-        onPanUpdate: _onPanUpdate,
-        onPanEnd: _onPanEnd,
-        child: Container(
-          width: 300,
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.grey[900],
-            borderRadius: BorderRadius.circular(4),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.2),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              ),
-            ],
+    return Container(
+      width: 300,
+      decoration: BoxDecoration(
+        color: Colors.grey[900],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: Colors.grey[800]!,
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 搜索输入框
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[800],
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: Colors.grey[700]!,
+                  width: 1,
+                ),
+              ),
+              child: Row(
                 children: [
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8),
+                    child: Icon(Icons.search, color: Colors.grey, size: 20),
+                  ),
                   Expanded(
                     child: TextField(
                       controller: _controller,
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
-                        hintText: '搜索...',
+                        hintText: '默认搜索...',
                         hintStyle: const TextStyle(color: Colors.grey),
                         border: InputBorder.none,
-                        suffixText: widget.controller.matchCount > 0
-                            ? '${widget.controller.currentMatchIndex + 1}/${widget.controller.matchCount}'
+                        suffixText: widget.searchController.matchCount > 0
+                            ? '${widget.searchController.currentIdx + 1}/${widget.searchController.matchCount}'
                             : '',
                         suffixStyle: const TextStyle(color: Colors.grey),
                       ),
-                      onChanged: widget.controller.setSearchText,
+                      onChanged: widget.searchController.setSearchText,
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white),
+                    icon: const Icon(Icons.close, color: Colors.grey, size: 20),
                     onPressed: () {
-                      widget.controller.onClose();
-                      _controller.clear();
+                      widget.searchController.setSearchText(''); // 关闭时情况检索内容
+                      widget.searchController.close();
                     },
                   ),
                 ],
               ),
-              Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_upward, color: Colors.white),
-                    onPressed: widget.controller.findPrevious,
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.arrow_downward, color: Colors.white),
-                    onPressed: widget.controller.findNext,
-                  ),
-                  IconButton(
-                    icon: Icon(
-                      Icons.text_format,
-                      color: _caseSensitive ? Colors.blue : Colors.white,
+            ),
+            const SizedBox(height: 8),
+            // 搜索控制按钮
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // 导航按钮
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_upward, color: Colors.white),
+                      onPressed: widget.searchController.findPrevious,
+                      tooltip: '上一个匹配',
                     ),
-                    onPressed: () {
-                      _updateCaseSensitive(!_caseSensitive);
-                    },
-                  ),
-                  IconButton(
-                    icon: Icon(
-                      Icons.text_fields,
-                      color: _wholeWord ? Colors.blue : Colors.white,
+                    IconButton(
+                      icon:
+                          const Icon(Icons.arrow_downward, color: Colors.white),
+                      onPressed: widget.searchController.findNext,
+                      tooltip: '下一个匹配',
                     ),
-                    onPressed: () {
-                      _updateWholeWord(!_wholeWord);
-                    },
-                  ),
-                  IconButton(
-                    icon: Icon(
-                      Icons.code,
-                      color: _regex ? Colors.blue : Colors.white,
+                  ],
+                ),
+                // 搜索选项按钮
+                Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        Icons.text_fields,
+                        color: _caseSensitive ? Colors.blue : Colors.grey,
+                      ),
+                      onPressed: () => _updateCaseSensitive(!_caseSensitive),
+                      tooltip: '区分大小写',
                     ),
-                    onPressed: () {
-                      _updateRegex(!_regex);
-                    },
-                  ),
-                ],
-              ),
-            ],
-          ),
+                    IconButton(
+                      icon: Icon(
+                        Icons.text_format,
+                        color: _wholeWord ? Colors.blue : Colors.grey,
+                      ),
+                      onPressed: () => _updateWholeWord(!_wholeWord),
+                      tooltip: '全词匹配',
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        Icons.code,
+                        color: _regex ? Colors.blue : Colors.grey,
+                      ),
+                      onPressed: () => _updateRegex(!_regex),
+                      tooltip: '正则表达式',
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
   }
 }
-
-/// 搜索框包装器，用于在终端视图中显示搜索框
-class TerminalSearchBox extends StatelessWidget {
-  final Terminal terminal;
-  final TerminalSearchDelegate searchDelegate;
-  final void Function(String text, CellAnchor? start, CellAnchor? end) onSearch;
-  final VoidCallback onClose;
-  final void Function(int line) onScrollToLine;
-
-  const TerminalSearchBox({
-    super.key,
-    required this.terminal,
-    required this.searchDelegate,
-    required this.onSearch,
-    required this.onClose,
-    required this.onScrollToLine,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final controller = TerminalSearchController(
-      terminal: terminal,
-      onSearch: onSearch,
-      onClose: onClose,
-      onScrollToLine: onScrollToLine,
-    );
-
-    return searchDelegate.build(context, controller);
-  }
-} 

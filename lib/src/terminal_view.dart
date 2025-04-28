@@ -50,6 +50,7 @@ class TerminalView extends StatefulWidget {
     this.readOnly = false,
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
+    this.getCustomSearchDelegate,
   });
 
   /// The underlying terminal that this widget renders.
@@ -95,6 +96,8 @@ class TerminalView extends StatefulWidget {
 
   /// Function called when the user stops holding down a secondary button.
   final void Function(TapUpDetails, CellOffset)? onSecondaryTapUp;
+
+  final Widget Function(TerminalSearchController)? getCustomSearchDelegate;
 
   /// The mouse cursor for mouse pointers that are hovering over the terminal.
   /// [SystemMouseCursors.text] by default.
@@ -158,17 +161,28 @@ class TerminalViewState extends State<TerminalView> {
 
   final _viewportKey = GlobalKey();
 
+  final _searchBoxKey = GlobalKey();
+
   String? _composingText;
 
   late TerminalController _controller;
 
   late ScrollController _scrollController;
 
+  late TerminalSearchController _searchController;
+
   bool _showSearchBox = false;
 
-  RenderTerminal get renderTerminal => _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
+  Offset _searchBoxPosition = const Offset(0, 0);
 
-  TerminalSearchBox? _searchBox;
+  bool _isDragging = false;
+
+  Offset _dragStartPosition = Offset.zero;
+
+  RenderTerminal get renderTerminal =>
+      _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
+
+  late Widget _searchBox;
 
   @override
   void initState() {
@@ -184,18 +198,20 @@ class TerminalViewState extends State<TerminalView> {
   }
 
   void _initSearchBox() {
-    _searchBox = TerminalSearchBox(
+    _searchController = TerminalSearchController(
       terminal: widget.terminal,
-      searchDelegate: DefaultTerminalSearchBox(controller: TerminalSearchController(
-        terminal: widget.terminal,
-        onSearch: _handleSearch,
-        onClose: _closeSearch,
-        onScrollToLine: _scrollToLine,
-      )),
-      onSearch: _handleSearch,
-      onClose: _closeSearch,
-      onScrollToLine: _scrollToLine,
+      controller: _controller,
+      scrollToLine: _scrollToLine,
+      setShowSearch: (show) => setState(() => _showSearchBox = show),
     );
+
+    if (widget.getCustomSearchDelegate != null) {
+      _searchBox = widget.getCustomSearchDelegate!(_searchController);
+    } else {
+      _searchBox = DefaultTerminalSearchBox(
+        searchController: _searchController,
+      );
+    }
   }
 
   @override
@@ -287,7 +303,8 @@ class TerminalViewState extends State<TerminalView> {
         onAction: (action) {
           _scrollToBottom();
           // Android sends TextInputAction.newline when the user presses the virtual keyboard's enter key.
-          if (action == TextInputAction.done || action == TextInputAction.newline) {
+          if (action == TextInputAction.done ||
+              action == TextInputAction.newline) {
             widget.terminal.keyInput(TerminalKey.enter);
           }
         },
@@ -323,8 +340,10 @@ class TerminalViewState extends State<TerminalView> {
       terminalController: _controller,
       onTapUp: _onTapUp,
       onTapDown: _onTapDown,
-      onSecondaryTapDown: widget.onSecondaryTapDown != null ? _onSecondaryTapDown : null,
-      onSecondaryTapUp: widget.onSecondaryTapUp != null ? _onSecondaryTapUp : null,
+      onSecondaryTapDown:
+          widget.onSecondaryTapDown != null ? _onSecondaryTapDown : null,
+      onSecondaryTapUp:
+          widget.onSecondaryTapUp != null ? _onSecondaryTapUp : null,
       readOnly: widget.readOnly,
       child: child,
     );
@@ -341,7 +360,17 @@ class TerminalViewState extends State<TerminalView> {
         children: [
           child,
           if (_showSearchBox)
-            _searchBox!,
+            Positioned(
+              left: _searchBoxPosition.dx,
+              top: _searchBoxPosition.dy,
+              child: GestureDetector(
+                key: _searchBoxKey,
+                onPanStart: _onSearchBoxPanStart,
+                onPanUpdate: _onSearchBoxPanUpdate,
+                onPanEnd: _onSearchBoxPanEnd,
+                child: _searchBox,
+              ),
+            ),
         ],
       ),
     );
@@ -362,7 +391,8 @@ class TerminalViewState extends State<TerminalView> {
   }
 
   Rect get globalCursorRect {
-    return renderTerminal.localToGlobal(renderTerminal.cursorOffset) & renderTerminal.cellSize;
+    return renderTerminal.localToGlobal(renderTerminal.cursorOffset) &
+        renderTerminal.cellSize;
   }
 
   void _onTapUp(TapUpDetails details) {
@@ -502,10 +532,53 @@ class TerminalViewState extends State<TerminalView> {
   }
 
   void _scrollToLine(int line) {
-    final renderTerminal = _viewportKey.currentContext?.findRenderObject() as RenderTerminal?;
+    print('scroll to line: $line');
+    final renderTerminal =
+        _viewportKey.currentContext?.findRenderObject() as RenderTerminal?;
     if (renderTerminal != null) {
       renderTerminal.scrollToLine(line);
     }
+  }
+
+  void _onSearchBoxPanStart(DragStartDetails details) {
+    _isDragging = true;
+    _dragStartPosition = details.globalPosition;
+  }
+
+  void _onSearchBoxPanUpdate(DragUpdateDetails details) {
+    if (_isDragging) {
+      setState(() {
+        _searchBoxPosition += details.delta;
+        
+        // 获取父容器大小
+        final renderBox = _searchBoxKey.currentContext?.findRenderObject() as RenderBox?;
+        if (renderBox != null) {
+          final parent = renderBox.parent as RenderBox?;
+          if (parent != null) {
+            final parentSize = parent.size;
+            final searchBoxSize = renderBox.size;
+            
+            // 限制水平范围
+            if (_searchBoxPosition.dx < 0) {
+              _searchBoxPosition = Offset(0, _searchBoxPosition.dy);
+            } else if (_searchBoxPosition.dx + searchBoxSize.width > parentSize.width) {
+              _searchBoxPosition = Offset(parentSize.width - searchBoxSize.width, _searchBoxPosition.dy);
+            }
+            
+            // 限制垂直范围
+            if (_searchBoxPosition.dy < 0) {
+              _searchBoxPosition = Offset(_searchBoxPosition.dx, 0);
+            } else if (_searchBoxPosition.dy + searchBoxSize.height > parentSize.height) {
+              _searchBoxPosition = Offset(_searchBoxPosition.dx, parentSize.height - searchBoxSize.height);
+            }
+          }
+        }
+      });
+    }
+  }
+
+  void _onSearchBoxPanEnd(DragEndDetails details) {
+    _isDragging = false;
   }
 }
 

@@ -35,6 +35,15 @@ class TerminalController with ChangeNotifier {
   List<TerminalHighlight> get highlights => _highlights;
   final _highlights = <TerminalHighlight>[];
 
+  bool _showSearchBox = false;
+
+  bool get showSearchBox => _showSearchBox;
+
+  void setShowSearchBox(bool show) {
+    _showSearchBox = show;
+    notifyListeners();
+  }
+
   BufferRange? get selection {
     final base = _selectionBase;
     final extent = _selectionExtent;

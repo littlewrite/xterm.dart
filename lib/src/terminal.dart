@@ -21,6 +21,7 @@ import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 import 'package:xterm/src/utils/debugger.dart';
+import 'package:xterm/src/ui/search_box.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
 /// translates escape sequences from the application into updates to the
@@ -1034,11 +1035,22 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     _running = false;
   }
 
+  /// 搜索框显示回调
+  void Function()? onSearch;
+
+  /// 搜索框隐藏回调
+  void Function()? onHideSearch;
+
+  /// 自定义搜索组件
+  TerminalSearchDelegate? customSearchDelegate;
+
   /// 触发搜索框显示
   void showSearch() {
     onSearch?.call();
   }
 
-  /// 搜索框显示回调
-  void Function()? onSearch;
+  /// 触发搜索框隐藏
+  void hideSearch() {
+    onHideSearch?.call();
+  }
 }
