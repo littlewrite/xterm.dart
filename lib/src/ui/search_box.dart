@@ -168,7 +168,6 @@ class TerminalSearchController extends ChangeNotifier {
 
   // 检索文字
   void _handleSearch(String text) {
-    print(' search ctrl  _handleSearch: $text');
     if (text.isEmpty) {
       controller.clearSelection();
       _matches.clear();
@@ -350,7 +349,6 @@ class TerminalSearchController extends ChangeNotifier {
     // 过滤重复的匹配
     _matches = _filterDuplicateMatches(_matches);
 
-    print(' search ctrl  _handleSearch: ${_matches.length}');
     if (_matches.isNotEmpty) {
       _currentMatchIndex = 0;
       _selectCurrentMatch();
@@ -517,7 +515,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
         ),
         boxShadow: [
           BoxShadow(
-            color: theme.black.withOpacity(0.3),
+            color: theme.foreground.withOpacity(0.2),
             blurRadius: 8,
             offset: const Offset(0, 4),
           ),
@@ -540,9 +538,9 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
               ),
               child: Row(
                 children: [
-                  const Padding(
+                  Padding(
                     padding: EdgeInsets.symmetric(horizontal: 8),
-                    child: Icon(Icons.search, color: Colors.grey, size: 20),
+                    child: Icon(Icons.search, color: theme.white, size: 20),
                   ),
                   Expanded(
                     child: TextField(
@@ -561,7 +559,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close, color: Colors.grey, size: 20),
+                    icon: Icon(Icons.close, color: theme.white, size: 20),
                     onPressed: () {
                       widget.searchController.setSearchText(''); // 关闭时情况检索内容
                       widget.searchController.close();
@@ -579,13 +577,14 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                 Row(
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.arrow_upward, color: Colors.white),
+                      icon: Icon(Icons.arrow_upward, color: theme.white),
+                      hoverColor: theme.brightBlack,
                       onPressed: widget.searchController.findPrevious,
                       tooltip: '上一个匹配',
                     ),
                     IconButton(
-                      icon:
-                          const Icon(Icons.arrow_downward, color: Colors.white),
+                      icon: Icon(Icons.arrow_downward, color: theme.white),
+                      hoverColor: theme.brightBlack,
                       onPressed: widget.searchController.findNext,
                       tooltip: '下一个匹配',
                     ),
@@ -597,7 +596,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                     IconButton(
                       icon: Icon(
                         Icons.text_fields,
-                        color: _caseSensitive ? theme.blue : theme.brightBlack,
+                        color: _caseSensitive ? theme.brightCyan : theme.brightBlack,
                       ),
                       onPressed: () => _updateCaseSensitive(!_caseSensitive),
                       tooltip: '区分大小写',
@@ -605,7 +604,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                     IconButton(
                       icon: Icon(
                         Icons.text_format,
-                        color: _wholeWord ? theme.blue : theme.brightBlack,
+                        color: _wholeWord ? theme.brightCyan : theme.brightBlack,
                       ),
                       onPressed: () => _updateWholeWord(!_wholeWord),
                       tooltip: '全词匹配',
@@ -613,7 +612,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                     IconButton(
                       icon: Icon(
                         Icons.code,
-                        color: _regex ? theme.blue : theme.brightBlack,
+                        color: _regex ? theme.brightCyan : theme.brightBlack,
                       ),
                       onPressed: () => _updateRegex(!_regex),
                       tooltip: '正则表达式',

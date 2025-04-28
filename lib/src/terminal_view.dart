@@ -511,26 +511,6 @@ class TerminalViewState extends State<TerminalView> {
     });
   }
 
-  void _hideSearch() {
-    setState(() {
-      _showSearchBox = false;
-    });
-  }
-
-  void _handleSearch(String text, CellAnchor? start, CellAnchor? end) {
-    if (start != null && end != null) {
-      _controller.setSelection(start, end);
-    } else {
-      _controller.clearSelection();
-    }
-  }
-
-  void _closeSearch() {
-    setState(() {
-      _showSearchBox = false;
-    });
-  }
-
   void _scrollToLine(int line) {
     print('scroll to line: $line');
     final renderTerminal =
