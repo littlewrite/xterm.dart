@@ -6,6 +6,7 @@ import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/themes.dart';
+import 'package:xterm/src/ui/terminal_theme.dart'; // 导入 TerminalTheme
 
 class MatchInfo {
   final int x;
@@ -409,6 +410,7 @@ class DefaultTerminalSearchBox extends StatefulWidget
   final bool isVisible;
   final VoidCallback? onHide;
   final VoidCallback? onClose;
+  final TerminalTheme theme; // 添加主题参数
 
   const DefaultTerminalSearchBox({
     super.key,
@@ -416,6 +418,7 @@ class DefaultTerminalSearchBox extends StatefulWidget
     this.isVisible = true,
     this.onHide,
     this.onClose,
+    this.theme = TerminalThemes.defaultTheme, // 初始化时需要传入主题
   }) : _searchController = searchController;
 
   @override
@@ -501,7 +504,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
       return const SizedBox.shrink();
     }
 
-    final theme = TerminalThemes.defaultTheme;
+    final theme = widget.theme; // 使用传入的主题
 
     return Container(
       width: 300,

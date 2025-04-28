@@ -209,6 +209,7 @@ class TerminalViewState extends State<TerminalView> {
       _searchBox = widget.getCustomSearchDelegate!(_searchController);
     } else {
       _searchBox = DefaultTerminalSearchBox(
+        theme: widget.theme,
         searchController: _searchController,
       );
     }
