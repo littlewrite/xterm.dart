@@ -361,7 +361,7 @@ class TerminalViewState extends State<TerminalView> {
           child,
           if (_showSearchBox)
             Positioned(
-              left: _searchBoxPosition.dx,
+              right: _searchBoxPosition.dx,
               top: _searchBoxPosition.dy,
               child: GestureDetector(
                 key: _searchBoxKey,
@@ -547,8 +547,8 @@ class TerminalViewState extends State<TerminalView> {
   void _onSearchBoxPanUpdate(DragUpdateDetails details) {
     if (_isDragging) {
       setState(() {
-        _searchBoxPosition += details.delta;
-        
+        _searchBoxPosition = Offset(_searchBoxPosition.dx - details.delta.dx, _searchBoxPosition.dy + details.delta.dy);
+
         // 获取父容器大小
         final renderBox = _searchBoxKey.currentContext?.findRenderObject() as RenderBox?;
         if (renderBox != null) {
@@ -556,14 +556,14 @@ class TerminalViewState extends State<TerminalView> {
           if (parent != null) {
             final parentSize = parent.size;
             final searchBoxSize = renderBox.size;
-            
+
             // 限制水平范围
             if (_searchBoxPosition.dx < 0) {
               _searchBoxPosition = Offset(0, _searchBoxPosition.dy);
             } else if (_searchBoxPosition.dx + searchBoxSize.width > parentSize.width) {
               _searchBoxPosition = Offset(parentSize.width - searchBoxSize.width, _searchBoxPosition.dy);
             }
-            
+
             // 限制垂直范围
             if (_searchBoxPosition.dy < 0) {
               _searchBoxPosition = Offset(_searchBoxPosition.dx, 0);

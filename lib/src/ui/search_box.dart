@@ -5,6 +5,7 @@ import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/controller.dart';
+import 'package:xterm/src/ui/themes.dart';
 
 class MatchInfo {
   final int x;
@@ -500,18 +501,20 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
       return const SizedBox.shrink();
     }
 
+    final theme = TerminalThemes.defaultTheme;
+
     return Container(
       width: 300,
       decoration: BoxDecoration(
-        color: Colors.grey[900],
+        color: theme.background,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: Colors.grey[800]!,
+          color: theme.brightBlack,
           width: 1,
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.3),
+            color: theme.black.withOpacity(0.3),
             blurRadius: 8,
             offset: const Offset(0, 4),
           ),
@@ -525,10 +528,10 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
             // 搜索输入框
             Container(
               decoration: BoxDecoration(
-                color: Colors.grey[800],
+                color: theme.brightBlack,
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(
-                  color: Colors.grey[700]!,
+                  color: theme.brightBlack,
                   width: 1,
                 ),
               ),
@@ -541,15 +544,15 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                   Expanded(
                     child: TextField(
                       controller: _controller,
-                      style: const TextStyle(color: Colors.white),
+                      style: TextStyle(color: theme.foreground),
                       decoration: InputDecoration(
                         hintText: '默认搜索...',
-                        hintStyle: const TextStyle(color: Colors.grey),
+                        hintStyle: TextStyle(color: theme.brightBlack),
                         border: InputBorder.none,
                         suffixText: widget.searchController.matchCount > 0
                             ? '${widget.searchController.currentIdx + 1}/${widget.searchController.matchCount}'
                             : '',
-                        suffixStyle: const TextStyle(color: Colors.grey),
+                        suffixStyle: TextStyle(color: theme.brightBlack),
                       ),
                       onChanged: widget.searchController.setSearchText,
                     ),
@@ -591,7 +594,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                     IconButton(
                       icon: Icon(
                         Icons.text_fields,
-                        color: _caseSensitive ? Colors.blue : Colors.grey,
+                        color: _caseSensitive ? theme.blue : theme.brightBlack,
                       ),
                       onPressed: () => _updateCaseSensitive(!_caseSensitive),
                       tooltip: '区分大小写',
@@ -599,7 +602,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                     IconButton(
                       icon: Icon(
                         Icons.text_format,
-                        color: _wholeWord ? Colors.blue : Colors.grey,
+                        color: _wholeWord ? theme.blue : theme.brightBlack,
                       ),
                       onPressed: () => _updateWholeWord(!_wholeWord),
                       tooltip: '全词匹配',
@@ -607,7 +610,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                     IconButton(
                       icon: Icon(
                         Icons.code,
-                        color: _regex ? Colors.blue : Colors.grey,
+                        color: _regex ? theme.blue : theme.brightBlack,
                       ),
                       onPressed: () => _updateRegex(!_regex),
                       tooltip: '正则表达式',
