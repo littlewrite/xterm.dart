@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:xterm/src/utils/debugger.dart';
+
 import 'package:zmodem/zmodem.dart';
 
 export 'package:zmodem/zmodem.dart' show ZModemFileInfo;

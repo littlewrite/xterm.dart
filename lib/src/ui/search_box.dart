@@ -507,7 +507,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
     return Container(
       width: 300,
       decoration: BoxDecoration(
-        color: theme.background,
+        color: theme.background.withOpacity(0.4),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: theme.brightBlack,
@@ -515,7 +515,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
         ),
         boxShadow: [
           BoxShadow(
-            color: theme.foreground.withOpacity(0.2),
+            color: theme.foreground.withOpacity(0.6),
             blurRadius: 8,
             offset: const Offset(0, 4),
           ),
@@ -548,12 +548,12 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                       style: TextStyle(color: theme.foreground),
                       decoration: InputDecoration(
                         hintText: '默认搜索...',
-                        hintStyle: TextStyle(color: theme.brightBlack),
+                        hintStyle: TextStyle(color: theme.foreground),
                         border: InputBorder.none,
                         suffixText: widget.searchController.matchCount > 0
                             ? '${widget.searchController.currentIdx + 1}/${widget.searchController.matchCount}'
                             : '',
-                        suffixStyle: TextStyle(color: theme.brightBlack),
+                        suffixStyle: TextStyle(color: theme.foreground),
                       ),
                       onChanged: widget.searchController.setSearchText,
                     ),
@@ -577,14 +577,14 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                 Row(
                   children: [
                     IconButton(
-                      icon: Icon(Icons.arrow_upward, color: theme.white),
-                      hoverColor: theme.brightBlack,
+                      icon: Icon(Icons.arrow_upward, color: theme.foreground),
+                      hoverColor: theme.brightBlack.withOpacity(0.6),
                       onPressed: widget.searchController.findPrevious,
                       tooltip: '上一个匹配',
                     ),
                     IconButton(
-                      icon: Icon(Icons.arrow_downward, color: theme.white),
-                      hoverColor: theme.brightBlack,
+                      icon: Icon(Icons.arrow_downward, color: theme.foreground),
+                      hoverColor: theme.brightBlack.withOpacity(0.6),
                       onPressed: widget.searchController.findNext,
                       tooltip: '下一个匹配',
                     ),
