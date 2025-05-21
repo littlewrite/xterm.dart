@@ -135,6 +135,18 @@ class Buffer {
     return lines[absoluteCursorY];
   }
 
+  /// Get the lines around the current line.
+  List<BufferLine> currentAroundLines(int count) {
+    final List<BufferLine> result = [];
+    for (var i = absoluteCursorY - count; i <= absoluteCursorY + count; i++) {
+      if (i < 0 || i >= lines.length) {
+        continue;
+      }
+      result.add(lines[i]);
+    }
+    return result;
+  }
+
   void backspace() {
     if (_cursorX == 0 && currentLine.isWrapped) {
       currentLine.isWrapped = false;

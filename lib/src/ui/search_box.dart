@@ -507,7 +507,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
     return Container(
       width: 300,
       decoration: BoxDecoration(
-        color: theme.background.withOpacity(0.4),
+        color: theme.background.withOpacity(0.8),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: theme.brightBlack,
@@ -515,7 +515,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
         ),
         boxShadow: [
           BoxShadow(
-            color: theme.foreground.withOpacity(0.6),
+            color: theme.foreground.withOpacity(0.8),
             blurRadius: 8,
             offset: const Offset(0, 4),
           ),
@@ -547,7 +547,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                       controller: _controller,
                       style: TextStyle(color: theme.foreground),
                       decoration: InputDecoration(
-                        hintText: '默认搜索...',
+                        hintText: '搜索...',
                         hintStyle: TextStyle(color: theme.foreground),
                         border: InputBorder.none,
                         suffixText: widget.searchController.matchCount > 0
