@@ -1,5 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_pty/flutter_pty.dart';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:example/src/virtual_keyboard.dart';
@@ -7,10 +11,10 @@ import 'package:flutter/cupertino.dart';
 import 'package:xterm/utils.dart';
 import 'package:xterm/xterm.dart';
 
-const host = '104.168.87.126';
+const host = '127.0.0.1';
 const port = 22;
 const username = 'root';
-const password = 'a0A0eaW768yjK8yGJV';
+const password = 'root';
 
 void main() {
   runApp(MyApp());
@@ -48,10 +52,13 @@ class _MyHomePageState extends State<MyHomePage> {
 
   var title = host;
 
+  late final Pty pty;
+
   @override
   void initState() {
     super.initState();
-    initTerminal();
+    // initTerminal();
+    _startPty();
   }
 
   /// Write data to both the main terminal and the debugger
@@ -67,6 +74,9 @@ class _MyHomePageState extends State<MyHomePage> {
       await SSHSocket.connect(host, port),
       username: username,
       onPasswordRequest: () => password,
+      printTrace: (String? string) {
+        print('ssh trace: $string');
+      },
     );
 
     write('Connected\r\n');
@@ -95,6 +105,34 @@ class _MyHomePageState extends State<MyHomePage> {
 
     session.stdout.cast<List<int>>().transform(Utf8Decoder()).listen(write);
     session.stderr.cast<List<int>>().transform(Utf8Decoder()).listen(write);
+  }
+
+  void ptyWrite(String data) {
+    terminal.write(data);
+    debugger.write(data);
+  }
+
+  void _startPty() {
+    pty = Pty.start(
+      shell,
+      columns: terminal.viewWidth,
+      rows: terminal.viewHeight,
+    );
+
+    pty.output.cast<List<int>>().transform(Utf8Decoder()).listen(ptyWrite);
+
+    pty.exitCode.then((code) {
+      terminal.write('the process exited with exit code $code');
+    });
+
+    terminal.onOutput = (data) {
+      pty.write(const Utf8Encoder().convert(data));
+      debugger.write(data);
+    };
+
+    terminal.onResize = (w, h, pw, ph) {
+      pty.resize(h, w);
+    };
   }
 
   @override
@@ -141,5 +179,23 @@ class _MyHomePageState extends State<MyHomePage> {
         ],
       ),
     );
+  }
+}
+
+String get shell {
+  if (Platform.isMacOS || Platform.isLinux) {
+    return Platform.environment['SHELL'] ?? 'bash';
+  }
+
+  if (Platform.isWindows) {
+    return 'cmd.exe';
+  }
+
+  return 'sh';
+}
+
+extension on String {
+  String trimRightNewline() {
+    return endsWith('\n') ? substring(0, length - 1) : this;
   }
 }
