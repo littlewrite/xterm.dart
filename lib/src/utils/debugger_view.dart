@@ -23,11 +23,15 @@ class TerminalDebuggerView extends StatefulWidget {
 class _TerminalDebuggerViewState extends State<TerminalDebuggerView> {
   int? selectedCommand;
   late final FocusNode _focusNode;
+  late final ScrollController _internalScrollController;
+  int _lastCommandCount = 0;
 
   @override
   void initState() {
     widget.debugger.addListener(_onDebuggerChanged);
     _focusNode = FocusNode();
+    _internalScrollController = widget.scrollController ?? ScrollController();
+    _lastCommandCount = widget.debugger.commands.length;
     super.initState();
   }
 
@@ -44,11 +48,33 @@ class _TerminalDebuggerViewState extends State<TerminalDebuggerView> {
   void dispose() {
     widget.debugger.removeListener(_onDebuggerChanged);
     _focusNode.dispose();
+    // Only dispose the scroll controller if we created it internally
+    if (widget.scrollController == null) {
+      _internalScrollController.dispose();
+    }
     super.dispose();
   }
 
   void _onDebuggerChanged() {
+    final currentCommandCount = widget.debugger.commands.length;
+    
     setState(() {});
+    
+    // Auto-scroll to bottom when new commands are added
+    if (currentCommandCount > _lastCommandCount) {
+      _lastCommandCount = currentCommandCount;
+      
+      // Use WidgetsBinding to ensure the ListView has been rebuilt before scrolling
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_internalScrollController.hasClients) {
+          _internalScrollController.animateTo(
+            _internalScrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
   }
 
   void _handleKeyEvent(KeyEvent event) {
@@ -94,7 +120,7 @@ class _TerminalDebuggerViewState extends State<TerminalDebuggerView> {
       },
       child: ListView.builder(
         itemExtent: 20,
-        controller: widget.scrollController,
+        controller: _internalScrollController,
         itemCount: commands.length,
         itemBuilder: (context, index) {
           final command = commands[index];
