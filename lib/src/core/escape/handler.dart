@@ -87,6 +87,8 @@ abstract class EscapeHandler {
 
   void eraseLine();
 
+  void endLine();
+
   void insertLines(int amount);
 
   void deleteLines(int amount);

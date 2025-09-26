@@ -111,11 +111,11 @@ class Buffer {
 
     final cellWidth = unicodeV11.wcwidth(codePoint);
     if (_cursorX >= terminal.viewWidth) {
-      index();
-      setCursorX(0);
       if (terminal.autoWrapMode) {
         currentLine.isWrapped = true;
       }
+      index();
+      setCursorX(0);
     }
 
     final line = currentLine;
@@ -209,6 +209,13 @@ class Buffer {
   void eraseLine() {
     currentLine.isWrapped = false;
     currentLine.eraseRange(0, viewWidth, terminal.cursor);
+  }
+
+  // This line of text ends, line break.
+  void endLine() {
+    currentLine.isWrapped = false;
+    index();
+    setCursorX(0);
   }
 
   /// Erases [count] cells starting at the cursor position.

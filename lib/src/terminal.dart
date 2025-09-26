@@ -721,6 +721,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   @override
+  void endLine() {
+    _buffer.endLine();
+  }
+
+  @override
   void insertLines(int amount) {
     _buffer.insertLines(amount);
   }

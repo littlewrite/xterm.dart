@@ -296,6 +296,11 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void endLine() {
+    onCommand('endLine');
+  }
+
+  @override
   void insertLines(int amount) {
     onCommand('insertLines($amount)');
   }

@@ -15,7 +15,7 @@ class ByteConsumer {
   void add(String data) {
     if (data.isEmpty) return;
     final runes = data.runes.toList(growable: false);
-    print(" get runes ${formatIntList(runes)}");
+    print("term:【${formatIntList(runes)}】");
     // for (var i = 0; i < _queue.length; i++) {
     //   print("_queue get runes [[${formatIntList(_queue.elementAt(i))}]]");
     // }

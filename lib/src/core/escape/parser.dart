@@ -85,7 +85,7 @@ class EscapeParser {
     0x07: handler.bell,
     0x08: handler.backspaceReturn,
     0x09: handler.tab,
-    0x0a: handler.lineFeed,
+    0x0a: handler.endLine,
     0x0b: handler.lineFeed,
     0x0c: handler.lineFeed,
     0x0d: handler.carriageReturn,
