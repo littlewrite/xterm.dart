@@ -337,6 +337,8 @@ class BufferLine with IndexedItem {
       final width = getWidth(i);
       if (codePoint != 0 && i + width <= to) {
         builder.writeCharCode(codePoint);
+      } else if (codePoint == 0) { // TODO: handle wide characters
+        builder.writeCharCode(32); // write space
       }
     }
 
