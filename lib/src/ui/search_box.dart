@@ -546,6 +546,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                   ),
                   Expanded(
                     child: TextField(
+                      autofocus: true,
                       controller: _controller,
                       style: TextStyle(color: theme.foreground),
                       decoration: InputDecoration(
