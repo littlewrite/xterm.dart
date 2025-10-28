@@ -1040,15 +1040,24 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     _running = false;
   }
 
-  /// 搜索框显示回调
+  /// search widget show callback
   void Function()? onSearch;
 
-  /// 自定义搜索组件
+  /// search widget close callback
+  void Function()? onCloseSearch;
+
+  /// custom search widget
   TerminalSearchDelegate? customSearchDelegate;
 
-  /// 触发搜索框显示
+  /// trigger search widget show
   @override
   void showSearch() {
     onSearch?.call();
+  }
+
+  /// trigger search widget close
+  @override
+  void closeSearch() {
+    onCloseSearch?.call();
   }
 }

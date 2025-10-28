@@ -195,6 +195,7 @@ class TerminalViewState extends State<TerminalView> {
     super.initState();
     _initSearchBox();
     widget.terminal.onSearch = _showSearch;
+    widget.terminal.onCloseSearch = _closeSearch;
   }
 
   void _initSearchBox() {
@@ -508,6 +509,12 @@ class TerminalViewState extends State<TerminalView> {
   void _showSearch() {
     setState(() {
       _showSearchBox = true;
+    });
+  }
+
+  void _closeSearch() {
+    setState(() {
+      _showSearchBox = false;
     });
   }
 

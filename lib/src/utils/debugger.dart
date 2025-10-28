@@ -604,6 +604,16 @@ class _TerminalDebuggerHandler implements EscapeHandler {
     // You can add your logic here
     print('Typing command set: $command');
   }
+
+  @override
+  void showSearch() {
+    onCommand('showSearch');
+  }
+
+  @override
+  void closeSearch() {
+    onCommand('closeSearch');
+  }
 }
 
 bool _isAscii(String char) {

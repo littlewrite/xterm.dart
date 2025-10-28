@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/terminal.dart';
@@ -26,25 +27,25 @@ class MatchInfo {
   });
 }
 
-/// 搜索框的抽象接口
+/// search widget abstract interface
 abstract class TerminalSearchDelegate {
-  /// 搜索框的构建方法
+  /// build search widget
   Widget build(BuildContext context, TerminalSearchController controller);
 
-  /// 搜索框是否可见
+  /// search widget is visible
   bool get isVisible;
 
-  /// 显示搜索框
+  /// show search widget
   void show();
 
-  /// 隐藏搜索框
+  /// hide search widget
   void hide();
 
-  /// 获取搜索控制器
+  /// get search controller
   TerminalSearchController get searchController;
 }
 
-/// 搜索控制器，提供搜索相关的功能
+/// search controller, provide search related functions
 class TerminalSearchController extends ChangeNotifier {
   final Terminal terminal;
   final TerminalController controller;
@@ -65,56 +66,56 @@ class TerminalSearchController extends ChangeNotifier {
     required this.setShowSearch,
   });
 
-  /// 获取当前搜索文本
+  /// get current search text
   String get searchText => _lastSearchText;
 
-  /// 是否区分大小写
+  /// whether区分大小写
   bool get caseSensitive => _caseSensitive;
 
-  /// 是否全词匹配
+  /// whether whole word match
   bool get wholeWord => _wholeWord;
 
-  /// 是否使用正则表达式
+  /// whether use regex
   bool get regex => _regex;
 
-  /// 当前匹配索引
+  /// current match index
   int get currentMatchIndex => _currentMatchIndex;
 
-  /// 匹配总数
+  /// match count
   int get matchCount => _matches.length;
 
-  /// 当前匹配索引
+  /// current match index
   int get currentIdx => _currentMatchIndex % _matches.length;
 
-  /// 设置搜索文本
+  /// set search text
   void setSearchText(String text) {
     _lastSearchText = text;
     _handleSearch(text);
     notifyListeners();
   }
 
-  /// 设置是否区分大小写
+  /// set whether case sensitive
   void setCaseSensitive(bool value) {
     _caseSensitive = value;
     _handleSearch(_lastSearchText);
     notifyListeners();
   }
 
-  /// 设置是否全词匹配
+  /// set whether whole word match
   void setWholeWord(bool value) {
     _wholeWord = value;
     _handleSearch(_lastSearchText);
     notifyListeners();
   }
 
-  /// 设置是否使用正则表达式
+  /// set whether use regex
   void setRegex(bool value) {
     _regex = value;
     _handleSearch(_lastSearchText);
     notifyListeners();
   }
 
-  /// 查找下一个匹配
+  /// find next match
   void findNext() {
     if (_matches.isEmpty) return;
     _currentMatchIndex = (_currentMatchIndex + 1) % _matches.length;
@@ -122,7 +123,7 @@ class TerminalSearchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 查找上一个匹配
+  /// find previous match
   void findPrevious() {
     if (_matches.isEmpty) return;
     _currentMatchIndex =
@@ -131,6 +132,7 @@ class TerminalSearchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// close search widget
   void close() {
     setShowSearch(false);
     controller.clearSelection();
@@ -166,7 +168,7 @@ class TerminalSearchController extends ChangeNotifier {
     }
   }
 
-  // 检索文字
+  /// search text
   void _handleSearch(String text) {
     if (text.isEmpty) {
       controller.clearSelection();
@@ -180,14 +182,14 @@ class TerminalSearchController extends ChangeNotifier {
     _matches.clear();
     _currentMatchIndex = -1;
 
-    // 获取终端宽度
+    // get terminal width
     final terminalWidth = buffer.viewWidth;
 
-    // 用于记录已经处理过的匹配位置，避免重复
+    // used to record processed matches, avoid duplicate
     final Set<String> processedMatches = {};
 
     if (_regex) {
-      // 正则表达式搜索
+      // regex search
       String pattern = text;
 
       if (_wholeWord) {
@@ -197,7 +199,7 @@ class TerminalSearchController extends ChangeNotifier {
       try {
         final regex = RegExp(pattern, caseSensitive: _caseSensitive);
 
-        // 处理自动换行的情况
+        // handle wrapped line
         String currentLine = '';
         int startY = 0;
         int startX = 0;

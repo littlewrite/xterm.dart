@@ -216,4 +216,8 @@ abstract class EscapeHandler {
   void unknownOSC(String code, List<String> args);
 
   void setTypingCommand(String command);
+
+  void showSearch();
+
+  void closeSearch();
 }
