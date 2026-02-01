@@ -298,9 +298,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// Selects characters in the terminal that starts from [from] to [to]. At
   /// least one cell is selected even if [from] and [to] are same.
   void selectCharacters(Offset from, [Offset? to]) {
-    // 转换起始位置为缓冲区锚点
-    var fromPosition = getCellOffset(from);
-    print('selectCharacters: $from, $to');
+    // 在任意滚动之前先计算 buffer 坐标，避免滚动后同一 viewport 坐标对应不同行
+    final fromPosition = getCellOffset(from);
 
     if (to == null) {
       // 单字符选择
@@ -313,6 +312,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       return;
     }
 
+    var toPosition = getCellOffset(to);
+
     // 获取视口和单元格尺寸
     final viewportHeight = _viewportHeight;
     final cellHeight = _painter.cellSize.height;
@@ -322,48 +323,29 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final visibleTop = currentScroll;
     final visibleBottom = currentScroll + viewportHeight;
 
-    // 获取当前指针位置
-    var toPosition = getCellOffset(to);
     final selectionY = toPosition.y * cellHeight;
 
-    // 计算滚动需求
-    double scrollDelta = 0.0;
-    bool needsScroll = false;
-
-    // 检查是否需要滚动
+    // 检查是否需要滚动（仅改变视口，不改变用于选择的坐标）
     if (selectionY < visibleTop) {
-      // 向上滚动，显示目标行上方一行
       final newScroll = selectionY - cellHeight;
-      scrollDelta = (newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) * _scrollSpeed;
-      needsScroll = true;
+      _offset.jumpTo((newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) * _scrollSpeed + currentScroll);
     } else if (selectionY > visibleBottom - cellHeight) {
-      // 向下滚动，显示目标行下方一行
       final newScroll = selectionY - viewportHeight + cellHeight * 2;
-      scrollDelta = (newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) * _scrollSpeed;
-      needsScroll = true;
+      _offset.jumpTo((newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) * _scrollSpeed + currentScroll);
     }
 
-    // 如果需要滚动，更新滚动位置
-    if (needsScroll) {
-      // 使用平滑滚动
-      _offset.jumpTo(currentScroll + scrollDelta);
-      // 重新计算位置
-      fromPosition = getCellOffset(from);
-      toPosition = getCellOffset(to);
-    }
-
-    // 创建起始锚点
-    final fromCell = _terminal.buffer.lines[lastSelectY].createAnchor(lastSelectX);
-
-    // 扩展选择范围（如果需要）
+    // 扩展选择范围：同一行且 to 在 from 右侧时，包含 to 所在格
     if (toPosition.x >= fromPosition.x && toPosition.y == fromPosition.y) {
       toPosition = CellOffset(toPosition.x + 1, toPosition.y);
     }
 
-    // 设置选择
+    // 按 buffer 顺序设置 base/extent：base = 选择起点，extent = 选择终点（可上可下）
+    final begin = fromPosition.isBefore(toPosition) ? fromPosition : toPosition;
+    final end = fromPosition.isBefore(toPosition) ? toPosition : fromPosition;
+
     _controller.setSelection(
-      fromCell,
-      _terminal.buffer.createAnchorFromOffset(toPosition),
+      _terminal.buffer.createAnchorFromOffset(begin),
+      _terminal.buffer.createAnchorFromOffset(end),
     );
   }
 
