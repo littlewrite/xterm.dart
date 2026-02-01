@@ -38,8 +38,23 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
   @pragma('vm:prefer-inline')
   void _adoptChild(int index, T child) {
     final cyclicIndex = _getCyclicIndex(index);
-    _array[cyclicIndex]?._detach();
-    _array[cyclicIndex] = child.._attach(this, index);
+    final oldChild = _array[cyclicIndex];
+
+    // Only detach the old child if it's different from the new child
+    // and hasn't already been moved to another position (which happens
+    // during scroll operations where items are shifted in sequence).
+    if (oldChild != null && oldChild != child) {
+      if (oldChild.attached && oldChild.index == index) {
+        oldChild._detach();
+      }
+    }
+
+    _array[cyclicIndex] = child;
+
+    // Only attach if not already attached at the correct position.
+    if (!child.attached || child.index != index) {
+      child._attach(this, index);
+    }
   }
 
   /// Moves the element at [fromIndex] to [toIndex]. Both indexes should be

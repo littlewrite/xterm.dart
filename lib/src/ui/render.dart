@@ -264,7 +264,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   /// Selects entire words in the terminal that contains [from] and [to].
   void selectWord(Offset from, [Offset? to]) {
-    print('selectWord: $from, $to');
     final fromOffset = getCellOffset(from);
     final fromBoundary = _terminal.buffer.getWordBoundary(fromOffset);
     if (fromBoundary == null) return;
@@ -288,65 +287,101 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   void selectCharsetByCell(CellAnchor from, CellAnchor to) {
-    print('selectCharsetByCell: $from, $to');
     _controller.setSelection(from, to);
   }
 
-  int lastSelectX = 0;
-  int lastSelectY = 0;
+  /// Saved starting position for drag selection.
+  int _lastSelectX = 0;
+  int _lastSelectY = 0;
+  bool _lastSelectInAltBuffer = false;
 
   /// Selects characters in the terminal that starts from [from] to [to]. At
   /// least one cell is selected even if [from] and [to] are same.
   void selectCharacters(Offset from, [Offset? to]) {
-    // 在任意滚动之前先计算 buffer 坐标，避免滚动后同一 viewport 坐标对应不同行
-    final fromPosition = getCellOffset(from);
+    final isAltBuffer = _terminal.isUsingAltBuffer;
+    final lines = _terminal.buffer.lines;
 
     if (to == null) {
-      // 单字符选择
-      lastSelectX = fromPosition.x;
-      lastSelectY = fromPosition.y;
+      // Drag start: calculate and save the starting position.
+      final fromPosition = getCellOffset(from);
+      _lastSelectX = fromPosition.x;
+      _lastSelectY = fromPosition.y;
+      _lastSelectInAltBuffer = isAltBuffer;
+
+      if (fromPosition.y < 0 || fromPosition.y >= lines.length) return;
+      final line = lines[fromPosition.y];
+      if (!line.attached) return;
+
       _controller.setSelection(
-        _terminal.buffer.createAnchorFromOffset(fromPosition),
-        _terminal.buffer.createAnchorFromOffset(fromPosition),
+        line.createAnchor(fromPosition.x),
+        line.createAnchor(fromPosition.x),
       );
       return;
     }
 
-    var toPosition = getCellOffset(to);
-
-    // 获取视口和单元格尺寸
-    final viewportHeight = _viewportHeight;
-    final cellHeight = _painter.cellSize.height;
-    final currentScroll = _scrollOffset;
-
-    // 计算视口边界
-    final visibleTop = currentScroll;
-    final visibleBottom = currentScroll + viewportHeight;
-
-    final selectionY = toPosition.y * cellHeight;
-
-    // 检查是否需要滚动（仅改变视口，不改变用于选择的坐标）
-    if (selectionY < visibleTop) {
-      final newScroll = selectionY - cellHeight;
-      _offset.jumpTo((newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) * _scrollSpeed + currentScroll);
-    } else if (selectionY > visibleBottom - cellHeight) {
-      final newScroll = selectionY - viewportHeight + cellHeight * 2;
-      _offset.jumpTo((newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) * _scrollSpeed + currentScroll);
+    // Buffer switched during drag, clear selection.
+    if (_lastSelectInAltBuffer != isAltBuffer) {
+      _controller.clearSelection();
+      return;
     }
 
-    // 扩展选择范围：同一行且 to 在 from 右侧时，包含 to 所在格
-    if (toPosition.x >= fromPosition.x && toPosition.y == fromPosition.y) {
+    // Drag update: use saved starting position to avoid issues when
+    // scrollOffset changes during selection.
+    final fromPosition = CellOffset(_lastSelectX, _lastSelectY);
+    var toPosition = getCellOffset(to);
+
+    // Auto-scroll is disabled in alt buffer since apps like tmux/vim
+    // manage their own scrolling.
+    if (!isAltBuffer) {
+      _autoScrollIfNeeded(toPosition);
+    }
+
+    // Extend selection to include the end cell when on the same line.
+    if (toPosition.y == fromPosition.y && toPosition.x >= fromPosition.x) {
       toPosition = CellOffset(toPosition.x + 1, toPosition.y);
     }
 
-    // 按 buffer 顺序设置 base/extent：base = 选择起点，extent = 选择终点（可上可下）
+    // Normalize selection range.
     final begin = fromPosition.isBefore(toPosition) ? fromPosition : toPosition;
     final end = fromPosition.isBefore(toPosition) ? toPosition : fromPosition;
 
+    // Validate and create anchors.
+    if (begin.y < 0 || begin.y >= lines.length) return;
+    if (end.y < 0 || end.y >= lines.length) return;
+    final beginLine = lines[begin.y];
+    final endLine = lines[end.y];
+    if (!beginLine.attached || !endLine.attached) return;
+
     _controller.setSelection(
-      _terminal.buffer.createAnchorFromOffset(begin),
-      _terminal.buffer.createAnchorFromOffset(end),
+      beginLine.createAnchor(begin.x),
+      endLine.createAnchor(end.x),
     );
+  }
+
+  /// Auto-scrolls the viewport when selection reaches edges.
+  void _autoScrollIfNeeded(CellOffset toPosition) {
+    final viewportHeight = _viewportHeight;
+    final cellHeight = _painter.cellSize.height;
+    final currentScroll = _scrollOffset;
+    final visibleTop = currentScroll;
+    final visibleBottom = currentScroll + viewportHeight;
+    final selectionY = toPosition.y * cellHeight;
+
+    if (selectionY < visibleTop) {
+      final newScroll = selectionY - cellHeight;
+      _offset.jumpTo(
+        (newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) *
+                _scrollSpeed +
+            currentScroll,
+      );
+    } else if (selectionY > visibleBottom - cellHeight) {
+      final newScroll = selectionY - viewportHeight + cellHeight * 2;
+      _offset.jumpTo(
+        (newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) *
+                _scrollSpeed +
+            currentScroll,
+      );
+    }
   }
 
   /// Send a mouse event at [offset] with [button] being currently in [buttonState].
