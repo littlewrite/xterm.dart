@@ -478,8 +478,6 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _handleFocusChange() {
-    if (!_focusNode.hasFocus) {
-    }
     _updateCursorBlink(resetVisible: true);
   }
 
