@@ -1058,7 +1058,7 @@ class EscapeParser {
       return true;
     }
 
-    print("OSC: $_osc");
+    // print("OSC: $_osc"); // TODO
     // Common OSCs
     if (_osc.length >= 2) {
       final ps = _osc[0];
