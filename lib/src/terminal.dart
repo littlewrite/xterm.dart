@@ -1,6 +1,7 @@
-import 'dart:math' show max;
 import 'dart:async';
+import 'dart:math' show max;
 
+import 'package:flutter/scheduler.dart';
 import 'package:xterm/src/base/observable.dart';
 import 'package:xterm/src/core/buffer/buffer.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
@@ -20,7 +21,6 @@ import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
-import 'package:xterm/src/utils/debugger.dart';
 import 'package:xterm/src/ui/search_box.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
@@ -90,11 +90,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     this.reflowEnabled = true,
     this.wordSeparators,
     this.onTypingCommand,
-  }) {
-    _startTimer(); // 启动定时器
-  }
-
-  Timer? _timer; // 定时触发器
+  });
 
   late final _parser = EscapeParser(this);
 
@@ -158,17 +154,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   bool _bracketedPasteMode = false;
 
-  DateTime? _lastCursorChangeTime; // 上次光标变化时间
-
-  DateTime? _lastTypingtime; // 上次键盘事件时间
-
-  final int _typingDelay = 200; // 延迟时间，单位为毫秒
-
-  DateTime? _lastOutputTime; // 上次输出变化时间
-
-  DateTime? _lastGetOutputTime; // 上次获取输出时间
-
-  bool _running = true; // 标志位，用于控制任务的运行状态
+  // 标记当前批次是否已经产生了需要通知 UI 的变更。
+  bool _hasPendingFlush = false;
+  // 避免同一帧内重复注册刷新回调，确保一帧最多触发一次通知。
+  bool _frameFlushScheduled = false;
+  // 支持嵌套批量更新，只有最外层 write 结束后才安排刷新。
+  int _updateBatchDepth = 0;
 
   /* State getters */
 
@@ -248,8 +239,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// updates the states of the terminal and emits events such as [onBell] or
   /// [onTitleChange] when the escape sequences in [data] request it.
   void write(String data) {
-    _parser.write(data);
-    notifyListeners();
+    // 一次 write 过程中可能连续改动 buffer、cursor 和模式状态，
+    // 这里先合并这些变更，避免解析过程中频繁 notifyListeners。
+    _beginUpdateBatch();
+    try {
+      _parser.write(data);
+    } finally {
+      _endUpdateBatch();
+    }
   }
 
   /// Sends a key event to the underlying program.
@@ -275,8 +272,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         platform: platform,
       ),
     );
-
-    _lastTypingtime = DateTime.now(); // 上次键盘事件时间
 
     if (output != null) {
       onOutput?.call(output);
@@ -412,95 +407,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   void writeChar(int char) {
     _precedingCodepoint = char;
     _buffer.writeChar(char);
-
-    // 更新最后输入时间
-    _lastOutputTime = DateTime.now();
-  }
-
-  void _startTimer() {
-    _timer?.cancel(); // 取消之前的定时器
-    _timer = Timer.periodic(Duration(milliseconds: 100), (timer) {
-      if (!_running) {
-        timer.cancel();
-        return;
-      }
-      _ifCheckBuffer();
-    });
-  }
-
-  // 判断， 检查 是否需要检查 buffer
-  void _ifCheckBuffer() {
-    if (!_running) {
-      return;
-    }
-
-    if (_lastOutputTime == null) {
-      return;
-    }
-
-    final now = DateTime.now();
-    final elapsed = now.difference(_lastOutputTime!).inMilliseconds;
-
-    if (elapsed >= _typingDelay) {
-      if (_lastGetOutputTime == null || _lastGetOutputTime != _lastOutputTime) {
-        _lastGetOutputTime = _lastOutputTime;
-        _checkBuffer();
-      } else {
-        return;
-      }
-    }
-  }
-
-  void _checkBuffer() {
-    return ;
-    // 读取整个 buffer 数据进行检查
-    var bufferData = _buffer.lines.toList();
-    var _x = _buffer.cursorX, _y = _buffer.cursorY;
-    var part = _buffer.lines.getRange(y1: _y);
-
-    // 打印 buffer 数据
-    print("Check Buffer data: $part");
-
-    // 检查 part 是否为空
-    if (part.isNotEmpty) {
-      // 获取 part 的第一个元素
-      var firstElement = part.first;
-      print("First element: $firstElement");
-
-      // 正则发现 firstElement 第一个特殊字符+空格
-      var regex = RegExp(r'[^a-zA-Z0-9\s]+ ');
-      var match = regex.firstMatch(firstElement.toString());
-
-      if (match != null) {
-        // 获取匹配的内容
-        var specialCharWithSpace = match.group(0);
-        print("Matched special character with space: $specialCharWithSpace");
-
-        // 使用匹配的特殊字符和空格分割字符串
-        var splitParts = firstElement.toString().split(specialCharWithSpace!);
-        if (splitParts.length > 1) {
-          var command = splitParts[1];
-          print("Command: $command");
-          onTypingCommand?.call(command);
-        } else {
-          print("No command found after special character with space");
-        }
-      } else {
-        print("No special character followed by space found");
-      }
-    } else {
-      print("Part is empty");
-    }
-
-    // 更新最后获取输出时间
-    // _lastGetOutputTime = DateTime.now();
-  }
-
-  void _getTyping(int char) {
-    var _x = _buffer.cursorX, _y = _buffer.cursorY;
-    var part = _buffer.lines.getRange(y1: _y);
-    // print("get all ${_x}, $_y, ${part}");
-    return;
   }
 
   /* SBC */
@@ -1033,11 +939,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     onTypingCommand?.call(command);
   }
 
-  @override
   void dispose() {
-    _timer?.cancel();
-    _timer = null;
-    _running = false;
+    _hasPendingFlush = false;
+    _frameFlushScheduled = false;
   }
 
   /// search widget show callback
@@ -1059,5 +963,68 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void closeSearch() {
     onCloseSearch?.call();
+  }
+
+  void _beginUpdateBatch() {
+    _updateBatchDepth++;
+  }
+
+  void _endUpdateBatch() {
+    if (_updateBatchDepth == 0) {
+      return;
+    }
+
+    _updateBatchDepth--;
+
+    if (_updateBatchDepth == 0) {
+      // 只有最外层批次结束时才真正安排一次刷新。
+      _markPendingFlush();
+    }
+  }
+
+  void _markPendingFlush() {
+    _hasPendingFlush = true;
+
+    if (_frameFlushScheduled) {
+      // 当前帧已经安排过刷新，后续变更直接并入本次 flush。
+      return;
+    }
+
+    _frameFlushScheduled = true;
+
+    if (_scheduleFrameFlush()) {
+      return;
+    }
+
+    // 某些非 Flutter 帧环境下可能拿不到 frame callback，退化到微任务中刷新。
+    scheduleMicrotask(_flushPendingListeners);
+  }
+
+  bool _scheduleFrameFlush() {
+    try {
+      // 把本轮批量写入合并到下一帧统一通知，降低高频输出时的重建压力。
+      SchedulerBinding.instance.scheduleFrameCallback((_) {
+        _flushPendingListeners();
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _flushPendingListeners() {
+    if (!_frameFlushScheduled) {
+      return;
+    }
+
+    _frameFlushScheduled = false;
+
+    if (!_hasPendingFlush) {
+      return;
+    }
+
+    _hasPendingFlush = false;
+    // 真正的 UI 通知只在这里发出，保证批量更新最终只触发一次监听回调。
+    notifyListeners();
   }
 }
