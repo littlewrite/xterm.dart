@@ -3,9 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/core.dart';
-import 'package:xterm/src/core/buffer/cell_offset.dart';
-import 'package:xterm/src/core/input/keys.dart';
-import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
 import 'package:xterm/src/ui/custom_text_edit.dart';
@@ -164,6 +161,7 @@ class TerminalViewState extends State<TerminalView> {
   final _searchBoxKey = GlobalKey();
 
   String? _composingText;
+  bool _hasInputConnection = false;
 
   late TerminalController _controller;
 
@@ -176,8 +174,6 @@ class TerminalViewState extends State<TerminalView> {
   Offset _searchBoxPosition = const Offset(0, 0);
 
   bool _isDragging = false;
-
-  Offset _dragStartPosition = Offset.zero;
 
   RenderTerminal get renderTerminal =>
       _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
@@ -274,7 +270,11 @@ class TerminalViewState extends State<TerminalView> {
           focusNode: _focusNode,
           cursorType: widget.cursorType,
           alwaysShowCursor: widget.alwaysShowCursor,
-          onEditableRect: _onEditableRect,
+          onEditableRect: _hasInputConnection &&
+                  !widget.hardwareKeyboardOnly &&
+                  !widget.readOnly
+              ? _onEditableRect
+              : null,
           composingText: _composingText,
         );
       },
@@ -311,6 +311,7 @@ class TerminalViewState extends State<TerminalView> {
           }
         },
         onKeyEvent: _handleKeyEvent,
+        onInputConnectionChange: _onInputConnectionChange,
         readOnly: widget.readOnly,
         child: child,
       );
@@ -393,8 +394,10 @@ class TerminalViewState extends State<TerminalView> {
   }
 
   Rect get globalCursorRect {
-    return renderTerminal.localToGlobal(renderTerminal.cursorOffset) &
-        renderTerminal.cellSize;
+    return MatrixUtils.transformRect(
+      renderTerminal.getTransformTo(null),
+      cursorRect,
+    );
   }
 
   void _onTapUp(TapUpDetails details) {
@@ -495,8 +498,26 @@ class TerminalViewState extends State<TerminalView> {
     }
   }
 
-  void _onEditableRect(Rect rect, Rect caretRect) {
-    _customTextEditKey.currentState?.setEditableRect(rect, caretRect);
+  void _onEditableRect(
+    Size editableSize,
+    Matrix4 transform,
+    Rect caretRect,
+  ) {
+    _customTextEditKey.currentState?.setEditableRect(
+      editableSize,
+      transform,
+      caretRect,
+    );
+  }
+
+  void _onInputConnectionChange(bool hasInputConnection) {
+    if (_hasInputConnection == hasInputConnection || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _hasInputConnection = hasInputConnection;
+    });
   }
 
   void _scrollToBottom() {
@@ -529,16 +550,17 @@ class TerminalViewState extends State<TerminalView> {
 
   void _onSearchBoxPanStart(DragStartDetails details) {
     _isDragging = true;
-    _dragStartPosition = details.globalPosition;
   }
 
   void _onSearchBoxPanUpdate(DragUpdateDetails details) {
     if (_isDragging) {
       setState(() {
-        _searchBoxPosition = Offset(_searchBoxPosition.dx - details.delta.dx, _searchBoxPosition.dy + details.delta.dy);
+        _searchBoxPosition = Offset(_searchBoxPosition.dx - details.delta.dx,
+            _searchBoxPosition.dy + details.delta.dy);
 
         // 获取父容器大小
-        final renderBox = _searchBoxKey.currentContext?.findRenderObject() as RenderBox?;
+        final renderBox =
+            _searchBoxKey.currentContext?.findRenderObject() as RenderBox?;
         if (renderBox != null) {
           final parent = renderBox.parent as RenderBox?;
           if (parent != null) {
@@ -548,15 +570,20 @@ class TerminalViewState extends State<TerminalView> {
             // 限制水平范围
             if (_searchBoxPosition.dx < 0) {
               _searchBoxPosition = Offset(0, _searchBoxPosition.dy);
-            } else if (_searchBoxPosition.dx + searchBoxSize.width > parentSize.width) {
-              _searchBoxPosition = Offset(parentSize.width - searchBoxSize.width, _searchBoxPosition.dy);
+            } else if (_searchBoxPosition.dx + searchBoxSize.width >
+                parentSize.width) {
+              _searchBoxPosition = Offset(
+                  parentSize.width - searchBoxSize.width,
+                  _searchBoxPosition.dy);
             }
 
             // 限制垂直范围
             if (_searchBoxPosition.dy < 0) {
               _searchBoxPosition = Offset(_searchBoxPosition.dx, 0);
-            } else if (_searchBoxPosition.dy + searchBoxSize.height > parentSize.height) {
-              _searchBoxPosition = Offset(_searchBoxPosition.dx, parentSize.height - searchBoxSize.height);
+            } else if (_searchBoxPosition.dy + searchBoxSize.height >
+                parentSize.height) {
+              _searchBoxPosition = Offset(_searchBoxPosition.dx,
+                  parentSize.height - searchBoxSize.height);
             }
           }
         }

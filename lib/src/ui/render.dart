@@ -1,6 +1,7 @@
 import 'dart:math' show max;
 import 'dart:ui';
 
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
@@ -18,7 +19,8 @@ import 'package:xterm/src/ui/terminal_size.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
 
-typedef EditableRectCallback = void Function(Rect rect, Rect caretRect);
+typedef EditableRectCallback = void Function(
+    Size editableSize, Matrix4 transform, Rect caretRect);
 
 class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   RenderTerminal({
@@ -43,6 +45,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         _focusNode = focusNode,
         _cursorType = cursorType,
         _alwaysShowCursor = alwaysShowCursor,
+        _shouldReportEditableRect = onEditableRect != null,
         _onEditableRect = onEditableRect,
         _composingText = composingText,
         _painter = TerminalPainter(
@@ -138,8 +141,13 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   set onEditableRect(EditableRectCallback? value) {
     if (value == _onEditableRect) return;
     _onEditableRect = value;
-    markNeedsLayout();
+    _shouldReportEditableRect = value != null;
+    if (_shouldReportEditableRect) {
+      _scheduleEditableRectUpdate();
+    }
   }
+
+  bool _shouldReportEditableRect;
 
   String? _composingText;
   set composingText(String? value) {
@@ -153,6 +161,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   final TerminalPainter _painter;
 
   var _stickToBottom = true;
+  bool _editableRectUpdateScheduled = false;
 
   // 添加滚动速率控制变量
   double _scrollSpeed = 0.2; // 默认滚动速率为1.0
@@ -160,21 +169,21 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (value <= 0) return; // 确保速率大于0
     _scrollSpeed = value;
   }
+
   double get scrollSpeed => _scrollSpeed;
 
   void _onScroll() {
     _stickToBottom = _scrollOffset >= _maxScrollExtent;
     markNeedsLayout();
-    _notifyEditableRect();
   }
 
   void _onFocusChange() {
     markNeedsPaint();
+    _scheduleEditableRectUpdate();
   }
 
   void _onTerminalChange() {
     markNeedsLayout();
-    _notifyEditableRect();
   }
 
   void _onControllerUpdate() {
@@ -224,6 +233,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (_stickToBottom) {
       _offset.correctBy(_maxScrollExtent - _scrollOffset);
     }
+
+    _scheduleEditableRectUpdate();
   }
 
   /// Total height of the terminal in pixels. Includes scrollback buffer.
@@ -395,18 +406,33 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   void _notifyEditableRect() {
-    final cursor = localToGlobal(cursorOffset);
+    final caretRect = cursorOffset & _painter.cellSize;
+    final transform = getTransformTo(null);
 
-    final rect = Rect.fromLTRB(
-      cursor.dx,
-      cursor.dy,
-      size.width,
-      cursor.dy + _painter.cellSize.height,
-    );
+    _onEditableRect?.call(size, transform, caretRect);
+  }
 
-    final caretRect = cursor & _painter.cellSize;
+  void _scheduleEditableRectUpdate() {
+    if (_editableRectUpdateScheduled ||
+        !_shouldReportEditableRect ||
+        _onEditableRect == null) {
+      return;
+    }
 
-    _onEditableRect?.call(rect, caretRect);
+    _editableRectUpdateScheduled = true;
+
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _editableRectUpdateScheduled = false;
+
+      if (!attached ||
+          !hasSize ||
+          !_shouldReportEditableRect ||
+          _onEditableRect == null) {
+        return;
+      }
+
+      _notifyEditableRect();
+    });
   }
 
   /// Update the viewport size in cells based on the current widget size in
@@ -643,17 +669,19 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final cellHeight = _painter.cellSize.height;
     final currentScroll = _scrollOffset;
     final viewportHeight = _viewportHeight;
-    
+
     // 计算目标行的像素位置
     final targetY = line * cellHeight;
-    
+
     // 计算视口边界
     final visibleTop = currentScroll;
     final visibleBottom = currentScroll + viewportHeight;
-    
+
     // 如果目标行不在视口范围内，需要滚动
-    if (targetY < visibleTop - above || targetY > visibleBottom - cellHeight - above) {
-      print('scrollToLine: $line, targetY: $targetY, visibleTop: $visibleTop, visibleBottom: $visibleBottom, cellHeight: $cellHeight');
+    if (targetY < visibleTop - above ||
+        targetY > visibleBottom - cellHeight - above) {
+      print(
+          'scrollToLine: $line, targetY: $targetY, visibleTop: $visibleTop, visibleBottom: $visibleBottom, cellHeight: $cellHeight');
       // 计算需要滚动的像素距离
       final scrollDelta = targetY - (visibleTop + viewportHeight / 2);
       _offset.jumpTo(currentScroll + scrollDelta);
@@ -666,10 +694,10 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final cellHeight = _painter.cellSize.height;
     final currentScroll = _scrollOffset;
     final viewportHeight = _viewportHeight;
-    
+
     final startLine = (currentScroll / cellHeight).floor();
     final endLine = ((currentScroll + viewportHeight) / cellHeight).ceil();
-    
+
     return [startLine, endLine];
   }
 }

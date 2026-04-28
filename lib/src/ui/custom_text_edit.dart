@@ -11,6 +11,7 @@ class CustomTextEdit extends StatefulWidget {
     required this.onComposing,
     required this.onAction,
     required this.onKeyEvent,
+    required this.onInputConnectionChange,
     required this.focusNode,
     this.autofocus = false,
     this.readOnly = false,
@@ -32,6 +33,8 @@ class CustomTextEdit extends StatefulWidget {
   final void Function(TextInputAction) onAction;
 
   final KeyEventResult Function(FocusNode, KeyEvent) onKeyEvent;
+
+  final ValueChanged<bool> onInputConnectionChange;
 
   final FocusNode focusNode;
 
@@ -108,6 +111,7 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
   void closeKeyboard() {
     if (hasInputConnection) {
       _connection?.close();
+      widget.onInputConnectionChange(hasInputConnection);
     }
   }
 
@@ -116,16 +120,12 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
     _connection?.setEditingState(value);
   }
 
-  void setEditableRect(Rect rect, Rect caretRect) {
+  void setEditableRect(Size editableSize, Matrix4 transform, Rect caretRect) {
     if (!hasInputConnection) {
       return;
     }
 
-    _connection?.setEditableSizeAndTransform(
-      rect.size,
-      Matrix4.translationValues(0, 0, 0),
-    );
-
+    _connection?.setEditableSizeAndTransform(editableSize, transform);
     _connection?.setCaretRect(caretRect);
   }
 
@@ -158,6 +158,7 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
 
     if (hasInputConnection) {
       _connection!.show();
+      widget.onInputConnectionChange(true);
     } else {
       final config = TextInputConfiguration(
         inputType: widget.inputType,
@@ -175,6 +176,7 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
       // setEditableRect(Rect.zero, Rect.zero);
 
       _connection!.setEditingState(_initEditingState);
+      widget.onInputConnectionChange(true);
     }
   }
 
@@ -182,6 +184,7 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
     if (_connection != null && _connection!.attached) {
       _connection!.close();
       _connection = null;
+      widget.onInputConnectionChange(false);
     }
   }
 
@@ -256,7 +259,8 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
 
   @override
   void connectionClosed() {
-    // print('connectionClosed');
+    _connection = null;
+    widget.onInputConnectionChange(false);
   }
 
   @override
