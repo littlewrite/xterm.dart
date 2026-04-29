@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
+import 'package:xterm/src/core/buffer/buffer.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
@@ -52,7 +53,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
           theme: theme,
           textStyle: textStyle,
           textScaler: textScaler,
-        );
+        ) {
+    _syncTerminalGeometryCache();
+  }
 
   Terminal _terminal;
   set terminal(Terminal terminal) {
@@ -162,6 +165,10 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   var _stickToBottom = true;
   bool _editableRectUpdateScheduled = false;
+  int _lastKnownLineCount = 0;
+  int _lastKnownViewWidth = 0;
+  int _lastKnownViewHeight = 0;
+  late Buffer _lastKnownBuffer;
 
   // 添加滚动速率控制变量
   double _scrollSpeed = 0.2; // 默认滚动速率为1.0
@@ -174,7 +181,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   void _onScroll() {
     _stickToBottom = _scrollOffset >= _maxScrollExtent;
-    markNeedsLayout();
+    // 滚动只改变视口看到的内容，不改变终端几何信息。
+    markNeedsPaint();
+    _scheduleEditableRectUpdate();
   }
 
   void _onFocusChange() {
@@ -183,11 +192,22 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   void _onTerminalChange() {
-    markNeedsLayout();
+    // 终端内容变化并不总是需要重新 layout。
+    // 只有行数、活动 buffer、列/行尺寸这些“几何信息”变化时，
+    // 才需要重新计算 scroll extent 和 stick-to-bottom。
+    if (_didTerminalGeometryChange()) {
+      _syncTerminalGeometryCache();
+      markNeedsLayout();
+      return;
+    }
+
+    markNeedsPaint();
+    _scheduleEditableRectUpdate();
   }
 
   void _onControllerUpdate() {
-    markNeedsLayout();
+    // 选择、高亮等 controller 更新只影响覆盖层绘制。
+    markNeedsPaint();
   }
 
   @override
@@ -234,6 +254,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       _offset.correctBy(_maxScrollExtent - _scrollOffset);
     }
 
+    _syncTerminalGeometryCache();
     _scheduleEditableRectUpdate();
   }
 
@@ -685,7 +706,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       // 计算需要滚动的像素距离
       final scrollDelta = targetY - (visibleTop + viewportHeight / 2);
       _offset.jumpTo(currentScroll + scrollDelta);
-      markNeedsLayout();
+      markNeedsPaint();
+      _scheduleEditableRectUpdate();
     }
   }
 
@@ -699,5 +721,19 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final endLine = ((currentScroll + viewportHeight) / cellHeight).ceil();
 
     return [startLine, endLine];
+  }
+
+  bool _didTerminalGeometryChange() {
+    return _lastKnownLineCount != _terminal.buffer.lines.length ||
+        _lastKnownViewWidth != _terminal.viewWidth ||
+        _lastKnownViewHeight != _terminal.viewHeight ||
+        !identical(_lastKnownBuffer, _terminal.buffer);
+  }
+
+  void _syncTerminalGeometryCache() {
+    _lastKnownLineCount = _terminal.buffer.lines.length;
+    _lastKnownViewWidth = _terminal.viewWidth;
+    _lastKnownViewHeight = _terminal.viewHeight;
+    _lastKnownBuffer = _terminal.buffer;
   }
 }
