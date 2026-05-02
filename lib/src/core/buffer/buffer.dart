@@ -577,24 +577,26 @@ class Buffer {
   String getText([BufferRange? range]) {
     range ??= BufferRangeLine(
       CellOffset(0, 0),
-      CellOffset(viewWidth - 1, height - 1),
+      CellOffset(viewWidth, height - 1),
     );
 
     range = range.normalized;
 
     final builder = StringBuffer();
+    var wroteAny = false;
+    var previousLineWrapped = false;
 
     for (var segment in range.toSegments()) {
       if (segment.line < 0 || segment.line >= height) {
         continue;
       }
       final line = lines[segment.line];
-      if (!(segment.line == range.begin.y ||
-          segment.line == 0 ||
-          line.isWrapped)) {
-        builder.write("\n");
+      if (wroteAny && !previousLineWrapped) {
+        builder.write('\n');
       }
       builder.write(line.getText(segment.start, segment.end));
+      wroteAny = true;
+      previousLineWrapped = line.isWrapped;
     }
 
     return builder.toString();

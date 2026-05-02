@@ -259,7 +259,7 @@ class BufferLine with IndexedItem {
   /// Returns the offset of the last cell that has content from the start of
   /// the line.
   int getTrimmedLength([int? cols]) {
-    final maxCols = _data.length ~/ _cellSize;
+    final maxCols = _length;
 
     if (cols == null || cols > maxCols) {
       cols = maxCols;
@@ -328,7 +328,11 @@ class BufferLine with IndexedItem {
     }
 
     if (to == null || to > _length) {
-      to = _length;
+      to = getTrimmedLength();
+    }
+
+    if (from >= to) {
+      return '';
     }
 
     final builder = StringBuffer();
@@ -337,8 +341,11 @@ class BufferLine with IndexedItem {
       final width = getWidth(i);
       if (codePoint != 0 && i + width <= to) {
         builder.writeCharCode(codePoint);
-      } else if (codePoint == 0) { // TODO: handle wide characters
-        builder.writeCharCode(32); // write space
+      } else if (codePoint == 0) {
+        final isWideCharTail = i > 0 && getWidth(i - 1) == 2;
+        if (!isWideCharTail) {
+          builder.writeCharCode(32);
+        }
       }
     }
 

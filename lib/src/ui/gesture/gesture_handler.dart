@@ -65,7 +65,6 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   // 优化的容忍度设置
   static const double _handleTouchRadius = 32.0; // 增加拖杆触摸区域半径
   static const double _selectionTolerance = 20.0; // 点击选区附近的容忍度
-  static const Duration _tapTolerance = Duration(milliseconds: 150); // 点击时间容忍度
 
   // 防抖相关
   DateTime? _lastTapTime;
@@ -133,22 +132,28 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       );
     }
 
-    return GestureDetector(
+    return Listener(
       behavior: HitTestBehavior.deferToChild,
-      child: content,
-      onTapUp: onTapUp,
-      onTapDown: onTapDown,
-      onSecondaryTapDown: onSecondaryTapDown,
-      onSecondaryTapUp: onSecondaryTapUp,
-      onTertiaryTapDown: widget.onTertiaryTapDown,
-      onTertiaryTapUp: widget.onTertiaryTapUp,
-      onDoubleTapDown: onDoubleTapDown,
-      onScaleEnd: onScaleEnd,
-      onScaleStart: onScaleStart,
-      onScaleUpdate: onScaleUpdate,
-      onLongPressStart: _onLongPressStart,
-      onLongPressMoveUpdate: _onLongPressMoveUpdate,
-      onLongPressEnd: _onLongPressEnd,
+      onPointerDown: _handlePointerDown,
+      onPointerMove: _handlePointerMove,
+      onPointerUp: _handlePointerUp,
+      onPointerCancel: _handlePointerCancel,
+      child: GestureDetector(
+        behavior: HitTestBehavior.deferToChild,
+        child: content,
+        onTapUp: onTapUp,
+        onTapDown: onTapDown,
+        onSecondaryTapDown: onSecondaryTapDown,
+        onSecondaryTapUp: onSecondaryTapUp,
+        onTertiaryTapDown: widget.onTertiaryTapDown,
+        onTertiaryTapUp: widget.onTertiaryTapUp,
+        onScaleEnd: onScaleEnd,
+        onScaleStart: onScaleStart,
+        onScaleUpdate: onScaleUpdate,
+        onLongPressStart: _onLongPressStart,
+        onLongPressMoveUpdate: _onLongPressMoveUpdate,
+        onLongPressEnd: _onLongPressEnd,
+      ),
     );
   }
 
@@ -495,14 +500,15 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     return expandedRect.contains(localPosition);
   }
 
-  /// 防抖检查
-  bool _isDuplicateTap(Offset position) {
+  bool _isDoubleTap(Offset position) {
     final now = DateTime.now();
     if (_lastTapTime != null && _lastTapPosition != null) {
       final timeDiff = now.difference(_lastTapTime!);
       final positionDiff = (position - _lastTapPosition!).distance;
 
-      if (timeDiff < _tapTolerance && positionDiff < 10.0) {
+      if (timeDiff < kDoubleTapTimeout && positionDiff < kDoubleTapSlop) {
+        _lastTapTime = null;
+        _lastTapPosition = null;
         return true;
       }
     }
@@ -517,6 +523,101 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         kind == PointerDeviceKind.trackpad ||
         kind == PointerDeviceKind.stylus ||
         kind == PointerDeviceKind.invertedStylus;
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    if (!_isPointerKindMouse(event.kind)) {
+      return;
+    }
+
+    final details = TapDownDetails(
+      kind: event.kind,
+      globalPosition: event.position,
+      localPosition: event.localPosition,
+    );
+
+    _suppressNextTapUp = false;
+    _isMouseDeviceDown = true;
+    _mousePointerKind = event.kind;
+    _mouseSelectionBase = renderTerminal.getCellOffset(details.localPosition);
+    _isMouseSelectionInProgress = false;
+    _mouseSelectionLastPosition = details.localPosition;
+    _mouseTapDownDispatched = false;
+
+    if (_selectedRange != null && !_selectedRange!.isCollapsed) {
+      final dragHandle = _detectDragHandle(details.localPosition);
+      if (dragHandle != _DragHandleType.none) {
+        _prepareDragHandle(dragHandle);
+        return;
+      }
+    }
+
+    _tapDown(
+      widget.onTapDown,
+      details,
+      TerminalMouseButton.left,
+      forceCallback: true,
+    );
+    _mouseTapDownDispatched = true;
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (!_isPointerKindMouse(event.kind)) {
+      return;
+    }
+
+    _handleMouseSelectionUpdate(event.localPosition);
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    if (!_isPointerKindMouse(event.kind)) {
+      return;
+    }
+
+    final details = TapUpDetails(
+      kind: event.kind,
+      globalPosition: event.position,
+      localPosition: event.localPosition,
+    );
+
+    if (_isMouseSelectionInProgress) {
+      _finishMouseSelection();
+      return;
+    }
+
+    _resetMouseSelectionState();
+
+    if (_isDoubleTap(details.localPosition)) {
+      _handleDoubleTap(details.localPosition, details.kind);
+      return;
+    }
+
+    if (_isDragHandleReady && !_isDraggingHandle) {
+      _resetDragHandleState();
+    }
+
+    _tapUp(
+      widget.onTapUp,
+      details,
+      TerminalMouseButton.left,
+      forceCallback: true,
+    );
+
+    if (_selectedRange != null) {
+      final dragHandle = _detectDragHandle(details.localPosition);
+      if (dragHandle == _DragHandleType.none) {
+        _clearSelection();
+      }
+    }
+  }
+
+  void _handlePointerCancel(PointerCancelEvent event) {
+    if (!_isPointerKindMouse(event.kind)) {
+      return;
+    }
+
+    _resetMouseSelectionState();
+    _resetDragHandleState();
   }
 
   void _tapDown(
@@ -681,6 +782,10 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   void onTapUp(TapUpDetails details) {
+    if (_isPointerKindMouse(details.kind)) {
+      return;
+    }
+
     if (_suppressNextTapUp) {
       _suppressNextTapUp = false;
       _resetMouseSelectionState();
@@ -700,8 +805,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     }
     _cancelPendingTapDown();
 
-    // 防抖检查
-    if (_isDuplicateTap(details.localPosition)) {
+    if (_isDoubleTap(details.localPosition)) {
+      _handleDoubleTap(details.localPosition, details.kind);
       return;
     }
 
@@ -726,20 +831,12 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   void onTapDown(TapDownDetails details) {
-    _suppressNextTapUp = false;
-
     if (_isPointerKindMouse(details.kind)) {
-      _isMouseDeviceDown = true;
-      _mousePointerKind = details.kind;
-      _mouseSelectionBase = renderTerminal.getCellOffset(
-        details.localPosition,
-      );
-      _isMouseSelectionInProgress = false;
-      _mouseSelectionLastPosition = details.localPosition;
-      _mouseTapDownDispatched = false;
-    } else {
-      _resetMouseSelectionState();
+      return;
     }
+
+    _suppressNextTapUp = false;
+    _resetMouseSelectionState();
 
     // 优先检查是否点击了拖杆（如果已有选区）
     if (_selectedRange != null && !_selectedRange!.isCollapsed) {
@@ -962,31 +1059,27 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   void onTertiaryTapUp(TapUpDetails details) {
-    _tapUp(widget.onTertiaryTapUp, details, TerminalMouseButton.right);
+    _tapUp(widget.onTertiaryTapUp, details, TerminalMouseButton.middle);
   }
 
-  void onDoubleTapDown(TapDownDetails details) {
-    // 双击时取消待执行的 tapDown 和拖杆状态
+  void _handleDoubleTap(Offset localPosition, PointerDeviceKind? kind) {
     _cancelPendingTapDown();
     _resetDragHandleState();
 
-    final cellOffset = renderTerminal.getCellOffset(details.localPosition);
+    final cellOffset = renderTerminal.getCellOffset(localPosition);
 
-    if (details.kind == PointerDeviceKind.touch) {
-      // 触摸设备：选中整个单词
+    if (kind == PointerDeviceKind.touch) {
       final BufferRangeLine? wordRange = renderTerminal.selectWord(cellOffset);
       if (wordRange != null) {
         _applySelection(wordRange);
       }
     } else {
-      // 鼠标设备：选中单个字符
       renderTerminal.selectCharacters(cellOffset, cellOffset);
       if (widget.terminalController.selection != null) {
         _applySelection(BufferRangeLine(cellOffset, cellOffset));
       }
     }
 
-    // 显示工具栏（触摸和鼠标设备统一处理）
     if (widget.showToolbar) {
       final Rect? selectionRect = _currentSelectionGlobalRect();
       if (selectionRect != null) {
@@ -994,7 +1087,6 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       }
     }
 
-    // 提供触觉反馈
     HapticFeedback.lightImpact();
   }
 

@@ -37,13 +37,13 @@ class TerminalController with ChangeNotifier {
     SelectionMode selectionMode = SelectionMode.line,
     PointerInputs pointerInputs = const PointerInputs({PointerInput.tap}),
     bool suspendPointerInput = false,
-    required TickerProvider vsync,
+    TickerProvider? vsync,
   })  : _selectionMode = selectionMode,
         _pointerInputs = pointerInputs,
         _suspendPointerInputs = suspendPointerInput,
         _vsync = vsync;
 
-  final TickerProvider _vsync;
+  final TickerProvider? _vsync;
 
   CellAnchor? _selectionBase;
   CellAnchor? _selectionExtent;
@@ -96,23 +96,25 @@ class TerminalController with ChangeNotifier {
     final newBegin = base.offset;
     final newEnd = extent.offset;
 
-    // 检测是插入还是更新
-    final isNewSelection = _selectionBase == null || _selectionExtent == null;
-    final animationType = isNewSelection
-        ? SelectionAnimationType.insert
-        : SelectionAnimationType.update;
-
     // 清理旧动画
     _selectionAnimation?.dispose();
 
-    // 创建新动画
-    _selectionAnimation = _createSelectionAnimation(
-      type: animationType,
-      oldBegin: _lastSelectionBegin,
-      oldEnd: _lastSelectionEnd,
-      newBegin: newBegin,
-      newEnd: newEnd,
-    );
+    if (_vsync != null) {
+      final isNewSelection = _selectionBase == null || _selectionExtent == null;
+      final animationType = isNewSelection
+          ? SelectionAnimationType.insert
+          : SelectionAnimationType.update;
+
+      _selectionAnimation = _createSelectionAnimation(
+        type: animationType,
+        oldBegin: _lastSelectionBegin,
+        oldEnd: _lastSelectionEnd,
+        newBegin: newBegin,
+        newEnd: newEnd,
+      );
+    } else {
+      _selectionAnimation = null;
+    }
 
     // 更新选区
     _selectionBase?.dispose();
@@ -143,7 +145,7 @@ class TerminalController with ChangeNotifier {
       duration: type == SelectionAnimationType.insert
           ? const Duration(milliseconds: 100)
           : const Duration(milliseconds: 150),
-      vsync: _vsync,
+      vsync: _vsync!,
     );
 
     late Animation<double> scaleAnimation;

@@ -17,8 +17,7 @@ void main() {
     final terminal = Terminal();
     terminal.write('foo bar');
 
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
 
     final render = RenderTerminal(

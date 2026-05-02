@@ -6,8 +6,6 @@ import 'package:xterm/src/utils/byte_consumer.dart';
 import 'package:xterm/src/utils/char_code.dart';
 import 'package:xterm/src/utils/lookup_table.dart';
 
-import 'package:xterm/src/utils/debugger.dart';
-
 /// [EscapeParser] translates control characters and escape sequences into
 /// function calls that the terminal can handle.
 ///

@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -192,10 +191,4 @@ String get shell {
   }
 
   return 'sh';
-}
-
-extension on String {
-  String trimRightNewline() {
-    return endsWith('\n') ? substring(0, length - 1) : this;
-  }
 }

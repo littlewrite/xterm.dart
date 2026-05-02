@@ -1,10 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 
 import 'package:xterm/src/core/buffer/cell_offset.dart';
-import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/terminal.dart';
-import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/themes.dart';
 import 'package:xterm/src/ui/terminal_theme.dart'; // 导入 TerminalTheme
@@ -252,7 +249,7 @@ class TerminalSearchController extends ChangeNotifier {
               }
 
               // 生成匹配的唯一标识符
-              final matchKey = '${matchStart}_${matchEnd}_${startY}';
+              final matchKey = '${matchStart}_${matchEnd}_$startY';
 
               // 检查是否已经处理过这个匹配
               if (!processedMatches.contains(matchKey)) {
@@ -327,7 +324,7 @@ class TerminalSearchController extends ChangeNotifier {
               }
 
               // 生成匹配的唯一标识符
-              final matchKey = '${x}_${x + pattern.length}_${startY}';
+              final matchKey = '${x}_${x + pattern.length}_$startY';
 
               // 检查是否已经处理过这个匹配
               if (!processedMatches.contains(matchKey)) {
@@ -407,6 +404,7 @@ class TerminalSearchController extends ChangeNotifier {
 class DefaultTerminalSearchBox extends StatefulWidget
     implements TerminalSearchDelegate {
   final TerminalSearchController _searchController;
+  @override
   final bool isVisible;
   final VoidCallback? onHide;
   final VoidCallback? onClose;
@@ -451,7 +449,6 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
 
   @override
   void initState() {
-    print(' initState default search box');
     super.initState();
     _controller.text = widget.searchController.searchText;
     _caseSensitive = widget.searchController.caseSensitive;
@@ -599,7 +596,9 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                     IconButton(
                       icon: Icon(
                         Icons.text_fields,
-                        color: _caseSensitive ? theme.brightCyan : theme.brightBlack,
+                        color: _caseSensitive
+                            ? theme.brightCyan
+                            : theme.brightBlack,
                       ),
                       onPressed: () => _updateCaseSensitive(!_caseSensitive),
                       tooltip: '区分大小写',
@@ -607,7 +606,8 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                     IconButton(
                       icon: Icon(
                         Icons.text_format,
-                        color: _wholeWord ? theme.brightCyan : theme.brightBlack,
+                        color:
+                            _wholeWord ? theme.brightCyan : theme.brightBlack,
                       ),
                       onPressed: () => _updateWholeWord(!_wholeWord),
                       tooltip: '全词匹配',

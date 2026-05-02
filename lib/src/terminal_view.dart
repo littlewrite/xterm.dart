@@ -5,8 +5,6 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/input/keys.dart';
-import 'package:xterm/src/core/mouse/button.dart';
-import 'package:xterm/src/core/mouse/button_state.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -14,14 +12,15 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
+import 'package:xterm/src/ui/keyboard_visibility.dart';
 import 'package:xterm/src/ui/render.dart';
+import 'package:xterm/src/ui/search_box.dart';
 import 'package:xterm/src/ui/scroll_handler.dart';
 import 'package:xterm/src/ui/shortcut/actions.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
 import 'package:xterm/src/ui/themes.dart';
-import 'package:xterm/src/ui/search_box.dart';
 
 class TerminalView extends StatefulWidget {
   const TerminalView(
@@ -192,8 +191,7 @@ class TerminalView extends StatefulWidget {
   State<TerminalView> createState() => TerminalViewState();
 }
 
-class TerminalViewState extends State<TerminalView>
-    with TickerProviderStateMixin {
+class TerminalViewState extends State<TerminalView> {
   late FocusNode _focusNode;
 
   late final ShortcutManager _shortcutManager;
@@ -207,6 +205,7 @@ class TerminalViewState extends State<TerminalView>
   final _searchBoxKey = GlobalKey();
 
   bool _hasInputConnection = false;
+  bool _scrollToBottomScheduled = false;
   Timer? _cursorBlinkTimer;
   final _cursorBlinkVisible = ValueNotifier<bool>(true);
   bool _previousBlinkEnabled = false;
@@ -235,7 +234,7 @@ class TerminalViewState extends State<TerminalView>
   void initState() {
     _focusNode = widget.focusNode ?? FocusNode();
     _focusNode.addListener(_handleFocusChange);
-    _controller = widget.controller ?? TerminalController(vsync: this);
+    _controller = widget.controller ?? TerminalController();
     _scrollController = widget.scrollController ?? ScrollController();
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
@@ -280,7 +279,7 @@ class TerminalViewState extends State<TerminalView>
       if (oldWidget.controller == null) {
         _controller.dispose();
       }
-      _controller = widget.controller ?? TerminalController(vsync: this);
+      _controller = widget.controller ?? TerminalController();
     }
     if (oldWidget.scrollController != widget.scrollController) {
       if (oldWidget.scrollController == null) {
@@ -453,6 +452,11 @@ class TerminalViewState extends State<TerminalView>
       child: child,
     );
 
+    child = KeyboardVisibilty(
+      onKeyboardShow: _onKeyboardShow,
+      child: child,
+    );
+
     child = TerminalGestureHandler(
       viewOffset: widget.viewOffset,
       showToolbar: widget.showToolbar,
@@ -586,11 +590,6 @@ class TerminalViewState extends State<TerminalView>
   void _onTapUp(TapUpDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onTapUp?.call(details, offset);
-    widget.terminal.mouseInput(
-      TerminalMouseButton.left,
-      TerminalMouseButtonState.up,
-      offset,
-    );
   }
 
   void _onTapDown(TapDownDetails details) {
@@ -603,12 +602,6 @@ class TerminalViewState extends State<TerminalView>
     }
 
     _updateCursorBlink(resetVisible: true);
-
-    widget.terminal.mouseInput(
-      TerminalMouseButton.left,
-      TerminalMouseButtonState.down,
-      renderTerminal.getCellOffset(details.localPosition),
-    );
   }
 
   void _onSecondaryTapDown(TapDownDetails details) {
@@ -722,39 +715,60 @@ class TerminalViewState extends State<TerminalView>
     });
   }
 
-  void _scrollToBottom() {
-    final position = _scrollableKey.currentState?.position;
-    if (position != null) {
-      position.animateTo(
-        position.maxScrollExtent,
-        duration: const Duration(milliseconds: 377),
-        curve: Curves.fastEaseInToSlowEaseOut,
-      );
+  void _onKeyboardShow() {
+    if (_focusNode.hasFocus) {
+      _scrollToBottom();
     }
+  }
+
+  void _scrollToBottom() {
+    _jumpToBottomIfNeeded();
+
+    if (_scrollToBottomScheduled || !mounted) {
+      return;
+    }
+
+    _scrollToBottomScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottomScheduled = false;
+      _jumpToBottomIfNeeded();
+    });
+  }
+
+  void _jumpToBottomIfNeeded() {
+    if (!mounted || !_scrollController.hasClients) {
+      return;
+    }
+
+    final position = _scrollController.position;
+    final target = position.maxScrollExtent;
+    if ((position.pixels - target).abs() < 0.5) {
+      return;
+    }
+
+    position.jumpTo(target);
   }
 
   void autoScrollDown(Offset localPointerPosition) {
     final scrollThrshold = renderTerminal.lineHeight * 3;
-    final position = _scrollableKey.currentState?.position;
-    if (position == null) return;
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
     final notBottom = position.pixels < position.maxScrollExtent;
     final shouldScrollDown =
         localPointerPosition.dy > renderTerminal.size.height - scrollThrshold;
     if (shouldScrollDown && notBottom) {
-      position.animateTo(
-        position.pixels + scrollThrshold,
-        duration: const Duration(milliseconds: 177),
-        curve: Curves.fastEaseInToSlowEaseOut,
-      );
+      final target = (position.pixels + scrollThrshold)
+          .clamp(0.0, position.maxScrollExtent)
+          .toDouble();
+      position.jumpTo(target);
     }
     final notTop = position.pixels > 0;
     final shouldScrollUp = localPointerPosition.dy < scrollThrshold;
     if (shouldScrollUp && notTop) {
-      position.animateTo(
-        position.pixels - scrollThrshold,
-        duration: const Duration(milliseconds: 177),
-        curve: Curves.fastEaseInToSlowEaseOut,
-      );
+      final target = (position.pixels - scrollThrshold)
+          .clamp(0.0, position.maxScrollExtent)
+          .toDouble();
+      position.jumpTo(target);
     }
   }
 

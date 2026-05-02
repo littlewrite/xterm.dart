@@ -1,5 +1,4 @@
 import 'dart:collection';
-import 'package:xterm/src/utils/debugger.dart';
 
 class ByteConsumer {
   final _queue = ListQueue<List<int>>();

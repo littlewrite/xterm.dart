@@ -27,8 +27,11 @@ void main() {
     await tester.pump();
     expect(outputs.length, 1);
 
-    await tester.pump(const Duration(milliseconds: 350));
-    expect(outputs.length, greaterThan(1));
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.backspace);
+    await tester.pump();
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.backspace);
+    await tester.pump();
+    expect(outputs.length, 3);
 
     final repeatsBeforeRelease = outputs.length;
 

@@ -9,7 +9,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:xterm/xterm.dart';
 import 'package:xterm/suggestion.dart';
-import 'package:xterm/src/core/buffer/line.dart';
 
 final engine = SuggestionEngine();
 
@@ -48,13 +47,13 @@ class Home extends StatefulWidget {
   _HomeState createState() => _HomeState();
 }
 
-class _HomeState extends State<Home> with TickerProviderStateMixin {
+class _HomeState extends State<Home> {
   late final terminal = Terminal(
     maxLines: 10000,
     onPrivateOSC: _handlePrivateOSC,
   );
 
-  late final terminalController = TerminalController(vsync: this);
+  late final terminalController = TerminalController();
 
   final terminalKey = GlobalKey<TerminalViewState>();
 
@@ -118,7 +117,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   CellAnchor? _commandFinished;
 
   void _handlePrivateOSC(String code, List<String> args) {
-    print(" call osc ${code} args\t ${args}");
     switch (code) {
       case '133':
         _handleFinalTermOSC(args);
@@ -158,27 +156,20 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   void _handleMacTermOSC(List<String> args) {
     switch (args) {
       case ['StartPrompt']:
-        print(" start prompt");
         _promptStart?.dispose();
         _promptStart = terminal.buffer.createAnchorFromCursor();
-        print(" get prompt start ${_promptStart}");
         _commandEnd?.dispose();
         _commandEnd = null;
         _commandFinished?.dispose();
         _commandFinished = null;
       case ['EndPrompt']:
-        print(" end prompt");
-        var commandStart = terminal.buffer.createAnchorFromCursor();
         var xy = [terminal.buffer.cursorX, terminal.buffer.absoluteCursorY];
-        print(" get command start: ${commandStart} , end: ${xy}");
         var prompt = terminal.buffer
             .getText(
                 BufferRangeLine(_promptStart!.offset, CellOffset(xy[0], xy[1])))
             .toString();
-        print(" get prompt [${prompt}]");
-        if (prompt != "" && prompt.isNotEmpty) {
+        if (prompt.isNotEmpty) {
           _commandStart = CellAnchor(xy[0], owner: terminal.buffer.currentLine);
-          print(' set start ${commandBuffer.toString()} -- ${ terminal.buffer.currentLine.toString()}');
         }
         break;
     }
@@ -186,32 +177,26 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
 
   void _handleCommandEnd() {
     if (_commandStart == null || _commandEnd == null) return;
-    final command = terminal.buffer
+    terminal.buffer
         .getText(BufferRangeLine(_commandStart!.offset, _commandEnd!.offset))
         .trim();
-    print('command: $command');
   }
 
   void _handleCommandFinished(int? exitCode) {
     if (_commandEnd == null || _commandFinished == null) return;
-    final result = terminal.buffer
+    terminal.buffer
         .getText(BufferRangeLine(_commandEnd!.offset, _commandFinished!.offset))
         .trim();
-    print('result: $result');
-    print('exitCode: $exitCode');
   }
 
   final suggestionView = SuggestionViewController();
 
   String? get commandBuffer {
-    print(' try get command buffer ${_commandStart}');
     final commandStart = _commandStart;
     if (commandStart == null || _commandEnd != null) {
       return null;
     }
 
-    var cmd = terminal.buffer.getText(BufferRangeLine(_commandStart!.offset, CellOffset(0,0)));
-    print(' get command  [${cmd}] ${terminal.buffer.cursorX}, ${terminal.buffer.absoluteCursorY},');
     var commandRange = BufferRangeLine(
       commandStart.offset,
       CellOffset(
@@ -232,8 +217,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
 
     final suggestions = engine.getSuggestions(command).toList();
     suggestionView.update(suggestions);
-
-    print('suggestions: $suggestions');
 
     if (suggestions.isNotEmpty) {
       suggestionOverlay.update(terminalKey.currentState!.globalCursorRect);

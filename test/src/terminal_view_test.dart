@@ -205,7 +205,12 @@ void main() {
 
       await tester.pumpAndSettle();
 
-      expect(output, isNotEmpty);
+      expect(output, hasLength(1));
+
+      await tester.sendEventToBinding(pointer.up());
+      await tester.pumpAndSettle();
+
+      expect(output, hasLength(2));
     });
 
     testWidgets('does not respond when disabled', (tester) async {
@@ -453,6 +458,93 @@ void main() {
   });
 
   group('RenderTerminal update mode', () {
+    testWidgets('autoScrollDown steps immediately near viewport edges',
+        (tester) async {
+      final terminal = Terminal();
+      final scrollController = ScrollController();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                scrollController: scrollController,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write(List.generate(80, (index) => 'line $index').join('\r\n'));
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      final middleOffset = scrollController.position.maxScrollExtent / 2;
+      scrollController.jumpTo(middleOffset);
+      await tester.pump();
+
+      final beforeDown = scrollController.offset;
+      state.autoScrollDown(
+        Offset(0, state.renderTerminal.size.height - 1),
+      );
+      expect(scrollController.offset, greaterThan(beforeDown));
+
+      final beforeUp = scrollController.offset;
+      state.autoScrollDown(const Offset(0, 0));
+      expect(scrollController.offset, lessThan(beforeUp));
+    });
+
+    testWidgets('text input scrolls to bottom in the next frame',
+        (tester) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final scrollController = ScrollController();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                scrollController: scrollController,
+                textStyle: const TerminalStyle(fontSize: 12),
+                autofocus: true,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write(List.generate(40, (index) => 'line $index').join('\r\n'));
+      await tester.pump();
+
+      expect(scrollController.position.maxScrollExtent, greaterThan(0));
+
+      scrollController.jumpTo(0);
+      await tester.pump();
+      expect(scrollController.offset, 0);
+
+      await tester.tap(find.byType(TerminalView));
+      await tester.pump(const Duration(seconds: 1));
+
+      binding.testTextInput.enterText('x');
+      await binding.idle();
+      expect(terminalOutput.join(), 'x');
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        scrollController.offset,
+        scrollController.position.maxScrollExtent,
+      );
+    });
+
     testWidgets('updates scroll extent when line count grows', (tester) async {
       final terminal = Terminal();
       final scrollController = ScrollController();

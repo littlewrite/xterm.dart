@@ -621,27 +621,12 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 }
 
-bool _isAscii(String char) {
-  return char.codeUnitAt(0) <= 0x7F;
-}
-
-bool _isChinese(String char) {
-  final code = char.codeUnitAt(0);
-  return (code >= 0x4E00 && code <= 0x9FFF) ||
-      (code >= 0x3400 && code <= 0x4DBF);
-}
-
-bool _isControlChar(String char) {
-  final code = char.codeUnitAt(0);
-  return (code < 0x20 || code == 0x7F); // ASCII control characters
-}
-
 String formatChunk(String chunk) {
   final buffer = StringBuffer();
   for (var i = 0; i < chunk.length; i++) {
     final char = chunk[i];
     final code = char.codeUnitAt(0);
-    
+
     if (code == 0x1b) {
       buffer.write('\\e');
     } else if (code == 0x07) {
@@ -667,7 +652,7 @@ String formatIntList(List<int> intList) {
   final buffer = StringBuffer();
   for (var i = 0; i < intList.length; i++) {
     final code = intList[i];
-    
+
     if (code == 0x1b) {
       buffer.write('\\e');
     } else if (code == 0x07) {
@@ -692,10 +677,8 @@ String formatIntList(List<int> intList) {
 String formatInt(int code) {
   if (_isControlCode(code)) {
     return '\\x${code.toRadixString(16).padLeft(2, '0')}';
-  } else {
-    return String.fromCharCode(code);
   }
-  return "";
+  return String.fromCharCode(code);
 }
 
 bool _isControlCode(int code) {
@@ -705,7 +688,7 @@ bool _isControlCode(int code) {
 String unescapeTerminalControl(String input) {
   final buffer = StringBuffer();
   int i = 0;
-  
+
   while (i < input.length) {
     if (input[i] == '\\') {
       if (i + 1 < input.length) {
@@ -758,6 +741,6 @@ String unescapeTerminalControl(String input) {
       i++;
     }
   }
-  
+
   return buffer.toString();
 }

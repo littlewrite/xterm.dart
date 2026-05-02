@@ -1,15 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:async';
 
 import 'package:example/src/platform_menu.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:xterm/xterm.dart';
-import 'package:xterm/src/ui/search_box.dart';
-import 'package:xterm/src/ui/render.dart';
 
 void main() {
   runApp(MyApp());
@@ -46,6 +42,7 @@ class Home extends StatefulWidget {
 
 class CustomSearchBox extends StatefulWidget implements TerminalSearchDelegate {
   final TerminalSearchController _searchController;
+  @override
   final bool isVisible;
   final VoidCallback? onHide;
   final VoidCallback? onClose;
@@ -89,7 +86,6 @@ class _CustomSearchBoxState extends State<CustomSearchBox> {
   @override
   void initState() {
     super.initState();
-    print(' initState customer search box');
     _controller.text = widget.searchController.searchText;
     _caseSensitive = widget.searchController.caseSensitive;
     _wholeWord = widget.searchController.wholeWord;
@@ -274,7 +270,6 @@ class _HomeState extends State<Home> {
   }
 
   void _startPty() {
-    print("debug get shell ${shell}");
     pty = Pty.start(
       shell,
       columns: terminal.viewWidth,
@@ -299,21 +294,14 @@ class _HomeState extends State<Home> {
     };
   }
 
-  void _tapUp(TapUpDetails details, CellOffset offset) {
-    print('Tapped at: $details');
-    print('Tapped at offset: $offset');
-  }
+  void _tapUp(TapUpDetails details, CellOffset offset) {}
 
   void _secondTapUp(
     TapUpDetails details,
     CellOffset offset,
-  ) {
-    print('Second Tapped at: $details');
-    print('Second Tapped at offset: $offset');
-  }
+  ) {}
 
   Widget _setSearchBox(controller) {
-    print(' get setSearchBox');
     return CustomSearchBox(
       searchController: controller,
     );
