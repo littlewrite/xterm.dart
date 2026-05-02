@@ -1,15 +1,19 @@
-import 'package:flutter/cupertino.dart';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
-import 'package:xterm/core.dart';
+import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/input/keys.dart';
+import 'package:xterm/src/core/mouse/button.dart';
+import 'package:xterm/src/core/mouse/button_state.dart';
+import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
 import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
-import 'package:xterm/src/ui/keyboard_visibility.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/scroll_handler.dart';
 import 'package:xterm/src/ui/shortcut/actions.dart';
@@ -40,6 +44,8 @@ class TerminalView extends StatefulWidget {
     this.keyboardType = TextInputType.emailAddress,
     this.keyboardAppearance = Brightness.dark,
     this.cursorType = TerminalCursorType.block,
+    this.cursorBlink = false,
+    this.cursorBlinkInterval = const Duration(milliseconds: 530),
     this.alwaysShowCursor = false,
     this.deleteDetection = false,
     this.shortcuts,
@@ -48,6 +54,15 @@ class TerminalView extends StatefulWidget {
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
     this.getCustomSearchDelegate,
+    this.hideScrollBar = true,
+    this.viewOffset = Offset.zero,
+    this.showToolbar = true,
+    this.enableSuggestions = true,
+    this.scrollBehavior,
+    this.toolbarBuilder,
+    this.onCopied,
+    this.onSelectAll,
+    this.onPaste,
   });
 
   /// The underlying terminal that this widget renders.
@@ -112,6 +127,12 @@ class TerminalView extends StatefulWidget {
   /// The type of cursor to use. [TerminalCursorType.block] by default.
   final TerminalCursorType cursorType;
 
+  /// Whether the cursor should blink. [false] by default to match legacy behavior.
+  final bool cursorBlink;
+
+  /// Interval used when [cursorBlink] is enabled.
+  final Duration cursorBlinkInterval;
+
   /// Whether to always show the cursor. This is useful for debugging.
   /// [false] by default.
   final bool alwaysShowCursor;
@@ -143,11 +164,36 @@ class TerminalView extends StatefulWidget {
   /// emulators. True by default.
   final bool simulateScroll;
 
+  final bool hideScrollBar;
+
+  final Offset viewOffset;
+
+  final bool showToolbar;
+
+  /// If this is false, some Chinese Android will open safe keyboard.
+  final bool enableSuggestions;
+
+  /// Allows customizing the scroll behavior used by the terminal viewport.
+  final ScrollBehavior? scrollBehavior;
+
+  /// Optional builder to customize selection toolbar items shown by the input bridge.
+  final CustomTextEditToolbarBuilder? toolbarBuilder;
+
+  /// Callback to show toast after copy operation.
+  final void Function()? onCopied;
+
+  /// Callback to select all text in the terminal.
+  final void Function()? onSelectAll;
+
+  /// Callback to paste text from clipboard to terminal.
+  final void Function()? onPaste;
+
   @override
   State<TerminalView> createState() => TerminalViewState();
 }
 
-class TerminalViewState extends State<TerminalView> {
+class TerminalViewState extends State<TerminalView>
+    with TickerProviderStateMixin {
   late FocusNode _focusNode;
 
   late final ShortcutManager _shortcutManager;
@@ -160,8 +206,12 @@ class TerminalViewState extends State<TerminalView> {
 
   final _searchBoxKey = GlobalKey();
 
-  String? _composingText;
   bool _hasInputConnection = false;
+  Timer? _cursorBlinkTimer;
+  final _cursorBlinkVisible = ValueNotifier<bool>(true);
+  bool _previousBlinkEnabled = false;
+
+  final _composingText = ValueNotifier<String?>(null);
 
   late TerminalController _controller;
 
@@ -179,16 +229,19 @@ class TerminalViewState extends State<TerminalView> {
       _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
 
   late Widget _searchBox;
+  late final textSizeNoti = ValueNotifier(widget.textStyle.fontSize);
 
   @override
   void initState() {
     _focusNode = widget.focusNode ?? FocusNode();
-    _controller = widget.controller ?? TerminalController();
+    _focusNode.addListener(_handleFocusChange);
+    _controller = widget.controller ?? TerminalController(vsync: this);
     _scrollController = widget.scrollController ?? ScrollController();
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
     );
     super.initState();
+    _updateCursorBlink(scheduleSetState: false);
     _initSearchBox();
     widget.terminal.onSearch = _showSearch;
     widget.terminal.onCloseSearch = _closeSearch;
@@ -215,16 +268,19 @@ class TerminalViewState extends State<TerminalView> {
   @override
   void didUpdateWidget(TerminalView oldWidget) {
     if (oldWidget.focusNode != widget.focusNode) {
+      _focusNode.removeListener(_handleFocusChange);
       if (oldWidget.focusNode == null) {
         _focusNode.dispose();
       }
       _focusNode = widget.focusNode ?? FocusNode();
+      _focusNode.addListener(_handleFocusChange);
+      _updateCursorBlink(resetVisible: true);
     }
     if (oldWidget.controller != widget.controller) {
       if (oldWidget.controller == null) {
         _controller.dispose();
       }
-      _controller = widget.controller ?? TerminalController();
+      _controller = widget.controller ?? TerminalController(vsync: this);
     }
     if (oldWidget.scrollController != widget.scrollController) {
       if (oldWidget.scrollController == null) {
@@ -233,11 +289,32 @@ class TerminalViewState extends State<TerminalView> {
       _scrollController = widget.scrollController ?? ScrollController();
     }
     _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
+    if (oldWidget.textStyle.fontSize != widget.textStyle.fontSize) {
+      textSizeNoti.value = widget.textStyle.fontSize;
+    }
+    if (oldWidget.cursorBlink != widget.cursorBlink ||
+        oldWidget.cursorBlinkInterval != widget.cursorBlinkInterval ||
+        oldWidget.alwaysShowCursor != widget.alwaysShowCursor) {
+      _updateCursorBlink(resetVisible: true);
+    }
+    if (oldWidget.terminal != widget.terminal) {
+      oldWidget.terminal.onSearch = null;
+      oldWidget.terminal.onCloseSearch = null;
+    }
+    if (oldWidget.terminal != widget.terminal ||
+        oldWidget.controller != widget.controller ||
+        oldWidget.getCustomSearchDelegate != widget.getCustomSearchDelegate ||
+        oldWidget.theme != widget.theme) {
+      _initSearchBox();
+      widget.terminal.onSearch = _showSearch;
+      widget.terminal.onCloseSearch = _closeSearch;
+    }
     super.didUpdateWidget(oldWidget);
   }
 
   @override
   void dispose() {
+    _focusNode.removeListener(_handleFocusChange);
     if (widget.focusNode == null) {
       _focusNode.dispose();
     }
@@ -248,37 +325,71 @@ class TerminalViewState extends State<TerminalView> {
       _scrollController.dispose();
     }
     _shortcutManager.dispose();
+    textSizeNoti.dispose();
+    _cursorBlinkTimer?.cancel();
+    _cursorBlinkVisible.dispose();
+    _composingText.dispose();
+    widget.terminal.onSearch = null;
+    widget.terminal.onCloseSearch = null;
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    Widget child = Scrollable(
-      key: _scrollableKey,
-      controller: _scrollController,
-      viewportBuilder: (context, offset) {
-        return _TerminalView(
-          key: _viewportKey,
-          terminal: widget.terminal,
-          controller: _controller,
-          offset: offset,
-          padding: MediaQuery.of(context).padding,
-          autoResize: widget.autoResize,
-          textStyle: widget.textStyle,
-          textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
-          theme: widget.theme,
-          focusNode: _focusNode,
-          cursorType: widget.cursorType,
-          alwaysShowCursor: widget.alwaysShowCursor,
-          onEditableRect: _hasInputConnection &&
-                  !widget.hardwareKeyboardOnly &&
-                  !widget.readOnly
-              ? _onEditableRect
-              : null,
-          composingText: _composingText,
-        );
-      },
+    Widget child = ScrollConfiguration(
+      behavior: widget.scrollBehavior ?? const _TerminalScrollBehavior(),
+      child: Scrollable(
+        key: _scrollableKey,
+        controller: _scrollController,
+        physics: const ClampingScrollPhysics(),
+        viewportBuilder: (context, offset) {
+          return ValueListenableBuilder(
+            valueListenable: textSizeNoti,
+            builder: (context1, textSize, child1) {
+              return ValueListenableBuilder(
+                valueListenable: _cursorBlinkVisible,
+                builder: (context2, cursorBlinkVisible, child2) {
+                  return ValueListenableBuilder(
+                    valueListenable: _composingText,
+                    builder: (context3, composingText, child3) {
+                      return _TerminalView(
+                        key: _viewportKey,
+                        terminal: widget.terminal,
+                        controller: _controller,
+                        offset: offset,
+                        padding: MediaQuery.of(context).padding,
+                        autoResize: widget.autoResize,
+                        textStyle:
+                            widget.textStyle.copyWith(fontSize: textSize),
+                        textScaler: widget.textScaler ??
+                            MediaQuery.textScalerOf(context),
+                        theme: widget.theme,
+                        focusNode: _focusNode,
+                        cursorType: widget.cursorType,
+                        cursorBlinkEnabled: _cursorBlinkEnabled,
+                        cursorBlinkVisible: cursorBlinkVisible,
+                        alwaysShowCursor: widget.alwaysShowCursor,
+                        paintSelectionHandles: widget.showToolbar,
+                        onEditableRect: _hasInputConnection &&
+                                !widget.hardwareKeyboardOnly &&
+                                !widget.readOnly
+                            ? _onEditableRect
+                            : null,
+                        composingText: composingText,
+                      );
+                    },
+                  );
+                },
+              );
+            },
+          );
+        },
+      ),
     );
+
+    if (!widget.hideScrollBar) {
+      child = Scrollbar(controller: _scrollController, child: child);
+    }
 
     child = TerminalScrollGestureHandler(
       terminal: widget.terminal,
@@ -296,10 +407,12 @@ class TerminalViewState extends State<TerminalView> {
         inputType: widget.keyboardType,
         keyboardAppearance: widget.keyboardAppearance,
         deleteDetection: widget.deleteDetection,
+        enableSuggestions: widget.enableSuggestions,
         onInsert: _onInsert,
         onDelete: () {
           _scrollToBottom();
           widget.terminal.keyInput(TerminalKey.backspace);
+          _updateCursorBlink(resetVisible: true);
         },
         onComposing: _onComposing,
         onAction: (action) {
@@ -308,11 +421,18 @@ class TerminalViewState extends State<TerminalView> {
           if (action == TextInputAction.done ||
               action == TextInputAction.newline) {
             widget.terminal.keyInput(TerminalKey.enter);
+            _updateCursorBlink(resetVisible: true);
           }
         },
         onKeyEvent: _handleKeyEvent,
         onInputConnectionChange: _onInputConnectionChange,
         readOnly: widget.readOnly,
+        toolbarBuilder: widget.toolbarBuilder,
+        hasSelection: () => _controller.selection != null,
+        getSelectedText: () => renderTerminal.selectedText ?? '',
+        onCopied: widget.onCopied,
+        onSelectAll: widget.onSelectAll ?? () => renderTerminal.selectAll(),
+        onPaste: widget.onPaste,
         child: child,
       );
     } else if (!widget.readOnly) {
@@ -333,12 +453,9 @@ class TerminalViewState extends State<TerminalView> {
       child: child,
     );
 
-    child = KeyboardVisibilty(
-      onKeyboardShow: _onKeyboardShow,
-      child: child,
-    );
-
     child = TerminalGestureHandler(
+      viewOffset: widget.viewOffset,
+      showToolbar: widget.showToolbar,
       terminalView: this,
       terminalController: _controller,
       onTapUp: _onTapUp,
@@ -348,13 +465,11 @@ class TerminalViewState extends State<TerminalView> {
       onSecondaryTapUp:
           widget.onSecondaryTapUp != null ? _onSecondaryTapUp : null,
       readOnly: widget.readOnly,
+      scrollController: _scrollController,
       child: child,
     );
 
-    child = MouseRegion(
-      cursor: widget.mouseCursor,
-      child: child,
-    );
+    child = MouseRegion(cursor: widget.mouseCursor, child: child);
 
     child = Container(
       color: widget.theme.background.withOpacity(widget.backgroundOpacity),
@@ -389,6 +504,33 @@ class TerminalViewState extends State<TerminalView> {
     _customTextEditKey.currentState?.closeKeyboard();
   }
 
+  void unFocus() {
+    _focusNode.unfocus();
+    _customTextEditKey.currentState?.closeKeyboard();
+  }
+
+  void showSelectionToolbar(Rect globalSelectionRect) {
+    _customTextEditKey.currentState?.showToolbar(
+      globalSelectionRect: globalSelectionRect,
+    );
+  }
+
+  void hideSelectionToolbar() {
+    _customTextEditKey.currentState?.hideToolbar();
+  }
+
+  bool get isSelectionToolbarShown =>
+      _customTextEditKey.currentState?.isToolbarShown ?? false;
+
+  void toggleFocus() {
+    _customTextEditKey.currentState?.toggleKeyboard();
+    if (_focusNode.hasFocus) {
+      _focusNode.unfocus();
+    } else {
+      _focusNode.requestFocus();
+    }
+  }
+
   Rect get cursorRect {
     return renderTerminal.cursorOffset & renderTerminal.cellSize;
   }
@@ -400,21 +542,73 @@ class TerminalViewState extends State<TerminalView> {
     );
   }
 
+  bool get _cursorBlinkEnabled {
+    return widget.cursorBlink &&
+        _focusNode.hasFocus &&
+        !widget.alwaysShowCursor;
+  }
+
+  void _handleFocusChange() {
+    _updateCursorBlink(resetVisible: true);
+  }
+
+  void _updateCursorBlink({
+    bool resetVisible = false,
+    bool scheduleSetState = true,
+  }) {
+    final shouldBlink = _cursorBlinkEnabled;
+    final blinkChanged = shouldBlink != _previousBlinkEnabled;
+    _previousBlinkEnabled = shouldBlink;
+
+    _cursorBlinkTimer?.cancel();
+
+    var shouldNotify = blinkChanged;
+
+    if ((resetVisible || !shouldBlink) && !_cursorBlinkVisible.value) {
+      _cursorBlinkVisible.value = true;
+      shouldNotify = true;
+    }
+
+    if (shouldBlink) {
+      _cursorBlinkTimer = Timer.periodic(widget.cursorBlinkInterval, (_) {
+        if (!mounted) {
+          return;
+        }
+        _cursorBlinkVisible.value = !_cursorBlinkVisible.value;
+      });
+    }
+
+    if (shouldNotify && scheduleSetState && mounted) {
+      setState(() {});
+    }
+  }
+
   void _onTapUp(TapUpDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onTapUp?.call(details, offset);
+    widget.terminal.mouseInput(
+      TerminalMouseButton.left,
+      TerminalMouseButtonState.up,
+      offset,
+    );
   }
 
-  void _onTapDown(_) {
-    if (_controller.selection != null) {
-      _controller.clearSelection();
-    } else {
+  void _onTapDown(TapDownDetails details) {
+    if (_controller.selection == null) {
       if (!widget.hardwareKeyboardOnly) {
         _customTextEditKey.currentState?.requestKeyboard();
       } else {
         _focusNode.requestFocus();
       }
     }
+
+    _updateCursorBlink(resetVisible: true);
+
+    widget.terminal.mouseInput(
+      TerminalMouseButton.left,
+      TerminalMouseButtonState.down,
+      renderTerminal.getCellOffset(details.localPosition),
+    );
   }
 
   void _onSecondaryTapDown(TapDownDetails details) {
@@ -444,10 +638,12 @@ class TerminalViewState extends State<TerminalView> {
     }
 
     _scrollToBottom();
+    _updateCursorBlink(resetVisible: true);
   }
 
   void _onComposing(String? text) {
-    setState(() => _composingText = text);
+    _composingText.value = text;
+    _updateCursorBlink(resetVisible: true);
   }
 
   KeyEventResult _handleKeyEvent(FocusNode focusNode, KeyEvent event) {
@@ -470,12 +666,25 @@ class TerminalViewState extends State<TerminalView> {
       return KeyEventResult.ignored;
     }
 
-    final key = keyToTerminalKey(event.logicalKey);
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
 
+    final key = keyToTerminalKey(event.logicalKey);
     if (key == null) {
       return KeyEventResult.ignored;
     }
 
+    final handled = _sendTerminalKey(key);
+
+    if (!handled) {
+      return KeyEventResult.ignored;
+    }
+
+    return KeyEventResult.handled;
+  }
+
+  bool _sendTerminalKey(TerminalKey key) {
     final handled = widget.terminal.keyInput(
       key,
       ctrl: HardwareKeyboard.instance.isControlPressed,
@@ -485,17 +694,10 @@ class TerminalViewState extends State<TerminalView> {
 
     if (handled) {
       _scrollToBottom();
+      _updateCursorBlink(resetVisible: true);
     }
 
-    return handled ? KeyEventResult.handled : KeyEventResult.ignored;
-  }
-
-  void _onKeyboardShow() {
-    if (_focusNode.hasFocus) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom();
-      });
-    }
+    return handled;
   }
 
   void _onEditableRect(
@@ -523,7 +725,36 @@ class TerminalViewState extends State<TerminalView> {
   void _scrollToBottom() {
     final position = _scrollableKey.currentState?.position;
     if (position != null) {
-      position.jumpTo(position.maxScrollExtent);
+      position.animateTo(
+        position.maxScrollExtent,
+        duration: const Duration(milliseconds: 377),
+        curve: Curves.fastEaseInToSlowEaseOut,
+      );
+    }
+  }
+
+  void autoScrollDown(Offset localPointerPosition) {
+    final scrollThrshold = renderTerminal.lineHeight * 3;
+    final position = _scrollableKey.currentState?.position;
+    if (position == null) return;
+    final notBottom = position.pixels < position.maxScrollExtent;
+    final shouldScrollDown =
+        localPointerPosition.dy > renderTerminal.size.height - scrollThrshold;
+    if (shouldScrollDown && notBottom) {
+      position.animateTo(
+        position.pixels + scrollThrshold,
+        duration: const Duration(milliseconds: 177),
+        curve: Curves.fastEaseInToSlowEaseOut,
+      );
+    }
+    final notTop = position.pixels > 0;
+    final shouldScrollUp = localPointerPosition.dy < scrollThrshold;
+    if (shouldScrollUp && notTop) {
+      position.animateTo(
+        position.pixels - scrollThrshold,
+        duration: const Duration(milliseconds: 177),
+        curve: Curves.fastEaseInToSlowEaseOut,
+      );
     }
   }
 
@@ -609,7 +840,10 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.theme,
     required this.focusNode,
     required this.cursorType,
+    required this.cursorBlinkEnabled,
+    required this.cursorBlinkVisible,
     required this.alwaysShowCursor,
+    required this.paintSelectionHandles,
     this.onEditableRect,
     this.composingText,
   });
@@ -634,7 +868,13 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final TerminalCursorType cursorType;
 
+  final bool cursorBlinkEnabled;
+
+  final bool cursorBlinkVisible;
+
   final bool alwaysShowCursor;
+
+  final bool paintSelectionHandles;
 
   final EditableRectCallback? onEditableRect;
 
@@ -653,7 +893,10 @@ class _TerminalView extends LeafRenderObjectWidget {
       theme: theme,
       focusNode: focusNode,
       cursorType: cursorType,
+      cursorBlinkEnabled: cursorBlinkEnabled,
+      cursorBlinkVisible: cursorBlinkVisible,
       alwaysShowCursor: alwaysShowCursor,
+      paintSelectionHandles: paintSelectionHandles,
       onEditableRect: onEditableRect,
       composingText: composingText,
     );
@@ -672,8 +915,24 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..theme = theme
       ..focusNode = focusNode
       ..cursorType = cursorType
+      ..cursorBlinkEnabled = cursorBlinkEnabled
+      ..cursorBlinkVisible = cursorBlinkVisible
       ..alwaysShowCursor = alwaysShowCursor
+      ..paintSelectionHandles = paintSelectionHandles
       ..onEditableRect = onEditableRect
       ..composingText = composingText;
+  }
+}
+
+class _TerminalScrollBehavior extends ScrollBehavior {
+  const _TerminalScrollBehavior();
+
+  @override
+  Widget buildOverscrollIndicator(
+    BuildContext context,
+    Widget child,
+    ScrollableDetails details,
+  ) {
+    return child;
   }
 }

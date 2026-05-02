@@ -8,6 +8,7 @@ import 'package:xterm/src/core/buffer/buffer.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
+import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
@@ -35,7 +36,10 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     required TerminalTheme theme,
     required FocusNode focusNode,
     required TerminalCursorType cursorType,
+    required bool cursorBlinkEnabled,
+    required bool cursorBlinkVisible,
     required bool alwaysShowCursor,
+    bool paintSelectionHandles = true,
     EditableRectCallback? onEditableRect,
     String? composingText,
   })  : _terminal = terminal,
@@ -45,7 +49,10 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         _autoResize = autoResize,
         _focusNode = focusNode,
         _cursorType = cursorType,
+        _cursorBlinkEnabled = cursorBlinkEnabled,
+        _cursorBlinkVisible = cursorBlinkVisible,
         _alwaysShowCursor = alwaysShowCursor,
+        _paintSelectionHandles = paintSelectionHandles,
         _shouldReportEditableRect = onEditableRect != null,
         _onEditableRect = onEditableRect,
         _composingText = composingText,
@@ -133,10 +140,31 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     markNeedsPaint();
   }
 
+  bool _cursorBlinkEnabled;
+  set cursorBlinkEnabled(bool value) {
+    if (value == _cursorBlinkEnabled) return;
+    _cursorBlinkEnabled = value;
+    markNeedsPaint();
+  }
+
+  bool _cursorBlinkVisible;
+  set cursorBlinkVisible(bool value) {
+    if (value == _cursorBlinkVisible) return;
+    _cursorBlinkVisible = value;
+    markNeedsPaint();
+  }
+
   bool _alwaysShowCursor;
   set alwaysShowCursor(bool value) {
     if (value == _alwaysShowCursor) return;
     _alwaysShowCursor = value;
+    markNeedsPaint();
+  }
+
+  bool _paintSelectionHandles;
+  set paintSelectionHandles(bool value) {
+    if (value == _paintSelectionHandles) return;
+    _paintSelectionHandles = value;
     markNeedsPaint();
   }
 
@@ -294,126 +322,99 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     );
   }
 
+  Iterable<int> _getYOffsetForFindingWord(int y) sync* {
+    yield 0;
+    if (y > 0) yield -1;
+    if (y < _terminal.buffer.lines.length - 1) yield 1;
+  }
+
   /// Selects entire words in the terminal that contains [from] and [to].
-  void selectWord(Offset from, [Offset? to]) {
-    final fromOffset = getCellOffset(from);
-    final fromBoundary = _terminal.buffer.getWordBoundary(fromOffset);
-    if (fromBoundary == null) return;
-    if (to == null) {
-      _controller.setSelection(
-        _terminal.buffer.createAnchorFromOffset(fromBoundary.begin),
-        _terminal.buffer.createAnchorFromOffset(fromBoundary.end),
-        mode: SelectionMode.line,
-      );
-    } else {
-      final toOffset = getCellOffset(to);
-      final toBoundary = _terminal.buffer.getWordBoundary(toOffset);
-      if (toBoundary == null) return;
-      final range = fromBoundary.merge(toBoundary);
-      _controller.setSelection(
-        _terminal.buffer.createAnchorFromOffset(range.begin),
-        _terminal.buffer.createAnchorFromOffset(range.end),
-        mode: SelectionMode.line,
-      );
+  /// In order to better mobile experience, we need to find the word boundary
+  /// in the range of [y, y+1, y-1] lines sequentially.
+  /// But we should check y>0 before y-1 and y<terminalHeight before y+1.
+  BufferRangeLine? selectWord(CellOffset from, [CellOffset? to]) {
+    BufferRangeLine? fromBoundary;
+
+    /// Toleration for the point position is not accurate.
+    for (final yOffset in _getYOffsetForFindingWord(from.y)) {
+      final fromOffset = CellOffset(from.x, from.y + yOffset);
+      fromBoundary = _terminal.buffer.getWordBoundary(fromOffset);
+      if (fromBoundary != null) break;
     }
+    if (fromBoundary == null) return null;
+
+    if (to == null) {
+      selectBufferRange(fromBoundary, mode: SelectionMode.line);
+      return fromBoundary;
+    } else {
+      /// Same as find [fromBoundary]
+      BufferRangeLine? toBoundary;
+      for (final yOffset in _getYOffsetForFindingWord(to.y)) {
+        final toOffset = CellOffset(to.x, to.y + yOffset);
+        toBoundary = _terminal.buffer.getWordBoundary(toOffset);
+        if (toBoundary != null) break;
+      }
+      if (toBoundary == null) return null;
+
+      final range = fromBoundary.merge(toBoundary);
+      selectBufferRange(range, mode: SelectionMode.line);
+      return range;
+    }
+  }
+
+  String? get selectedText {
+    final selection = _controller.selection;
+    if (selection == null) {
+      return null;
+    }
+    return _terminal.buffer.getText(selection);
   }
 
   void selectCharsetByCell(CellAnchor from, CellAnchor to) {
     _controller.setSelection(from, to);
   }
 
-  /// Saved starting position for drag selection.
-  int _lastSelectX = 0;
-  int _lastSelectY = 0;
-  bool _lastSelectInAltBuffer = false;
-
   /// Selects characters in the terminal that starts from [from] to [to]. At
   /// least one cell is selected even if [from] and [to] are same.
-  void selectCharacters(Offset from, [Offset? to]) {
-    final isAltBuffer = _terminal.isUsingAltBuffer;
-    final lines = _terminal.buffer.lines;
-
+  void selectCharacters(CellOffset from, [CellOffset? to]) {
     if (to == null) {
-      // Drag start: calculate and save the starting position.
-      final fromPosition = getCellOffset(from);
-      _lastSelectX = fromPosition.x;
-      _lastSelectY = fromPosition.y;
-      _lastSelectInAltBuffer = isAltBuffer;
-
-      if (fromPosition.y < 0 || fromPosition.y >= lines.length) return;
-      final line = lines[fromPosition.y];
-      if (!line.attached) return;
-
       _controller.setSelection(
-        line.createAnchor(fromPosition.x),
-        line.createAnchor(fromPosition.x),
+        _terminal.buffer.createAnchorFromOffset(from),
+        _terminal.buffer.createAnchorFromOffset(from),
       );
-      return;
+    } else {
+      if (to.x >= from.x) {
+        to = CellOffset(to.x + 1, to.y);
+      }
+      _controller.setSelection(
+        _terminal.buffer.createAnchorFromOffset(from),
+        _terminal.buffer.createAnchorFromOffset(to),
+      );
     }
+  }
 
-    // Buffer switched during drag, clear selection.
-    if (_lastSelectInAltBuffer != isAltBuffer) {
-      _controller.clearSelection();
-      return;
-    }
-
-    // Drag update: use saved starting position to avoid issues when
-    // scrollOffset changes during selection.
-    final fromPosition = CellOffset(_lastSelectX, _lastSelectY);
-    var toPosition = getCellOffset(to);
-
-    // Auto-scroll is disabled in alt buffer since apps like tmux/vim
-    // manage their own scrolling.
-    if (!isAltBuffer) {
-      _autoScrollIfNeeded(toPosition);
-    }
-
-    // Extend selection to include the end cell when on the same line.
-    if (toPosition.y == fromPosition.y && toPosition.x >= fromPosition.x) {
-      toPosition = CellOffset(toPosition.x + 1, toPosition.y);
-    }
-
-    // Normalize selection range.
-    final begin = fromPosition.isBefore(toPosition) ? fromPosition : toPosition;
-    final end = fromPosition.isBefore(toPosition) ? toPosition : fromPosition;
-
-    // Validate and create anchors.
-    if (begin.y < 0 || begin.y >= lines.length) return;
-    if (end.y < 0 || end.y >= lines.length) return;
-    final beginLine = lines[begin.y];
-    final endLine = lines[end.y];
-    if (!beginLine.attached || !endLine.attached) return;
-
+  void selectBufferRange(BufferRange range, {SelectionMode? mode}) {
+    final normalized = range.normalized;
     _controller.setSelection(
-      beginLine.createAnchor(begin.x),
-      endLine.createAnchor(end.x),
+      _terminal.buffer.createAnchorFromOffset(normalized.begin),
+      _terminal.buffer.createAnchorFromOffset(normalized.end),
+      mode: mode ?? _controller.selectionMode,
     );
   }
 
-  /// Auto-scrolls the viewport when selection reaches edges.
-  void _autoScrollIfNeeded(CellOffset toPosition) {
-    final viewportHeight = _viewportHeight;
-    final cellHeight = _painter.cellSize.height;
-    final currentScroll = _scrollOffset;
-    final visibleTop = currentScroll;
-    final visibleBottom = currentScroll + viewportHeight;
-    final selectionY = toPosition.y * cellHeight;
-
-    if (selectionY < visibleTop) {
-      final newScroll = selectionY - cellHeight;
-      _offset.jumpTo(
-        (newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) *
-                _scrollSpeed +
-            currentScroll,
-      );
-    } else if (selectionY > visibleBottom - cellHeight) {
-      final newScroll = selectionY - viewportHeight + cellHeight * 2;
-      _offset.jumpTo(
-        (newScroll.clamp(0.0, _maxScrollExtent) - currentScroll) *
-                _scrollSpeed +
-            currentScroll,
-      );
+  /// Selects all content in the terminal buffer.
+  void selectAll() {
+    final buffer = _terminal.buffer;
+    if (buffer.height == 0) {
+      return;
     }
+    final start = buffer.createAnchor(0, 0);
+    final end = buffer.createAnchor(buffer.viewWidth, buffer.height - 1);
+    _controller.setSelection(start, end);
+  }
+
+  void clearSelection() {
+    _controller.clearSelection();
   }
 
   /// Send a mouse event at [offset] with [button] being currently in [buttonState].
@@ -560,7 +561,13 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         _paintComposingText(canvas, offset + cursorOffset);
       }
 
-      if (_shouldShowCursor) {
+      final shouldPaintCursor = _shouldShowCursor &&
+          (!_cursorBlinkEnabled ||
+              !_focusNode.hasFocus ||
+              _cursorBlinkVisible ||
+              _isComposingText);
+
+      if (shouldPaintCursor) {
         _painter.paintCursor(
           canvas,
           offset + cursorOffset,
@@ -607,9 +614,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       _painter.cellSize.height,
       PlaceholderAlignment.middle,
     );
-    builder.pushStyle(
-      style.getTextStyle(textScaler: _painter.textScaler),
-    );
+    builder.pushStyle(style.getTextStyle(textScaler: _painter.textScaler));
     builder.addText(composingText);
 
     final paragraph = builder.build();
@@ -618,13 +623,16 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     canvas.drawParagraph(paragraph, Offset(0, offset.dy));
   }
 
+  // RenderTerminal 中的 _paintSelection 方法更新版本
+
   void _paintSelection(
     Canvas canvas,
     BufferRange selection,
     int firstLine,
     int lastLine,
   ) {
-    for (final segment in selection.toSegments()) {
+    final segments = selection.toSegments();
+    for (final segment in segments) {
       if (segment.line >= _terminal.buffer.lines.length) {
         break;
       }

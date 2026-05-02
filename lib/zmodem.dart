@@ -284,6 +284,15 @@ class ZModemMux {
       stdin.add(dataToSend);
     }
   }
+
+  /// Disposes resources and closes streams.
+  void dispose() {
+    _stdoutSubscription.cancel();
+    _terminalSink.close();
+    _receiveSink?.close();
+    _fileOffers = null;
+    _session = null;
+  }
 }
 
 extension ListExtension on List<int> {

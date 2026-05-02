@@ -54,6 +54,11 @@ class TerminalKeyboardEvent {
       platform: platform ?? this.platform,
     );
   }
+
+  @override
+  String toString() {
+    return 'TerminalKeyboardEvent(key: $key, shift: $shift, ctrl: $ctrl, alt: $alt, state: $state, altBuffer: $altBuffer, platform: $platform)';
+  }
 }
 
 /// TerminalInputHandler contains the logic for translating a [TerminalKeyboardEvent]
@@ -115,8 +120,9 @@ class KeytabInputHandler implements TerminalInputHandler {
       ctrl: event.ctrl,
       alt: event.alt,
       shift: event.shift,
+      ansiMode: event.state.ansiMode,
       newLineMode: event.state.lineFeedMode,
-      appCursorKeys: event.state.appKeypadMode,
+      appCursorKeys: event.state.cursorKeysMode,
       appKeyPad: event.state.appKeypadMode,
       appScreen: event.altBuffer,
       macos: event.platform == TerminalTargetPlatform.macos,

@@ -185,6 +185,7 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: PointerInputs.all(),
+        vsync: tester,
       );
 
       await tester.pumpWidget(
@@ -217,6 +218,7 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: PointerInputs.none(),
+        vsync: tester,
       );
 
       await tester.pumpWidget(
