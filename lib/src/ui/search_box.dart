@@ -502,8 +502,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
     }
 
     final theme = widget.theme; // 使用传入的主题
-
-    return Container(
+    final searchBox = Container(
       width: 300,
       decoration: BoxDecoration(
         color: theme.background.withOpacity(0.8),
@@ -512,13 +511,6 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
           color: theme.brightBlack,
           width: 1,
         ),
-        boxShadow: [
-          BoxShadow(
-            color: theme.foreground.withOpacity(0.8),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          ),
-        ],
       ),
       child: Padding(
         padding: const EdgeInsets.all(8),
@@ -627,6 +619,25 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
           ],
         ),
       ),
+    );
+
+    final materialSearchBox = Material(
+      type: MaterialType.transparency,
+      child: searchBox,
+    );
+    final materialLocalizations = Localizations.of<MaterialLocalizations>(
+      context,
+      MaterialLocalizations,
+    );
+    if (materialLocalizations != null) {
+      return materialSearchBox;
+    }
+    return Localizations.override(
+      context: context,
+      delegates: const <LocalizationsDelegate<dynamic>>[
+        DefaultMaterialLocalizations.delegate,
+      ],
+      child: materialSearchBox,
     );
   }
 }

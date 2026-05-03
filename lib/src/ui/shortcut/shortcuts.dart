@@ -2,6 +2,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import 'package:xterm/src/ui/shortcut/intents.dart';
+
+export 'intents.dart' show ShowSearchIntent;
+
 Map<ShortcutActivator, Intent> get defaultTerminalShortcuts {
   switch (defaultTargetPlatform) {
     case TargetPlatform.android:
@@ -16,6 +20,8 @@ Map<ShortcutActivator, Intent> get defaultTerminalShortcuts {
 }
 
 final Map<ShortcutActivator, Intent> _defaultShortcuts = {
+  SingleActivator(LogicalKeyboardKey.keyF, control: true):
+      const ShowSearchIntent(),
   SingleActivator(LogicalKeyboardKey.keyC, control: true, shift: true):
       CopySelectionTextIntent.copy,
   SingleActivator(LogicalKeyboardKey.keyV, control: true):
@@ -35,6 +41,8 @@ final Map<ShortcutActivator, Intent> _defaultShortcuts = {
 };
 
 final Map<ShortcutActivator, Intent> _defaultAppleShortcuts = {
+  SingleActivator(LogicalKeyboardKey.keyF, meta: true):
+      const ShowSearchIntent(),
   SingleActivator(LogicalKeyboardKey.keyC, meta: true):
       CopySelectionTextIntent.copy,
   SingleActivator(LogicalKeyboardKey.keyV, meta: true): const PasteTextIntent(

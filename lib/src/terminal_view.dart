@@ -59,6 +59,8 @@ class TerminalView extends StatefulWidget {
     this.enableSuggestions = true,
     this.scrollBehavior,
     this.toolbarBuilder,
+    this.contextMenuBuilder,
+    this.contextMenuActionsBuilder,
     this.onCopied,
     this.onSelectAll,
     this.onPaste,
@@ -177,6 +179,12 @@ class TerminalView extends StatefulWidget {
 
   /// Optional builder to customize selection toolbar items shown by the input bridge.
   final CustomTextEditToolbarBuilder? toolbarBuilder;
+
+  /// Optional builder to fully control selection context menu rendering.
+  final TerminalContextMenuBuilder? contextMenuBuilder;
+
+  /// Optional builder to customize the semantic action list for context menus.
+  final TerminalContextMenuActionsBuilder? contextMenuActionsBuilder;
 
   /// Callback to show toast after copy operation.
   final void Function()? onCopied;
@@ -427,11 +435,17 @@ class TerminalViewState extends State<TerminalView> {
         onInputConnectionChange: _onInputConnectionChange,
         readOnly: widget.readOnly,
         toolbarBuilder: widget.toolbarBuilder,
+        contextMenuBuilder: widget.contextMenuBuilder,
+        contextMenuActionsBuilder: widget.contextMenuActionsBuilder,
         hasSelection: () => _controller.selection != null,
         getSelectedText: () => renderTerminal.selectedText ?? '',
         onCopied: widget.onCopied,
         onSelectAll: widget.onSelectAll ?? () => renderTerminal.selectAll(),
         onPaste: widget.onPaste,
+        onClearSelection: () {
+          renderTerminal.clearSelection();
+          hideSelectionToolbar();
+        },
         child: child,
       );
     } else if (!widget.readOnly) {
@@ -464,10 +478,8 @@ class TerminalViewState extends State<TerminalView> {
       terminalController: _controller,
       onTapUp: _onTapUp,
       onTapDown: _onTapDown,
-      onSecondaryTapDown:
-          widget.onSecondaryTapDown != null ? _onSecondaryTapDown : null,
-      onSecondaryTapUp:
-          widget.onSecondaryTapUp != null ? _onSecondaryTapUp : null,
+      onSecondaryTapDown: _onSecondaryTapDown,
+      onSecondaryTapUp: _onSecondaryTapUp,
       readOnly: widget.readOnly,
       scrollController: _scrollController,
       child: child,
@@ -513,9 +525,46 @@ class TerminalViewState extends State<TerminalView> {
     _customTextEditKey.currentState?.closeKeyboard();
   }
 
-  void showSelectionToolbar(Rect globalSelectionRect) {
-    _customTextEditKey.currentState?.showToolbar(
-      globalSelectionRect: globalSelectionRect,
+  void showSelectionToolbar(
+    Rect globalSelectionRect, {
+    TerminalContextMenuTriggerKind triggerKind =
+        TerminalContextMenuTriggerKind.programmatic,
+  }) {
+    _customTextEditKey.currentState?.showContextMenu(
+      globalAnchorRect: globalSelectionRect,
+      menuKind: TerminalContextMenuKind.selection,
+      triggerKind: triggerKind,
+      selectedText: _selectedTextForCurrentSelection(),
+    );
+  }
+
+  void showTerminalContextMenu(
+    Rect globalAnchorRect, {
+    TerminalContextMenuTriggerKind triggerKind =
+        TerminalContextMenuTriggerKind.programmatic,
+    CellOffset? cellOffset,
+    List<TerminalContextMenuAction>? actions,
+  }) {
+    _customTextEditKey.currentState?.showContextMenu(
+      globalAnchorRect: globalAnchorRect,
+      menuKind: TerminalContextMenuKind.terminal,
+      triggerKind: triggerKind,
+      cellOffset: cellOffset,
+      actions: actions,
+    );
+  }
+
+  void showTerminalContextMenuAtCell(
+    CellOffset cellOffset, {
+    TerminalContextMenuTriggerKind triggerKind =
+        TerminalContextMenuTriggerKind.programmatic,
+    List<TerminalContextMenuAction>? actions,
+  }) {
+    showTerminalContextMenu(
+      _globalRectForCell(cellOffset),
+      triggerKind: triggerKind,
+      cellOffset: cellOffset,
+      actions: actions,
     );
   }
 
@@ -544,6 +593,23 @@ class TerminalViewState extends State<TerminalView> {
       renderTerminal.getTransformTo(null),
       cursorRect,
     );
+  }
+
+  Rect _globalRectForCell(CellOffset cellOffset) {
+    final localRect =
+        renderTerminal.getOffset(cellOffset) & renderTerminal.cellSize;
+    return MatrixUtils.transformRect(
+        renderTerminal.getTransformTo(null), localRect);
+  }
+
+  String? _selectedTextForCurrentSelection() {
+    final selection = _controller.selection;
+    if (selection == null) {
+      return null;
+    }
+
+    final selectedText = widget.terminal.buffer.getText(selection);
+    return selectedText.isEmpty ? null : selectedText;
   }
 
   bool get _cursorBlinkEnabled {
@@ -612,6 +678,13 @@ class TerminalViewState extends State<TerminalView> {
   void _onSecondaryTapUp(TapUpDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onSecondaryTapUp?.call(details, offset);
+    if (!widget.showToolbar || _controller.selection != null) {
+      return;
+    }
+    showTerminalContextMenuAtCell(
+      offset,
+      triggerKind: TerminalContextMenuTriggerKind.secondaryTap,
+    );
   }
 
   bool get hasInputConnection {
@@ -643,6 +716,14 @@ class TerminalViewState extends State<TerminalView> {
     final resultOverride = widget.onKeyEvent?.call(focusNode, event);
     if (resultOverride != null && resultOverride != KeyEventResult.ignored) {
       return resultOverride;
+    }
+
+    if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
+        event.logicalKey == LogicalKeyboardKey.escape &&
+        _controller.selection != null) {
+      renderTerminal.clearSelection();
+      hideSelectionToolbar();
+      return KeyEventResult.handled;
     }
 
     // ignore: invalid_use_of_protected_member

@@ -79,6 +79,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   bool _suppressNextTapUp = false;
   bool _mouseTapDownDispatched = false;
   Offset? _mouseSelectionLastPosition;
+  bool _showTouchSelectionUi = false;
+  int _activeMouseButtons = 0;
 
   // 延迟 tapDown 执行相关
   Timer? _tapDownTimer;
@@ -107,8 +109,22 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
   bool get _shouldShowHandles =>
       widget.showToolbar &&
+      _showTouchSelectionUi &&
       _selectedRange != null &&
       !_selectedRange!.isCollapsed;
+
+  bool get _shouldShowSelectionToolbar =>
+      widget.showToolbar &&
+      _showTouchSelectionUi &&
+      _selectedRange != null &&
+      !_selectedRange!.isCollapsed;
+
+  bool get _canAutoShowSelectionToolbar =>
+      _shouldShowSelectionToolbar &&
+      !_isViewportScrolling &&
+      !_isDraggingHandle &&
+      !_isDragHandleReady &&
+      _longPressInitialCellOffset == null;
 
   bool get _isViewportScrolling => _scrollActivityNotifier?.value ?? false;
 
@@ -242,14 +258,22 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _selectedRange = nextRange;
     }
 
-    if (!widget.showToolbar ||
-        !widget.terminalView.isSelectionToolbarShown ||
+    if (!_shouldShowSelectionToolbar ||
         nextRange == null ||
         nextRange.isCollapsed) {
       if (widget.showToolbar &&
           widget.terminalView.isSelectionToolbarShown &&
-          (nextRange == null || nextRange.isCollapsed)) {
+          (!_showTouchSelectionUi ||
+              nextRange == null ||
+              nextRange.isCollapsed)) {
         widget.terminalView.hideSelectionToolbar();
+      }
+      return;
+    }
+
+    if (!widget.terminalView.isSelectionToolbarShown) {
+      if (changed && _canAutoShowSelectionToolbar) {
+        _showSelectionToolbarForRange(nextRange);
       }
       return;
     }
@@ -258,10 +282,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       return;
     }
 
-    final Rect? rect = _selectionRectForRange(nextRange);
-    if (rect != null) {
-      widget.terminalView.showSelectionToolbar(rect);
-    }
+    _showSelectionToolbarForRange(nextRange);
   }
 
   List<Widget> _buildSelectionHandles() {
@@ -342,7 +363,11 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
               ? () {
                   final Rect? rect = _currentSelectionGlobalRect();
                   if (rect != null) {
-                    widget.terminalView.showSelectionToolbar(rect);
+                    widget.terminalView.showSelectionToolbar(
+                      rect,
+                      triggerKind:
+                          TerminalContextMenuTriggerKind.selectionHandle,
+                    );
                   }
                 }
               : null,
@@ -500,6 +525,21 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     return expandedRect.contains(localPosition);
   }
 
+  bool _isBlankCell(CellOffset cellOffset) {
+    final lines = terminalView.widget.terminal.buffer.lines;
+    if (cellOffset.y < 0 || cellOffset.y >= lines.length) {
+      return true;
+    }
+
+    final line = lines[cellOffset.y];
+    if (cellOffset.x < 0 || cellOffset.x >= line.length) {
+      return true;
+    }
+
+    final codePoint = line.getCodePoint(cellOffset.x);
+    return codePoint == 0 || codePoint == 0x20;
+  }
+
   bool _isDoubleTap(Offset position) {
     final now = DateTime.now();
     if (_lastTapTime != null && _lastTapPosition != null) {
@@ -529,6 +569,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     if (!_isPointerKindMouse(event.kind)) {
       return;
     }
+
+    _setTouchSelectionUiEnabled(false);
+    _activeMouseButtons = event.buttons;
 
     final details = TapDownDetails(
       kind: event.kind,
@@ -574,6 +617,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       return;
     }
 
+    final wasPrimaryButton = _activeMouseButtons == kPrimaryMouseButton;
+
     final details = TapUpDetails(
       kind: event.kind,
       globalPosition: event.position,
@@ -587,13 +632,17 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
     _resetMouseSelectionState();
 
-    if (_isDoubleTap(details.localPosition)) {
+    if (wasPrimaryButton && _isDoubleTap(details.localPosition)) {
       _handleDoubleTap(details.localPosition, details.kind);
       return;
     }
 
     if (_isDragHandleReady && !_isDraggingHandle) {
       _resetDragHandleState();
+    }
+
+    if (!wasPrimaryButton) {
+      return;
     }
 
     _tapUp(
@@ -760,11 +809,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
     final hasSelection = _selectedRange != null && !_selectedRange!.isCollapsed;
 
-    if (widget.showToolbar && hasSelection) {
-      final Rect? rect = _currentSelectionGlobalRect();
-      if (rect != null) {
-        widget.terminalView.showSelectionToolbar(rect);
-      }
+    if (!hasSelection) {
+      _setTouchSelectionUiEnabled(false);
     }
 
     _dispatchMouseTapUpIfNeeded();
@@ -779,6 +825,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     _mousePointerKind = null;
     _mouseTapDownDispatched = false;
     _mouseSelectionLastPosition = null;
+    _activeMouseButtons = 0;
   }
 
   void onTapUp(TapUpDetails details) {
@@ -821,11 +868,20 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       // 检查是否点击了拖杆
       final dragHandle = _detectDragHandle(details.localPosition);
       if (dragHandle != _DragHandleType.none) {
-        // 点击了拖杆，不做任何操作，等待可能的拖动
+        if (_showTouchSelectionUi) {
+          _showSelectionToolbarForCurrentSelection(
+            TerminalContextMenuTriggerKind.selectionHandle,
+          );
+        }
         return;
       }
 
-      // 点击选区内部或外部都清除选择
+      if (_showTouchSelectionUi && _isNearSelection(details.localPosition)) {
+        _showSelectionToolbarForCurrentSelection();
+        return;
+      }
+
+      // 点击选区外部清除选择
       _clearSelection();
     }
   }
@@ -888,7 +944,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     _isDragHandleReady = false;
     _isDraggingHandle = true;
     _longPressInitialCellOffset = null;
-    if (widget.showToolbar) {
+    if (_shouldShowSelectionToolbar) {
       widget.terminalView.hideSelectionToolbar();
     }
     HapticFeedback.selectionClick();
@@ -906,12 +962,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     if (_activeDragHandle == _DragHandleType.none) {
       return;
     }
-    if (widget.showToolbar) {
-      final Rect? rect = _currentSelectionGlobalRect();
-      if (rect != null) {
-        widget.terminalView.showSelectionToolbar(rect);
-      }
-    }
+    _showSelectionToolbarForCurrentSelection(
+      TerminalContextMenuTriggerKind.selectionHandle,
+    );
     _resetDragHandleState();
   }
 
@@ -928,13 +981,10 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
     setState(() {});
 
-    if (widget.showToolbar &&
+    if (_shouldShowSelectionToolbar &&
         widget.terminalView.isSelectionToolbarShown &&
         !_isViewportScrolling) {
-      final Rect? rect = _currentSelectionGlobalRect();
-      if (rect != null) {
-        widget.terminalView.showSelectionToolbar(rect);
-      }
+      _showSelectionToolbarForCurrentSelection();
     }
   }
 
@@ -1014,17 +1064,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       return;
     }
 
-    if (!widget.showToolbar ||
+    if (!_shouldShowSelectionToolbar ||
         _selectedRange == null ||
         _selectedRange!.isCollapsed ||
         !widget.terminalView.isSelectionToolbarShown) {
       return;
     }
 
-    final Rect? rect = _currentSelectionGlobalRect();
-    if (rect != null) {
-      widget.terminalView.showSelectionToolbar(rect);
-    }
+    _showSelectionToolbarForCurrentSelection();
   }
 
   void _applySelection(BufferRangeLine range) {
@@ -1051,6 +1098,20 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   void onSecondaryTapUp(TapUpDetails details) {
+    if (_selectedRange != null &&
+        !_selectedRange!.isCollapsed &&
+        _isNearSelection(details.localPosition)) {
+      widget.onSecondaryTapUp?.call(details);
+      final Rect? rect = _currentSelectionGlobalRect();
+      if (rect != null) {
+        widget.terminalView.showSelectionToolbar(
+          rect,
+          triggerKind: TerminalContextMenuTriggerKind.secondaryTap,
+        );
+      }
+      return;
+    }
+
     _tapUp(widget.onSecondaryTapUp, details, TerminalMouseButton.right);
   }
 
@@ -1069,23 +1130,24 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     final cellOffset = renderTerminal.getCellOffset(localPosition);
 
     if (kind == PointerDeviceKind.touch) {
+      _setTouchSelectionUiEnabled(true);
       final BufferRangeLine? wordRange = renderTerminal.selectWord(cellOffset);
       if (wordRange != null) {
         _applySelection(wordRange);
       }
     } else {
+      _setTouchSelectionUiEnabled(false);
       renderTerminal.selectCharacters(cellOffset, cellOffset);
       if (widget.terminalController.selection != null) {
         _applySelection(BufferRangeLine(cellOffset, cellOffset));
       }
     }
 
-    if (widget.showToolbar) {
-      final Rect? selectionRect = _currentSelectionGlobalRect();
-      if (selectionRect != null) {
-        widget.terminalView.showSelectionToolbar(selectionRect);
-      }
-    }
+    _showSelectionToolbarForCurrentSelection(
+      kind == PointerDeviceKind.touch
+          ? TerminalContextMenuTriggerKind.touchSelection
+          : TerminalContextMenuTriggerKind.programmatic,
+    );
 
     HapticFeedback.lightImpact();
   }
@@ -1118,7 +1180,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _dragHandleFixedPoint =
           _activeDragHandle == _DragHandleType.start ? range.end : range.begin;
       _longPressInitialCellOffset = null;
-      if (widget.showToolbar) {
+      if (_shouldShowSelectionToolbar) {
         widget.terminalView.hideSelectionToolbar();
       }
 
@@ -1167,12 +1229,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     } else if (_activeDragHandle != _DragHandleType.none && _isDraggingHandle) {
       // 拖杆拖动结束
       HapticFeedback.selectionClick();
-      if (widget.showToolbar) {
-        final Rect? rect = _currentSelectionGlobalRect();
-        if (rect != null) {
-          widget.terminalView.showSelectionToolbar(rect);
-        }
-      }
+      _showSelectionToolbarForCurrentSelection();
     } else if (!_isDraggingHandle && !_isDragHandleReady) {
       // 缩放结束
       _originTextSize = terminalView.textSizeNoti.value;
@@ -1229,6 +1286,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   void _clearSelection() {
+    _setTouchSelectionUiEnabled(false);
     if (_selectedRange != null) {
       setState(() {
         _selectedRange = null;
@@ -1268,18 +1326,26 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       details.localPosition,
     );
 
+    if (_isBlankCell(longPressCellOffset)) {
+      _setTouchSelectionUiEnabled(false);
+      widget.terminalView.showTerminalContextMenuAtCell(
+        longPressCellOffset,
+        triggerKind: TerminalContextMenuTriggerKind.blankAreaLongPress,
+      );
+      _resetDragHandleState();
+      HapticFeedback.lightImpact();
+      return;
+    }
+
+    _setTouchSelectionUiEnabled(true);
+
     // 直接选中单词而非折叠选区（符合 Android 原生行为）
     final wordRange = renderTerminal.selectWord(longPressCellOffset);
     if (wordRange != null) {
       _applySelection(wordRange);
 
       // 立即显示工具栏
-      if (widget.showToolbar && !wordRange.isCollapsed) {
-        final Rect? selectionRect = _currentSelectionGlobalRect();
-        if (selectionRect != null) {
-          widget.terminalView.showSelectionToolbar(selectionRect);
-        }
-      }
+      _showSelectionToolbarForCurrentSelection();
     } else {
       // 如果无法选中单词，回退到选中单个字符
       _longPressInitialCellOffset = longPressCellOffset;
@@ -1333,11 +1399,59 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       if (widget.showToolbar &&
           _selectedRange != null &&
           !_selectedRange!.isCollapsed) {
-        final Rect? selectionRect = _currentSelectionGlobalRect();
-        if (selectionRect != null) {
-          widget.terminalView.showSelectionToolbar(selectionRect);
-        }
+        _showSelectionToolbarForCurrentSelection();
       }
+    }
+  }
+
+  void _setTouchSelectionUiEnabled(bool enabled) {
+    if (_showTouchSelectionUi == enabled) {
+      return;
+    }
+
+    setState(() {
+      _showTouchSelectionUi = enabled;
+    });
+
+    if (!enabled &&
+        widget.showToolbar &&
+        widget.terminalView.isSelectionToolbarShown) {
+      widget.terminalView.hideSelectionToolbar();
+    }
+  }
+
+  void _showSelectionToolbarForCurrentSelection([
+    TerminalContextMenuTriggerKind triggerKind =
+        TerminalContextMenuTriggerKind.touchSelection,
+  ]) {
+    if (!_shouldShowSelectionToolbar) {
+      return;
+    }
+
+    final Rect? selectionRect = _currentSelectionGlobalRect();
+    if (selectionRect != null) {
+      widget.terminalView.showSelectionToolbar(
+        selectionRect,
+        triggerKind: triggerKind,
+      );
+    }
+  }
+
+  void _showSelectionToolbarForRange(
+    BufferRangeLine range, [
+    TerminalContextMenuTriggerKind triggerKind =
+        TerminalContextMenuTriggerKind.touchSelection,
+  ]) {
+    if (!_shouldShowSelectionToolbar) {
+      return;
+    }
+
+    final Rect? rect = _selectionRectForRange(range);
+    if (rect != null) {
+      widget.terminalView.showSelectionToolbar(
+        rect,
+        triggerKind: triggerKind,
+      );
     }
   }
 

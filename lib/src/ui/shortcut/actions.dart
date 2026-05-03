@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
+import 'package:xterm/src/ui/shortcut/intents.dart';
 
 class TerminalActions extends StatelessWidget {
   const TerminalActions({
@@ -61,6 +62,12 @@ class TerminalActions extends StatelessWidget {
               ),
               mode: SelectionMode.line,
             );
+            return null;
+          },
+        ),
+        ShowSearchIntent: CallbackAction<ShowSearchIntent>(
+          onInvoke: (intent) {
+            terminal.showSearch();
             return null;
           },
         ),

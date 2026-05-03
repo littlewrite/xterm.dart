@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/cupertino.dart' show CupertinoLocalizations;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
 
 /// Builds customized context menu entries for the text selection toolbar.
@@ -16,6 +18,109 @@ typedef CustomTextEditToolbarBuilder = List<ContextMenuButtonItem> Function(
   BuildContext context,
   CustomTextEditState state,
   List<ContextMenuButtonItem> defaultItems,
+);
+
+/// Describes which terminal UI scenario is requesting a context menu.
+enum TerminalContextMenuKind {
+  selection,
+  terminal,
+}
+
+/// Describes why the terminal selection context menu is being shown.
+enum TerminalContextMenuTriggerKind {
+  programmatic,
+  touchSelection,
+  selectionHandle,
+  secondaryTap,
+  blankAreaLongPress,
+}
+
+/// Semantic action types exposed by the terminal context menu.
+enum TerminalContextMenuActionType {
+  copy,
+  paste,
+  selectAll,
+  clearSelection,
+  custom,
+}
+
+/// A semantic context menu action exposed by the terminal.
+@immutable
+class TerminalContextMenuAction {
+  const TerminalContextMenuAction({
+    required this.type,
+    required this.onSelected,
+    this.enabled = true,
+    this.label,
+    this.subtitle,
+    this.icon,
+  });
+
+  final TerminalContextMenuActionType type;
+  final bool enabled;
+  final String? label;
+  final String? subtitle;
+  final IconData? icon;
+  final VoidCallback onSelected;
+}
+
+/// Data passed to a host-provided terminal context menu renderer.
+@immutable
+class TerminalContextMenu {
+  const TerminalContextMenu({
+    required this.anchorRect,
+    required this.anchors,
+    required this.kind,
+    required this.triggerKind,
+    required this.actions,
+    required this.hide,
+    this.cellOffset,
+    this.selectedText,
+  });
+
+  final Rect anchorRect;
+  final TextSelectionToolbarAnchors anchors;
+  final TerminalContextMenuKind kind;
+  final TerminalContextMenuTriggerKind triggerKind;
+  final List<TerminalContextMenuAction> actions;
+  final VoidCallback hide;
+  final CellOffset? cellOffset;
+  final String? selectedText;
+
+  TerminalContextMenu copyWith({
+    Rect? anchorRect,
+    TextSelectionToolbarAnchors? anchors,
+    TerminalContextMenuKind? kind,
+    TerminalContextMenuTriggerKind? triggerKind,
+    List<TerminalContextMenuAction>? actions,
+    VoidCallback? hide,
+    CellOffset? cellOffset,
+    String? selectedText,
+  }) {
+    return TerminalContextMenu(
+      anchorRect: anchorRect ?? this.anchorRect,
+      anchors: anchors ?? this.anchors,
+      kind: kind ?? this.kind,
+      triggerKind: triggerKind ?? this.triggerKind,
+      actions: actions ?? this.actions,
+      hide: hide ?? this.hide,
+      cellOffset: cellOffset ?? this.cellOffset,
+      selectedText: selectedText ?? this.selectedText,
+    );
+  }
+}
+
+/// Builds the full terminal selection context menu UI.
+typedef TerminalContextMenuBuilder = Widget Function(
+  BuildContext context,
+  TerminalContextMenu menu,
+);
+
+/// Builds the final semantic action list for a terminal context menu.
+typedef TerminalContextMenuActionsBuilder = List<TerminalContextMenuAction>
+    Function(
+  BuildContext context,
+  TerminalContextMenu menu,
 );
 
 class CustomTextEdit extends StatefulWidget {
@@ -54,6 +159,21 @@ class CustomTextEdit extends StatefulWidget {
   /// to be shown to the user.
   final CustomTextEditToolbarBuilder? toolbarBuilder;
 
+  /// Optional builder that fully controls how the terminal context menu is rendered.
+  ///
+  /// When provided, this takes precedence over [toolbarBuilder]. Any button
+  /// items returned by [toolbarBuilder] are still transformed into semantic
+  /// [TerminalContextMenuAction] entries and passed through to this builder.
+  final TerminalContextMenuBuilder? contextMenuBuilder;
+
+  /// Optional builder to customize the semantic action list before rendering.
+  ///
+  /// This runs for both selection and terminal menus. The incoming [menu]
+  /// already contains the default semantic actions plus contextual payload such
+  /// as [TerminalContextMenu.kind], [TerminalContextMenu.cellOffset], and
+  /// [TerminalContextMenu.selectedText].
+  final TerminalContextMenuActionsBuilder? contextMenuActionsBuilder;
+
   /// Callback to check if there is a selection in the terminal.
   final bool Function()? hasSelection;
 
@@ -68,6 +188,9 @@ class CustomTextEdit extends StatefulWidget {
 
   /// Callback to paste text from clipboard to terminal.
   final void Function()? onPaste;
+
+  /// Callback to clear the current terminal selection.
+  final void Function()? onClearSelection;
 
   CustomTextEdit({
     super.key,
@@ -91,11 +214,14 @@ class CustomTextEdit extends StatefulWidget {
     this.enableSuggestions = true,
     this.onPrivateCommand,
     this.toolbarBuilder,
+    this.contextMenuBuilder,
+    this.contextMenuActionsBuilder,
     this.hasSelection,
     this.getSelectedText,
     this.onCopied,
     this.onSelectAll,
     this.onPaste,
+    this.onClearSelection,
   });
 
   final ValueChanged<bool> onInputConnectionChange;
@@ -109,6 +235,13 @@ class CustomTextEditState extends State<CustomTextEdit>
   final ContextMenuController _menuController = ContextMenuController();
   final ClipboardStatusNotifier _clipboardStatus = ClipboardStatusNotifier();
   TextSelectionToolbarAnchors? _toolbarAnchors;
+  Rect? _toolbarAnchorRect;
+  TerminalContextMenuKind _toolbarMenuKind = TerminalContextMenuKind.selection;
+  TerminalContextMenuTriggerKind _toolbarTriggerKind =
+      TerminalContextMenuTriggerKind.programmatic;
+  CellOffset? _toolbarCellOffset;
+  String? _toolbarSelectedTextOverride;
+  List<TerminalContextMenuAction>? _toolbarActionsOverride;
   Rect _caretRect = Rect.zero;
   TextEditingController? _controller;
   VoidCallback? _controllerListener;
@@ -607,24 +740,30 @@ class CustomTextEditState extends State<CustomTextEdit>
       _menuController.remove();
     }
     _toolbarAnchors = null;
+    _toolbarAnchorRect = null;
+    _toolbarCellOffset = null;
+    _toolbarSelectedTextOverride = null;
+    _toolbarActionsOverride = null;
     // If text handles are being managed by this widget, hide them too.
     // EditableText manages its own handles.
   }
 
   bool get isToolbarShown => _menuController.isShown;
 
-  @override
-  void showToolbar({Rect? globalSelectionRect}) {
+  void showContextMenu({
+    required Rect globalAnchorRect,
+    TerminalContextMenuKind menuKind = TerminalContextMenuKind.selection,
+    TerminalContextMenuTriggerKind triggerKind =
+        TerminalContextMenuTriggerKind.programmatic,
+    CellOffset? cellOffset,
+    String? selectedText,
+    List<TerminalContextMenuAction>? actions,
+  }) {
     if (!mounted) {
       return;
     }
 
-    final Rect? anchorRect =
-        globalSelectionRect ?? (_caretRect == Rect.zero ? null : _caretRect);
-
-    if (anchorRect == null) {
-      return;
-    }
+    final Rect anchorRect = globalAnchorRect;
 
     _clipboardStatus.update();
 
@@ -659,33 +798,89 @@ class CustomTextEditState extends State<CustomTextEdit>
       primaryAnchor: primaryAnchor,
       secondaryAnchor: secondaryAnchor,
     );
+    _toolbarAnchorRect = anchorRect;
+    _toolbarMenuKind = menuKind;
+    _toolbarTriggerKind = triggerKind;
+    _toolbarCellOffset = cellOffset;
+    _toolbarSelectedTextOverride = selectedText;
+    _toolbarActionsOverride = actions == null
+        ? null
+        : List<TerminalContextMenuAction>.unmodifiable(actions);
+
+    final List<ContextMenuButtonItem> initialItems =
+        _buildContextMenuButtonItems();
+    if (initialItems.isEmpty) {
+      if (_menuController.isShown) {
+        _menuController.remove();
+      }
+      _toolbarAnchors = null;
+      _toolbarAnchorRect = null;
+      _toolbarCellOffset = null;
+      _toolbarSelectedTextOverride = null;
+      _toolbarActionsOverride = null;
+      return;
+    }
 
     if (_menuController.isShown) {
       _menuController.markNeedsBuild();
       return;
     }
 
-    final List<ContextMenuButtonItem> initialItems =
-        _buildContextMenuButtonItems();
-    if (initialItems.isEmpty) {
-      _toolbarAnchors = null;
-      return;
-    }
-
     _menuController.show(
       context: context,
       contextMenuBuilder: (BuildContext context) {
-        final anchors = _toolbarAnchors;
-        final items = _buildContextMenuButtonItems();
-        if (anchors == null || items.isEmpty) {
+        final menu = _buildContextMenu();
+        if (menu == null) {
           return const SizedBox.shrink();
         }
-        return AdaptiveTextSelectionToolbar.buttonItems(
-          anchors: anchors,
-          buttonItems: items,
+
+        if (widget.contextMenuBuilder != null) {
+          return widget.contextMenuBuilder!(context, menu);
+        }
+
+        final toolbar = AdaptiveTextSelectionToolbar.buttonItems(
+          anchors: menu.anchors,
+          buttonItems: _contextMenuButtonItemsFromActions(menu.actions),
+        );
+        final materialLocalizations = Localizations.of<MaterialLocalizations>(
+          context,
+          MaterialLocalizations,
+        );
+        if (materialLocalizations != null) {
+          return toolbar;
+        }
+        return Localizations.override(
+          context: context,
+          delegates: const <LocalizationsDelegate<dynamic>>[
+            DefaultMaterialLocalizations.delegate,
+          ],
+          child: toolbar,
         );
       },
       debugRequiredFor: widget,
+    );
+  }
+
+  @override
+  void showToolbar({
+    Rect? globalSelectionRect,
+    TerminalContextMenuTriggerKind triggerKind =
+        TerminalContextMenuTriggerKind.programmatic,
+  }) {
+    if (!mounted) {
+      return;
+    }
+
+    final Rect? anchorRect =
+        globalSelectionRect ?? (_caretRect == Rect.zero ? null : _caretRect);
+
+    if (anchorRect == null) {
+      return;
+    }
+    showContextMenu(
+      globalAnchorRect: anchorRect,
+      triggerKind: triggerKind,
+      menuKind: TerminalContextMenuKind.selection,
     );
   }
 
@@ -699,7 +894,43 @@ class CustomTextEditState extends State<CustomTextEdit>
     setState(() {});
   }
 
-  List<ContextMenuButtonItem> _buildContextMenuButtonItems() {
+  TerminalContextMenu? _buildContextMenu() {
+    final anchorRect = _toolbarAnchorRect;
+    final anchors = _toolbarAnchors;
+    if (anchorRect == null || anchors == null) {
+      return null;
+    }
+
+    final actions = _buildContextMenuActions();
+    if (actions.isEmpty) {
+      return null;
+    }
+
+    final menu = TerminalContextMenu(
+      anchorRect: anchorRect,
+      anchors: anchors,
+      kind: _toolbarMenuKind,
+      triggerKind: _toolbarTriggerKind,
+      actions: List<TerminalContextMenuAction>.unmodifiable(actions),
+      hide: hideToolbar,
+      cellOffset: _toolbarCellOffset,
+      selectedText: _selectedTextForMenuKind(),
+    );
+
+    if (widget.contextMenuActionsBuilder == null) {
+      return menu;
+    }
+
+    final resolvedActions = widget.contextMenuActionsBuilder!(context, menu);
+    if (resolvedActions.isEmpty) {
+      return null;
+    }
+    return menu.copyWith(
+      actions: List<TerminalContextMenuAction>.unmodifiable(resolvedActions),
+    );
+  }
+
+  List<ContextMenuButtonItem> _buildSelectionContextMenuButtonItems() {
     final defaultItems = EditableText.getEditableButtonItems(
       clipboardStatus: _clipboardStatus.value,
       onCopy: copyEnabled
@@ -716,18 +947,248 @@ class CustomTextEditState extends State<CustomTextEdit>
       onShare: null,
       onLiveTextInput: null,
     );
-    if (widget.toolbarBuilder == null) {
-      return defaultItems;
+
+    return <ContextMenuButtonItem>[
+      ...defaultItems,
+      if (widget.onClearSelection != null && copyEnabled)
+        ContextMenuButtonItem(
+          onPressed: clearSelection,
+          label: _cancelSelectionLabel(context),
+        ),
+    ];
+  }
+
+  List<ContextMenuButtonItem> _buildTerminalContextMenuButtonItems() {
+    return <ContextMenuButtonItem>[
+      if (pasteEnabled)
+        ContextMenuButtonItem(
+          type: ContextMenuButtonType.paste,
+          onPressed: () => pasteText(SelectionChangedCause.toolbar),
+          label: _pasteSelectionLabel(context),
+        ),
+      if (selectAllEnabled)
+        ContextMenuButtonItem(
+          type: ContextMenuButtonType.selectAll,
+          onPressed: () => selectAll(SelectionChangedCause.toolbar),
+          label: _selectAllSelectionLabel(context),
+        ),
+    ];
+  }
+
+  List<ContextMenuButtonItem> _buildContextMenuButtonItems() {
+    if (_toolbarActionsOverride != null) {
+      return _contextMenuButtonItemsFromActions(_toolbarActionsOverride!);
+    }
+
+    final items = switch (_toolbarMenuKind) {
+      TerminalContextMenuKind.selection =>
+        _buildSelectionContextMenuButtonItems(),
+      TerminalContextMenuKind.terminal =>
+        _buildTerminalContextMenuButtonItems(),
+    };
+
+    if (_toolbarMenuKind != TerminalContextMenuKind.selection ||
+        widget.toolbarBuilder == null) {
+      return items;
     }
     final customItems = widget.toolbarBuilder!(
       context,
       this,
-      List<ContextMenuButtonItem>.unmodifiable(defaultItems),
+      List<ContextMenuButtonItem>.unmodifiable(items),
     );
     if (customItems.isEmpty) {
-      return defaultItems;
+      return items;
     }
     return customItems;
+  }
+
+  List<TerminalContextMenuAction> _buildContextMenuActions() {
+    if (_toolbarActionsOverride != null) {
+      return _toolbarActionsOverride!;
+    }
+    final items = _buildContextMenuButtonItems();
+    return items.map(_contextMenuActionFromButtonItem).toList(growable: false);
+  }
+
+  TerminalContextMenuAction _contextMenuActionFromButtonItem(
+    ContextMenuButtonItem item,
+  ) {
+    return TerminalContextMenuAction(
+      type: _contextMenuActionTypeForButtonItem(item),
+      enabled: item.onPressed != null,
+      label: _labelForContextMenuButtonItem(item),
+      onSelected: item.onPressed ?? () {},
+    );
+  }
+
+  TerminalContextMenuActionType _contextMenuActionTypeForButtonItem(
+    ContextMenuButtonItem item,
+  ) {
+    switch (item.type) {
+      case ContextMenuButtonType.copy:
+        return TerminalContextMenuActionType.copy;
+      case ContextMenuButtonType.paste:
+        return TerminalContextMenuActionType.paste;
+      case ContextMenuButtonType.selectAll:
+        return TerminalContextMenuActionType.selectAll;
+      case ContextMenuButtonType.custom:
+        if (widget.onClearSelection != null &&
+            item.label == _cancelSelectionLabel(context)) {
+          return TerminalContextMenuActionType.clearSelection;
+        }
+        return TerminalContextMenuActionType.custom;
+      case ContextMenuButtonType.cut:
+      case ContextMenuButtonType.delete:
+      case ContextMenuButtonType.lookUp:
+      case ContextMenuButtonType.searchWeb:
+      case ContextMenuButtonType.share:
+      case ContextMenuButtonType.liveTextInput:
+        return TerminalContextMenuActionType.custom;
+    }
+  }
+
+  List<ContextMenuButtonItem> _contextMenuButtonItemsFromActions(
+    List<TerminalContextMenuAction> actions,
+  ) {
+    return actions
+        .map(
+          (action) => ContextMenuButtonItem(
+            onPressed: action.enabled ? action.onSelected : null,
+            type: _contextMenuButtonTypeForAction(action.type),
+            label: action.label,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  ContextMenuButtonType _contextMenuButtonTypeForAction(
+    TerminalContextMenuActionType type,
+  ) {
+    switch (type) {
+      case TerminalContextMenuActionType.copy:
+        return ContextMenuButtonType.copy;
+      case TerminalContextMenuActionType.paste:
+        return ContextMenuButtonType.paste;
+      case TerminalContextMenuActionType.selectAll:
+        return ContextMenuButtonType.selectAll;
+      case TerminalContextMenuActionType.clearSelection:
+      case TerminalContextMenuActionType.custom:
+        return ContextMenuButtonType.custom;
+    }
+  }
+
+  String? _labelForContextMenuButtonItem(ContextMenuButtonItem item) {
+    return item.label ??
+        switch (item.type) {
+          ContextMenuButtonType.copy => _copySelectionLabel(context),
+          ContextMenuButtonType.paste => _pasteSelectionLabel(context),
+          ContextMenuButtonType.selectAll => _selectAllSelectionLabel(context),
+          _ => null,
+        };
+  }
+
+  String _cancelSelectionLabel(BuildContext context) {
+    final materialLocalizations = Localizations.of<MaterialLocalizations>(
+      context,
+      MaterialLocalizations,
+    );
+    if (materialLocalizations != null) {
+      return materialLocalizations.cancelButtonLabel;
+    }
+
+    final cupertinoLocalizations = Localizations.of<CupertinoLocalizations>(
+      context,
+      CupertinoLocalizations,
+    );
+    if (cupertinoLocalizations != null) {
+      return cupertinoLocalizations.menuDismissLabel;
+    }
+
+    return 'Cancel';
+  }
+
+  String _copySelectionLabel(BuildContext context) {
+    final materialLocalizations = Localizations.of<MaterialLocalizations>(
+      context,
+      MaterialLocalizations,
+    );
+    if (materialLocalizations != null) {
+      return materialLocalizations.copyButtonLabel;
+    }
+
+    final cupertinoLocalizations = Localizations.of<CupertinoLocalizations>(
+      context,
+      CupertinoLocalizations,
+    );
+    if (cupertinoLocalizations != null) {
+      return cupertinoLocalizations.copyButtonLabel;
+    }
+
+    return 'Copy';
+  }
+
+  String _pasteSelectionLabel(BuildContext context) {
+    final materialLocalizations = Localizations.of<MaterialLocalizations>(
+      context,
+      MaterialLocalizations,
+    );
+    if (materialLocalizations != null) {
+      return materialLocalizations.pasteButtonLabel;
+    }
+
+    final cupertinoLocalizations = Localizations.of<CupertinoLocalizations>(
+      context,
+      CupertinoLocalizations,
+    );
+    if (cupertinoLocalizations != null) {
+      return cupertinoLocalizations.pasteButtonLabel;
+    }
+
+    return 'Paste';
+  }
+
+  String _selectAllSelectionLabel(BuildContext context) {
+    final materialLocalizations = Localizations.of<MaterialLocalizations>(
+      context,
+      MaterialLocalizations,
+    );
+    if (materialLocalizations != null) {
+      return materialLocalizations.selectAllButtonLabel;
+    }
+
+    final cupertinoLocalizations = Localizations.of<CupertinoLocalizations>(
+      context,
+      CupertinoLocalizations,
+    );
+    if (cupertinoLocalizations != null) {
+      return cupertinoLocalizations.selectAllButtonLabel;
+    }
+
+    return 'Select All';
+  }
+
+  String? _selectedTextForMenuKind() {
+    if (_toolbarSelectedTextOverride != null &&
+        _toolbarSelectedTextOverride!.isNotEmpty) {
+      return _toolbarSelectedTextOverride;
+    }
+
+    if (widget.hasSelection != null && !widget.hasSelection!()) {
+      return null;
+    }
+
+    if (widget.getSelectedText != null) {
+      final selectedText = widget.getSelectedText!();
+      return selectedText.isEmpty ? null : selectedText;
+    }
+
+    final selection = _currentEditingState.selection;
+    if (selection.isCollapsed) {
+      return null;
+    }
+
+    final selectedText = selection.textInside(_currentEditingState.text);
+    return selectedText.isEmpty ? null : selectedText;
   }
 
   @override
@@ -818,7 +1279,10 @@ class CustomTextEditState extends State<CustomTextEdit>
   void selectAll(SelectionChangedCause cause) {
     if (widget.onSelectAll != null) {
       widget.onSelectAll!();
-      _menuController.markNeedsBuild();
+      if (_menuController.isShown &&
+          _toolbarMenuKind == TerminalContextMenuKind.selection) {
+        _menuController.markNeedsBuild();
+      }
       setState(() {});
     } else if (!widget.readOnly && _currentEditingState.text.isNotEmpty) {
       textEditingValue = _currentEditingState.copyWith(
@@ -833,6 +1297,11 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   @override
   void cutSelection(SelectionChangedCause cause) {}
+
+  void clearSelection() {
+    widget.onClearSelection?.call();
+    hideToolbar();
+  }
 
   @override
   void userUpdateTextEditingValue(

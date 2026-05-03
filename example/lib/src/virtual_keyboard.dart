@@ -2,30 +2,41 @@ import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
 class VirtualKeyboardView extends StatelessWidget {
-  const VirtualKeyboardView(this.keyboard, {super.key});
+  const VirtualKeyboardView(this.keyboard,
+      {super.key, this.actions = const []});
 
   final VirtualKeyboard keyboard;
+  final List<Widget> actions;
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: keyboard,
-      builder: (context, child) => ToggleButtons(
-        children: [Text('Ctrl'), Text('Alt'), Text('Shift')],
-        isSelected: [keyboard.ctrl, keyboard.alt, keyboard.shift],
-        onPressed: (index) {
-          switch (index) {
-            case 0:
-              keyboard.ctrl = !keyboard.ctrl;
-              break;
-            case 1:
-              keyboard.alt = !keyboard.alt;
-              break;
-            case 2:
-              keyboard.shift = !keyboard.shift;
-              break;
-          }
-        },
+      builder: (context, child) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ToggleButtons(
+            children: [Text('Ctrl'), Text('Alt'), Text('Shift')],
+            isSelected: [keyboard.ctrl, keyboard.alt, keyboard.shift],
+            onPressed: (index) {
+              switch (index) {
+                case 0:
+                  keyboard.ctrl = !keyboard.ctrl;
+                  break;
+                case 1:
+                  keyboard.alt = !keyboard.alt;
+                  break;
+                case 2:
+                  keyboard.shift = !keyboard.shift;
+                  break;
+              }
+            },
+          ),
+          if (actions.isNotEmpty) ...[
+            const SizedBox(width: 12),
+            ...actions,
+          ],
+        ],
       ),
     );
   }

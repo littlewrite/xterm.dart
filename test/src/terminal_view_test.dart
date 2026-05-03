@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -601,6 +602,486 @@ void main() {
       await tester.pump();
 
       expect(scrollController.position.maxScrollExtent, 0);
+    });
+  });
+
+  group('TerminalView selection UX', () {
+    testWidgets('touch long press creates selection', (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                controller: controller,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      final cellOffset = state.renderTerminal.getOffset(const CellOffset(1, 0));
+      final touchPoint = cellOffset +
+          Offset(
+            state.renderTerminal.cellSize.width / 2,
+            state.renderTerminal.cellSize.height / 2,
+          );
+
+      await tester.longPressAt(touchPoint);
+      await tester.pumpAndSettle();
+
+      expect(controller.selection, isNotNull);
+      expect(state.isSelectionToolbarShown, isTrue);
+    });
+
+    testWidgets('touch tap inside selection reopens selection toolbar', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                controller: controller,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      final cellOffset = state.renderTerminal.getOffset(const CellOffset(1, 0));
+      final touchPoint = cellOffset +
+          Offset(
+            state.renderTerminal.cellSize.width / 2,
+            state.renderTerminal.cellSize.height / 2,
+          );
+
+      await tester.longPressAt(touchPoint);
+      await tester.pumpAndSettle();
+
+      expect(state.isSelectionToolbarShown, isTrue);
+
+      state.hideSelectionToolbar();
+      await tester.pumpAndSettle();
+
+      expect(state.isSelectionToolbarShown, isFalse);
+
+      await tester.tapAt(touchPoint);
+      await tester.pumpAndSettle();
+
+      expect(controller.selection, isNotNull);
+      expect(state.isSelectionToolbarShown, isTrue);
+    });
+
+    testWidgets('mouse selection does not show selection toolbar', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                controller: controller,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      final startCell = state.renderTerminal.getOffset(const CellOffset(0, 0));
+      final endCell = state.renderTerminal.getOffset(const CellOffset(4, 0));
+      final startPoint = startCell +
+          Offset(
+            state.renderTerminal.cellSize.width / 2,
+            state.renderTerminal.cellSize.height / 2,
+          );
+      final endPoint = endCell +
+          Offset(
+            state.renderTerminal.cellSize.width / 2,
+            state.renderTerminal.cellSize.height / 2,
+          );
+
+      final gesture = await tester.startGesture(
+        startPoint,
+        kind: PointerDeviceKind.mouse,
+      );
+      await gesture.moveTo(endPoint);
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(controller.selection, isNotNull);
+      expect(controller.selection!.isCollapsed, isFalse);
+      expect(state.isSelectionToolbarShown, isFalse);
+    });
+
+    testWidgets('escape clears local selection before reaching terminal', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final controller = TerminalController(vsync: tester);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                controller: controller,
+                textStyle: const TerminalStyle(fontSize: 12),
+                autofocus: true,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+
+      controller.setSelection(
+        terminal.buffer.createAnchor(0, 0),
+        terminal.buffer.createAnchor(5, 0),
+      );
+      await tester.pump();
+
+      expect(controller.selection, isNotNull);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+
+      expect(controller.selection, isNull);
+      expect(state.isSelectionToolbarShown, isFalse);
+      expect(terminalOutput, isEmpty);
+    });
+
+    testWidgets('secondary click keeps selection', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                controller: controller,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      controller.setSelection(
+        terminal.buffer.createAnchor(0, 0),
+        terminal.buffer.createAnchor(5, 0),
+      );
+      await tester.pump();
+
+      final clickPoint =
+          state.renderTerminal.getOffset(const CellOffset(2, 0)) +
+              Offset(
+                state.renderTerminal.cellSize.width / 2,
+                state.renderTerminal.cellSize.height / 2,
+              );
+      final pointer = TestPointer(7, PointerDeviceKind.mouse);
+
+      await tester.sendEventToBinding(
+        pointer.down(clickPoint, buttons: kSecondaryMouseButton),
+      );
+      await tester.pump();
+      await tester.sendEventToBinding(pointer.up());
+      await tester.pumpAndSettle();
+
+      expect(controller.selection, isNotNull);
+    });
+
+    testWidgets('secondary click without selection opens terminal context menu',
+        (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+      TerminalContextMenu? menuRequest;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                controller: controller,
+                textStyle: const TerminalStyle(fontSize: 12),
+                contextMenuBuilder: (context, menu) {
+                  menuRequest = menu;
+                  return const SizedBox.shrink();
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello');
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      final clickPoint =
+          state.renderTerminal.getOffset(const CellOffset(10, 0)) +
+              Offset(
+                state.renderTerminal.cellSize.width / 2,
+                state.renderTerminal.cellSize.height / 2,
+              );
+      final pointer = TestPointer(8, PointerDeviceKind.mouse);
+
+      await tester.sendEventToBinding(
+        pointer.down(clickPoint, buttons: kSecondaryMouseButton),
+      );
+      await tester.pump();
+      await tester.sendEventToBinding(pointer.up());
+      await tester.pumpAndSettle();
+
+      expect(menuRequest, isNotNull);
+      expect(menuRequest!.kind, TerminalContextMenuKind.terminal);
+      expect(
+        menuRequest!.triggerKind,
+        TerminalContextMenuTriggerKind.secondaryTap,
+      );
+      expect(menuRequest!.cellOffset, const CellOffset(10, 0));
+      expect(
+        menuRequest!.actions.map((action) => action.type),
+        orderedEquals(<TerminalContextMenuActionType>[
+          TerminalContextMenuActionType.paste,
+          TerminalContextMenuActionType.selectAll,
+        ]),
+      );
+      expect(controller.selection, isNull);
+    });
+
+    testWidgets('touch tap inside selection keeps selection', (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                controller: controller,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      final start = state.renderTerminal.getOffset(const CellOffset(1, 0)) +
+          Offset(
+            state.renderTerminal.cellSize.width / 2,
+            state.renderTerminal.cellSize.height / 2,
+          );
+
+      await tester.longPressAt(start);
+      await tester.pumpAndSettle();
+
+      expect(controller.selection, isNotNull);
+
+      await tester.tapAt(start);
+      await tester.pumpAndSettle();
+
+      expect(controller.selection, isNotNull);
+    });
+
+    testWidgets('touch tap outside selection clears selection', (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                controller: controller,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      final selectionPoint =
+          state.renderTerminal.getOffset(const CellOffset(1, 0)) +
+              Offset(
+                state.renderTerminal.cellSize.width / 2,
+                state.renderTerminal.cellSize.height / 2,
+              );
+      final outsidePoint =
+          state.renderTerminal.getOffset(const CellOffset(10, 0)) +
+              Offset(
+                state.renderTerminal.cellSize.width / 2,
+                state.renderTerminal.cellSize.height / 2,
+              );
+
+      await tester.longPressAt(selectionPoint);
+      await tester.pumpAndSettle();
+
+      expect(controller.selection, isNotNull);
+
+      await tester.tapAt(outsidePoint);
+      await tester.pumpAndSettle();
+
+      expect(controller.selection, isNull);
+    });
+
+    testWidgets('blank-area long press opens terminal context menu', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+      TerminalContextMenu? menuRequest;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                controller: controller,
+                textStyle: const TerminalStyle(fontSize: 12),
+                contextMenuBuilder: (context, menu) {
+                  menuRequest = menu;
+                  return const SizedBox.shrink();
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello');
+      await tester.pump();
+
+      final state = tester.state<TerminalViewState>(find.byType(TerminalView));
+      final touchPoint =
+          state.renderTerminal.getOffset(const CellOffset(10, 0)) +
+              Offset(
+                state.renderTerminal.cellSize.width / 2,
+                state.renderTerminal.cellSize.height / 2,
+              );
+
+      await tester.longPressAt(touchPoint);
+      await tester.pumpAndSettle();
+
+      expect(menuRequest, isNotNull);
+      expect(menuRequest!.kind, TerminalContextMenuKind.terminal);
+      expect(
+        menuRequest!.triggerKind,
+        TerminalContextMenuTriggerKind.blankAreaLongPress,
+      );
+      expect(menuRequest!.cellOffset, const CellOffset(10, 0));
+      expect(
+        menuRequest!.actions.map((action) => action.type),
+        orderedEquals(<TerminalContextMenuActionType>[
+          TerminalContextMenuActionType.paste,
+          TerminalContextMenuActionType.selectAll,
+        ]),
+      );
+      expect(controller.selection, isNull);
+      expect(state.isSelectionToolbarShown, isTrue);
+    });
+  });
+
+  group('TerminalView search UX', () {
+    testWidgets('default search box works without Material ancestor', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+
+      await tester.pumpWidget(
+        CupertinoApp(
+          home: CupertinoPageScaffold(
+            child: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      terminal.showSearch();
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.byType(TextField), findsOneWidget);
     });
   });
 }

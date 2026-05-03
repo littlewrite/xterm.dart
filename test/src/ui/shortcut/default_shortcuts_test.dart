@@ -33,6 +33,14 @@ void main() {
     expect(
       hasActivator(
         (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyF && activator.control,
+      ),
+      isTrue,
+    );
+
+    expect(
+      hasActivator(
+        (activator) =>
             activator.trigger == LogicalKeyboardKey.insert && activator.control,
       ),
       isTrue,
@@ -50,6 +58,23 @@ void main() {
       hasActivator(
         (activator) =>
             activator.trigger == LogicalKeyboardKey.delete && activator.shift,
+      ),
+      isTrue,
+    );
+  });
+
+  test('macOS shortcuts expose search alias', () {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+
+    final shortcuts = defaultTerminalShortcuts;
+
+    expect(
+      shortcuts.entries.any(
+        (entry) =>
+            entry.key is SingleActivator &&
+            (entry.key as SingleActivator).trigger == LogicalKeyboardKey.keyF &&
+            (entry.key as SingleActivator).meta &&
+            entry.value is ShowSearchIntent,
       ),
       isTrue,
     );

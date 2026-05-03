@@ -6,10 +6,10 @@ import 'package:example/src/virtual_keyboard.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:xterm/xterm.dart';
 
-const host = 'localhost';
+const host = '127.0.0.1';
 const port = 22;
-const username = '<your username>';
-const password = '<your password>';
+const username = 'root';
+const password = '';
 
 void main() {
   runApp(MyApp());
@@ -101,11 +101,85 @@ class _MyHomePageState extends State<MyHomePage> {
       child: Column(
         children: [
           Expanded(
-            child: TerminalView(terminal),
+            child: TerminalView(
+              terminal,
+              contextMenuBuilder: _buildTerminalContextMenu,
+            ),
           ),
-          VirtualKeyboardView(keyboard),
+          VirtualKeyboardView(
+            keyboard,
+            actions: [
+              CupertinoButton(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                onPressed: terminal.showSearch,
+                child: const Text('Search'),
+              ),
+            ],
+          ),
         ],
       ),
     );
+  }
+
+  Widget _buildTerminalContextMenu(
+    BuildContext context,
+    TerminalContextMenu menu,
+  ) {
+    return CupertinoAdaptiveTextSelectionToolbar.buttonItems(
+      anchors: menu.anchors,
+      buttonItems: _buildContextMenuButtonItems(menu),
+    );
+  }
+
+  List<ContextMenuButtonItem> _buildContextMenuButtonItems(
+    TerminalContextMenu menu,
+  ) {
+    final actions = _orderedContextMenuActions(menu);
+    return actions
+        .map(
+          (action) => ContextMenuButtonItem(
+            label: action.label,
+            onPressed: action.enabled
+                ? () {
+                    action.onSelected();
+                    menu.hide();
+                  }
+                : null,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  List<TerminalContextMenuAction> _orderedContextMenuActions(
+    TerminalContextMenu menu,
+  ) {
+    final actions = List<TerminalContextMenuAction>.from(menu.actions);
+    final preferredOrder = switch (menu.triggerKind) {
+      TerminalContextMenuTriggerKind.secondaryTap =>
+        <TerminalContextMenuActionType>[
+          TerminalContextMenuActionType.copy,
+          TerminalContextMenuActionType.paste,
+          TerminalContextMenuActionType.selectAll,
+          TerminalContextMenuActionType.clearSelection,
+          TerminalContextMenuActionType.custom,
+        ],
+      _ => <TerminalContextMenuActionType>[
+          TerminalContextMenuActionType.copy,
+          TerminalContextMenuActionType.selectAll,
+          TerminalContextMenuActionType.paste,
+          TerminalContextMenuActionType.clearSelection,
+          TerminalContextMenuActionType.custom,
+        ],
+    };
+
+    actions.sort((a, b) {
+      final aIndex = preferredOrder.indexOf(a.type);
+      final bIndex = preferredOrder.indexOf(b.type);
+      final normalizedA = aIndex == -1 ? preferredOrder.length : aIndex;
+      final normalizedB = bIndex == -1 ? preferredOrder.length : bIndex;
+      return normalizedA.compareTo(normalizedB);
+    });
+
+    return actions;
   }
 }
