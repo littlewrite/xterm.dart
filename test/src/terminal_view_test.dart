@@ -449,4 +449,64 @@ void main() {
       expect(terminalOutput.join(), isEmpty);
     });
   });
+
+  group('RenderTerminal update mode', () {
+    testWidgets('updates scroll extent when line count grows', (tester) async {
+      final terminal = Terminal();
+      final scrollController = ScrollController();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                scrollController: scrollController,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final text = List.generate(40, (index) => 'line $index').join('\r\n');
+      terminal.write(text);
+      await tester.pump();
+
+      expect(scrollController.position.maxScrollExtent, greaterThan(0));
+    });
+
+    testWidgets('updates scroll extent when switching buffer', (tester) async {
+      final terminal = Terminal();
+      final scrollController = ScrollController();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              height: 120,
+              child: TerminalView(
+                terminal,
+                scrollController: scrollController,
+                textStyle: const TerminalStyle(fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final text = List.generate(40, (index) => 'line $index').join('\r\n');
+      terminal.write(text);
+      await tester.pump();
+      expect(scrollController.position.maxScrollExtent, greaterThan(0));
+
+      terminal.write('\x1b[?1049h');
+      await tester.pump();
+
+      expect(scrollController.position.maxScrollExtent, 0);
+    });
+  });
 }
