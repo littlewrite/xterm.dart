@@ -121,6 +121,11 @@ class CustomTextEditState extends State<CustomTextEdit>
     _initController();
     _currentEditingState = _getInitialEditingValue();
     _clipboardStatus.addListener(_handleClipboardStatusChanged);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
     if (widget.focusNode.hasFocus) {
       _openOrCloseInputConnectionIfNeeded();
     }
