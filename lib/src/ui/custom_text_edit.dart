@@ -453,9 +453,12 @@ class CustomTextEditState extends State<CustomTextEdit>
       return;
     }
 
+    final composingJustCommitted =
+        !oldValue.composing.isCollapsed &&
+        _currentEditingState.composing.isCollapsed;
+
     // If we were composing and now we are not, notify with null.
-    if (!oldValue.composing.isCollapsed &&
-        _currentEditingState.composing.isCollapsed) {
+    if (composingJustCommitted) {
       widget.onComposing(null);
     }
 
@@ -512,6 +515,18 @@ class CustomTextEditState extends State<CustomTextEdit>
           widget.onInsert(textDelta);
           textChanged = true;
         }
+      }
+    }
+
+    if (!textChanged && composingJustCommitted) {
+      final committedText = widget.deleteDetection &&
+              currentText.startsWith(_initEditingState.text)
+          ? currentText.substring(initTextLength)
+          : currentText;
+
+      if (committedText.isNotEmpty) {
+        widget.onInsert(committedText);
+        textChanged = true;
       }
     }
 

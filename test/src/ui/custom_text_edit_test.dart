@@ -85,4 +85,56 @@ void main() {
 
     focusNode.dispose();
   });
+
+  testWidgets('commits composing text when IME collapses composition in place', (
+    tester,
+  ) async {
+    final focusNode = FocusNode();
+    final inserted = <String>[];
+    final composing = <String?>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: CustomTextEdit(
+            focusNode: focusNode,
+            onInsert: inserted.add,
+            onDelete: () {},
+            onComposing: composing.add,
+            onAction: (_) {},
+            onKeyEvent: (node, event) => KeyEventResult.ignored,
+            onInputConnectionChange: (connected) {},
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    focusNode.requestFocus();
+    await tester.pump();
+
+    final state = tester.state<CustomTextEditState>(
+      find.byType(CustomTextEdit),
+    );
+
+    state.updateEditingValue(
+      const TextEditingValue(
+        text: '你好',
+        selection: TextSelection.collapsed(offset: 2),
+        composing: TextRange(start: 0, end: 2),
+      ),
+    );
+    state.updateEditingValue(
+      const TextEditingValue(
+        text: '你好',
+        selection: TextSelection.collapsed(offset: 2),
+        composing: TextRange.collapsed(-1),
+      ),
+    );
+
+    expect(inserted, ['你好']);
+    expect(composing, ['你好', null]);
+
+    focusNode.dispose();
+  });
 }
