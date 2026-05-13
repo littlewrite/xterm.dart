@@ -223,28 +223,41 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   @override
   Widget build(BuildContext context) {
-    return Shortcuts(
-      shortcuts: defaultTerminalShortcuts,
-      child: Actions(
-        actions: <Type, Action<Intent>>{
-          CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
-            onInvoke: (intent) {
-              copySelection(SelectionChangedCause.keyboard);
-              return null;
-            },
+    return Semantics(
+      container: true,
+      textField: true,
+      readOnly: widget.readOnly,
+      focusable: true,
+      focused: widget.focusNode.hasFocus,
+      value: _semanticsValue,
+      textDirection: Directionality.maybeOf(context),
+      onSetText: widget.readOnly ? null : _handleSemanticsSetText,
+      onCopy: copyEnabled
+          ? () => copySelection(SelectionChangedCause.keyboard)
+          : null,
+      child: Shortcuts(
+        shortcuts: defaultTerminalShortcuts,
+        child: Actions(
+          actions: <Type, Action<Intent>>{
+            CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
+              onInvoke: (intent) {
+                copySelection(SelectionChangedCause.keyboard);
+                return null;
+              },
+            ),
+            PasteTextIntent: CallbackAction<PasteTextIntent>(
+              onInvoke: (intent) => pasteText(intent.cause),
+            ),
+            SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
+              onInvoke: (intent) => selectAll(intent.cause),
+            ),
+          },
+          child: Focus(
+            focusNode: widget.focusNode,
+            autofocus: widget.autofocus,
+            onKeyEvent: _onKeyEvent,
+            child: widget.child,
           ),
-          PasteTextIntent: CallbackAction<PasteTextIntent>(
-            onInvoke: (intent) => pasteText(intent.cause),
-          ),
-          SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
-            onInvoke: (intent) => selectAll(intent.cause),
-          ),
-        },
-        child: Focus(
-          focusNode: widget.focusNode,
-          autofocus: widget.autofocus,
-          onKeyEvent: _onKeyEvent,
-          child: widget.child,
         ),
       ),
     );
@@ -412,6 +425,15 @@ class CustomTextEditState extends State<CustomTextEdit>
         )
       : TextEditingValue.empty;
 
+  String _extractCommittedText(String text) {
+    if (widget.deleteDetection && text.startsWith(_initEditingState.text)) {
+      return text.substring(_initEditingState.text.length);
+    }
+    return text;
+  }
+
+  String get _semanticsValue => _extractCommittedText(_currentEditingState.text);
+
   // Ensure _currentEditingState is initialized before _openInputConnection might use it.
   late var _currentEditingState = TextEditingValue.empty;
 
@@ -460,6 +482,15 @@ class CustomTextEditState extends State<CustomTextEdit>
     // If we were composing and now we are not, notify with null.
     if (composingJustCommitted) {
       widget.onComposing(null);
+      final committedText = _extractCommittedText(_currentEditingState.text);
+
+      if (committedText.isNotEmpty) {
+        widget.onInsert(committedText);
+      }
+      _currentEditingState = _initEditingState.copyWith();
+      _connection?.setEditingState(_currentEditingState);
+      _showCaretOnScreen();
+      return;
     }
 
     final String previousText = oldValue.text;
@@ -515,18 +546,6 @@ class CustomTextEditState extends State<CustomTextEdit>
           widget.onInsert(textDelta);
           textChanged = true;
         }
-      }
-    }
-
-    if (!textChanged && composingJustCommitted) {
-      final committedText = widget.deleteDetection &&
-              currentText.startsWith(_initEditingState.text)
-          ? currentText.substring(initTextLength)
-          : currentText;
-
-      if (committedText.isNotEmpty) {
-        widget.onInsert(committedText);
-        textChanged = true;
       }
     }
 
@@ -593,7 +612,15 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   @override
   void performSelector(String selectorName) {
-    // Handle platform-specific selectors if necessary
+    final intent = intentForMacOSSelector(selectorName);
+    if (intent == null) {
+      return;
+    }
+
+    final primaryContext = primaryFocus?.context;
+    if (primaryContext != null) {
+      Actions.invoke(primaryContext, intent);
+    }
   }
 
   @override
@@ -874,6 +901,22 @@ class CustomTextEditState extends State<CustomTextEdit>
       widget.onComposingChanged!(value.composing);
     }
     _connection?.setEditingState(_currentEditingState);
+    _showCaretOnScreen();
+    setState(() {});
+  }
+
+  void _handleSemanticsSetText(String text) {
+    if (widget.readOnly) {
+      return;
+    }
+
+    if (text.isNotEmpty) {
+      widget.onInsert(text);
+    }
+
+    final resetState = _initEditingState.copyWith();
+    _currentEditingState = resetState;
+    _connection?.setEditingState(resetState);
     _showCaretOnScreen();
     setState(() {});
   }
