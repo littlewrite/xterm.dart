@@ -105,11 +105,16 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   ScrollController? _attachedScrollController;
   bool _scrollUpdateScheduled = false;
   ValueListenable<bool>? _scrollActivityNotifier;
+  bool _selectionHandlesVisible = false;
 
   bool get _shouldShowHandles =>
       widget.showToolbar &&
+      _selectionHandlesVisible &&
       _selectedRange != null &&
       !_selectedRange!.isCollapsed;
+
+  @visibleForTesting
+  bool get debugShowsSelectionHandles => _shouldShowHandles;
 
   bool get _isViewportScrolling => _scrollActivityNotifier?.value ?? false;
 
@@ -232,9 +237,15 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     if (changed) {
       setState(() {
         _selectedRange = nextRange;
+        if (nextRange == null || nextRange.isCollapsed) {
+          _selectionHandlesVisible = false;
+        }
       });
     } else {
       _selectedRange = nextRange;
+      if (nextRange == null || nextRange.isCollapsed) {
+        _selectionHandlesVisible = false;
+      }
     }
 
     if (!widget.showToolbar ||
@@ -580,6 +591,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       }
 
       _isMouseSelectionInProgress = true;
+      _selectionHandlesVisible = false;
       _cancelPendingTapDown();
       _longPressInitialCellOffset = null;
       _resetDragHandleState();
@@ -656,14 +668,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     }
 
     _cancelPendingTapDown();
-
-    final hasSelection = _selectedRange != null && !_selectedRange!.isCollapsed;
-
-    if (widget.showToolbar && hasSelection) {
-      final Rect? rect = _currentSelectionGlobalRect();
-      if (rect != null) {
-        widget.terminalView.showSelectionToolbar(rect);
-      }
+    _selectionHandlesVisible = false;
+    if (widget.showToolbar && widget.terminalView.isSelectionToolbarShown) {
+      widget.terminalView.hideSelectionToolbar();
     }
 
     _dispatchMouseTapUpIfNeeded();
@@ -790,6 +797,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         dragHandle == _DragHandleType.start ? range.end : range.begin;
     _isDragHandleReady = false;
     _isDraggingHandle = true;
+    _selectionHandlesVisible = true;
     _longPressInitialCellOffset = null;
     if (widget.showToolbar) {
       widget.terminalView.hideSelectionToolbar();
@@ -812,6 +820,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     if (widget.showToolbar) {
       final Rect? rect = _currentSelectionGlobalRect();
       if (rect != null) {
+        _selectionHandlesVisible = true;
         widget.terminalView.showSelectionToolbar(rect);
       }
     }
@@ -978,16 +987,18 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       if (wordRange != null) {
         _applySelection(wordRange);
       }
+      _selectionHandlesVisible = true;
     } else {
       // 鼠标设备：选中单个字符
       renderTerminal.selectCharacters(cellOffset, cellOffset);
       if (widget.terminalController.selection != null) {
         _applySelection(BufferRangeLine(cellOffset, cellOffset));
       }
+      _selectionHandlesVisible = false;
     }
 
-    // 显示工具栏（触摸和鼠标设备统一处理）
-    if (widget.showToolbar) {
+    // 触摸设备选区后立即弹出工具栏；鼠标设备交给右键触发。
+    if (widget.showToolbar && details.kind == PointerDeviceKind.touch) {
       final Rect? selectionRect = _currentSelectionGlobalRect();
       if (selectionRect != null) {
         widget.terminalView.showSelectionToolbar(selectionRect);
@@ -1078,6 +1089,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       if (widget.showToolbar) {
         final Rect? rect = _currentSelectionGlobalRect();
         if (rect != null) {
+          _selectionHandlesVisible = true;
           widget.terminalView.showSelectionToolbar(rect);
         }
       }
@@ -1140,7 +1152,10 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     if (_selectedRange != null) {
       setState(() {
         _selectedRange = null;
+        _selectionHandlesVisible = false;
       });
+    } else {
+      _selectionHandlesVisible = false;
     }
     renderTerminal.clearSelection();
     _resetDragHandleState();
@@ -1180,6 +1195,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     final wordRange = renderTerminal.selectWord(longPressCellOffset);
     if (wordRange != null) {
       _applySelection(wordRange);
+      _selectionHandlesVisible = true;
 
       // 立即显示工具栏
       if (widget.showToolbar && !wordRange.isCollapsed) {
@@ -1192,6 +1208,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       // 如果无法选中单词，回退到选中单个字符
       _longPressInitialCellOffset = longPressCellOffset;
       _applySelection(BufferRangeLine.collapsed(longPressCellOffset));
+      _selectionHandlesVisible = true;
     }
 
     // 重置拖杆状态
@@ -1237,6 +1254,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     // 长按结束只处理初始选区创建的情况
     if (_longPressInitialCellOffset != null) {
       _longPressInitialCellOffset = null;
+      _selectionHandlesVisible = true;
 
       if (widget.showToolbar &&
           _selectedRange != null &&

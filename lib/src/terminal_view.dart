@@ -224,6 +224,7 @@ class TerminalViewState extends State<TerminalView>
   Offset _searchBoxPosition = const Offset(0, 0);
 
   bool _isDragging = false;
+  bool _selectionToolbarRequested = false;
 
   RenderTerminal get renderTerminal =>
       _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
@@ -510,17 +511,22 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void showSelectionToolbar(Rect globalSelectionRect) {
+    _selectionToolbarRequested = true;
     _customTextEditKey.currentState?.showToolbar(
       globalSelectionRect: globalSelectionRect,
     );
   }
 
   void hideSelectionToolbar() {
+    _selectionToolbarRequested = false;
     _customTextEditKey.currentState?.hideToolbar();
   }
 
   bool get isSelectionToolbarShown =>
       _customTextEditKey.currentState?.isToolbarShown ?? false;
+
+  @visibleForTesting
+  bool get debugSelectionToolbarRequested => _selectionToolbarRequested;
 
   void toggleFocus() {
     _customTextEditKey.currentState?.toggleKeyboard();

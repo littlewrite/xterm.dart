@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
+import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/xterm.dart';
 
 import '../_fixture/_fixture.dart';
@@ -306,6 +307,76 @@ void main() {
 
       expect(output.join(), 'abc');
     });
+  });
+
+  group('TerminalView.selection toolbar', () {
+    testWidgets('shows toolbar for touch long press selection', (tester) async {
+      final terminal = Terminal();
+      final key = GlobalKey<TerminalViewState>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              key: key,
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final rect = tester.getRect(find.byType(TerminalView));
+      final position = rect.topLeft + const Offset(16, 16);
+      await tester.longPressAt(position);
+      await tester.pumpAndSettle();
+
+      final gestureState = tester.state(find.byType(TerminalGestureHandler))
+          as dynamic;
+      expect(key.currentState?.debugSelectionToolbarRequested, isTrue);
+      expect(gestureState.debugShowsSelectionHandles, isTrue);
+    });
+
+    testWidgets(
+      'does not show toolbar for mouse drag selection',
+      (tester) async {
+        final terminal = Terminal();
+        final key = GlobalKey<TerminalViewState>();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalView(
+                terminal,
+                key: key,
+              ),
+            ),
+          ),
+        );
+
+        terminal.write('hello world');
+        await tester.pump();
+
+        final rect = tester.getRect(find.byType(TerminalView));
+        final gesture =
+            await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await gesture.addPointer(location: rect.topLeft + const Offset(8, 8));
+        await tester.pump();
+        await gesture.down(rect.topLeft + const Offset(8, 8));
+        await tester.pump();
+        await gesture.moveTo(rect.topLeft + const Offset(80, 8));
+        await tester.pump();
+        await gesture.up();
+        await tester.pumpAndSettle();
+
+        final gestureState = tester.state(find.byType(TerminalGestureHandler))
+            as dynamic;
+        expect(key.currentState?.debugSelectionToolbarRequested, isFalse);
+        expect(gestureState.debugShowsSelectionHandles, isFalse);
+      },
+    );
   });
 
   group('TerminalView.textScaler', () {
