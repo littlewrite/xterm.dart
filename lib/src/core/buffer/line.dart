@@ -327,8 +327,10 @@ class BufferLine with IndexedItem {
       from = 0;
     }
 
-    if (to == null || to > _length) {
-      to = _length;
+    if (to == null) {
+      to = getTrimmedLength();
+    } else if (to > _length) {
+      to = getTrimmedLength();
     }
 
     final builder = StringBuffer();
@@ -337,12 +339,19 @@ class BufferLine with IndexedItem {
       final width = getWidth(i);
       if (codePoint != 0 && i + width <= to) {
         builder.writeCharCode(codePoint);
-      } else if (codePoint == 0) { // TODO: handle wide characters
+      } else if (codePoint == 0 && !_isWideCharContinuationCell(i)) {
         builder.writeCharCode(32); // write space
       }
     }
 
     return builder.toString();
+  }
+
+  bool _isWideCharContinuationCell(int index) {
+    if (index <= 0 || index >= _length) {
+      return false;
+    }
+    return getCodePoint(index) == 0 && getWidth(index - 1) == 2;
   }
 
   CellAnchor createAnchor(int offset) {

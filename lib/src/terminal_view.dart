@@ -5,8 +5,6 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/input/keys.dart';
-import 'package:xterm/src/core/mouse/button.dart';
-import 'package:xterm/src/core/mouse/button_state.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -16,6 +14,7 @@ import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/scroll_handler.dart';
+import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/shortcut/actions.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
@@ -57,6 +56,8 @@ class TerminalView extends StatefulWidget {
     this.hideScrollBar = true,
     this.viewOffset = Offset.zero,
     this.showToolbar = true,
+    this.selectionInteractionMode =
+        TerminalSelectionInteractionMode.adaptive,
     this.enableSuggestions = true,
     this.scrollBehavior,
     this.toolbarBuilder,
@@ -169,6 +170,10 @@ class TerminalView extends StatefulWidget {
   final Offset viewOffset;
 
   final bool showToolbar;
+
+  /// Controls whether selection UI should follow the legacy desktop behavior
+  /// or the mobile-friendly "touch shows menu, mouse uses right click" mode.
+  final TerminalSelectionInteractionMode selectionInteractionMode;
 
   /// If this is false, some Chinese Android will open safe keyboard.
   final bool enableSuggestions;
@@ -457,6 +462,7 @@ class TerminalViewState extends State<TerminalView>
     child = TerminalGestureHandler(
       viewOffset: widget.viewOffset,
       showToolbar: widget.showToolbar,
+      selectionInteractionMode: widget.selectionInteractionMode,
       terminalView: this,
       terminalController: _controller,
       onTapUp: _onTapUp,
@@ -592,11 +598,6 @@ class TerminalViewState extends State<TerminalView>
   void _onTapUp(TapUpDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onTapUp?.call(details, offset);
-    widget.terminal.mouseInput(
-      TerminalMouseButton.left,
-      TerminalMouseButtonState.up,
-      offset,
-    );
   }
 
   void _onTapDown(TapDownDetails details) {
@@ -609,12 +610,6 @@ class TerminalViewState extends State<TerminalView>
     }
 
     _updateCursorBlink(resetVisible: true);
-
-    widget.terminal.mouseInput(
-      TerminalMouseButton.left,
-      TerminalMouseButtonState.down,
-      renderTerminal.getCellOffset(details.localPosition),
-    );
   }
 
   void _onSecondaryTapDown(TapDownDetails details) {

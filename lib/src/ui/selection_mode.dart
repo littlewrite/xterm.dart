@@ -3,3 +3,8 @@ enum SelectionMode {
 
   block,
 }
+
+enum TerminalSelectionInteractionMode {
+  adaptive,
+  touchContextMenu,
+}

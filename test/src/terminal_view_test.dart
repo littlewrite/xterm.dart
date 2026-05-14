@@ -320,6 +320,8 @@ void main() {
             body: TerminalView(
               terminal,
               key: key,
+              selectionInteractionMode:
+                  TerminalSelectionInteractionMode.touchContextMenu,
             ),
           ),
         ),
@@ -340,7 +342,7 @@ void main() {
     });
 
     testWidgets(
-      'does not show toolbar for mouse drag selection',
+      'does not show toolbar for mouse drag selection in touch context mode',
       (tester) async {
         final terminal = Terminal();
         final key = GlobalKey<TerminalViewState>();
@@ -351,6 +353,8 @@ void main() {
               body: TerminalView(
                 terminal,
                 key: key,
+                selectionInteractionMode:
+                    TerminalSelectionInteractionMode.touchContextMenu,
               ),
             ),
           ),
@@ -377,6 +381,43 @@ void main() {
         expect(gestureState.debugShowsSelectionHandles, isFalse);
       },
     );
+
+    testWidgets('does not show toolbar for mouse drag selection by default', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final key = GlobalKey<TerminalViewState>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              key: key,
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final rect = tester.getRect(find.byType(TerminalView));
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: rect.topLeft + const Offset(8, 8));
+      await tester.pump();
+      await gesture.down(rect.topLeft + const Offset(8, 8));
+      await tester.pump();
+      await gesture.moveTo(rect.topLeft + const Offset(80, 8));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      final gestureState = tester.state(find.byType(TerminalGestureHandler))
+          as dynamic;
+      expect(key.currentState?.debugSelectionToolbarRequested, isFalse);
+      expect(gestureState.debugShowsSelectionHandles, isFalse);
+    });
   });
 
   group('TerminalView.textScaler', () {

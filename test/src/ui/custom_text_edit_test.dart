@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/src/ui/custom_text_edit.dart';
 
@@ -188,6 +189,54 @@ void main() {
     expect(inserted, ['你好']);
     expect(composing, ['ni hao', null]);
 
+    focusNode.dispose();
+  });
+
+  testWidgets('paste sends text to terminal via onInsert', (
+    tester,
+  ) async {
+    final focusNode = FocusNode();
+    final inserted = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.getData') {
+          return <String, dynamic>{'text': 'paste'};
+        }
+        return null;
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: CustomTextEdit(
+            focusNode: focusNode,
+            onInsert: inserted.add,
+            onDelete: () {},
+            onComposing: (_) {},
+            onAction: (_) {},
+            onKeyEvent: (node, event) => KeyEventResult.ignored,
+            onInputConnectionChange: (connected) {},
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    final state = tester.state<CustomTextEditState>(
+      find.byType(CustomTextEdit),
+    );
+
+    await state.pasteText(SelectionChangedCause.toolbar);
+    await tester.pump();
+
+    // Paste now sends text directly via onInsert, not through textEditingValue.
+    expect(inserted, ['paste']);
+    expect(state.textEditingValue.text, isEmpty);
+
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null);
     focusNode.dispose();
   });
 

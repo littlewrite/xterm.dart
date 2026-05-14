@@ -135,10 +135,11 @@ class CustomTextEditState extends State<CustomTextEdit>
     _controller = widget.controller;
     if (_controller != null) {
       _controllerListener = () {
-        if (_currentEditingState != _controller!.value) {
+        final nextValue = _normalizeEditingValue(_controller!.value);
+        if (_currentEditingState != nextValue) {
           final oldValue = _currentEditingState;
           setState(() {
-            _currentEditingState = _controller!.value;
+            _currentEditingState = nextValue;
           });
           if (widget.onSelectionChanged != null &&
               oldValue.selection != _currentEditingState.selection) {
@@ -170,7 +171,7 @@ class CustomTextEditState extends State<CustomTextEdit>
       _initController();
       if (_controller != null) {
         setState(() {
-          _currentEditingState = _controller!.value;
+          _currentEditingState = _normalizeEditingValue(_controller!.value);
         });
       }
     }
@@ -306,6 +307,7 @@ class CustomTextEditState extends State<CustomTextEdit>
   }
 
   void setEditingState(TextEditingValue value) {
+    value = _normalizeEditingValue(value);
     if (_currentEditingState == value) {
       return;
     }
@@ -413,9 +415,9 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   TextEditingValue _getInitialEditingValue() {
     if (widget.controller != null) {
-      return widget.controller!.value;
+      return _normalizeEditingValue(widget.controller!.value);
     }
-    return _initEditingState;
+    return _normalizeEditingValue(_initEditingState);
   }
 
   TextEditingValue get _initEditingState => widget.deleteDetection
@@ -449,6 +451,7 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   @override
   void updateEditingValue(TextEditingValue value) {
+    value = _normalizeEditingValue(value);
     if (_currentEditingState == value) {
       return;
     }
@@ -627,6 +630,7 @@ class CustomTextEditState extends State<CustomTextEdit>
   TextEditingValue get textEditingValue => _currentEditingState;
 
   set textEditingValue(TextEditingValue value) {
+    value = _normalizeEditingValue(value);
     if (_currentEditingState == value) {
       return;
     }
@@ -845,16 +849,12 @@ class CustomTextEditState extends State<CustomTextEdit>
     if (data == null || data.text == null) {
       return;
     }
-    final selection = _currentEditingState.selection;
-    final text = _currentEditingState.text;
-    final newText =
-        selection.textBefore(text) + data.text! + selection.textAfter(text);
-    textEditingValue = TextEditingValue(
-      text: newText,
-      selection: TextSelection.collapsed(
-        offset: selection.start + data.text!.length,
-      ),
-    );
+
+    widget.onInsert(data.text!);
+
+    // 重置 IME 编辑状态，保持与终端的同步
+    textEditingValue = _initEditingState.copyWith();
+
     if (cause == SelectionChangedCause.toolbar) {
       hideToolbar();
     }
@@ -886,6 +886,7 @@ class CustomTextEditState extends State<CustomTextEdit>
     TextEditingValue value,
     SelectionChangedCause cause,
   ) {
+    value = _normalizeEditingValue(value);
     if (_currentEditingState == value) return;
     final oldValue = _currentEditingState;
     _currentEditingState = value;
@@ -903,6 +904,48 @@ class CustomTextEditState extends State<CustomTextEdit>
     _connection?.setEditingState(_currentEditingState);
     _showCaretOnScreen();
     setState(() {});
+  }
+
+  TextEditingValue _normalizeEditingValue(TextEditingValue value) {
+    final selection = _normalizeSelection(value.selection, value.text.length);
+    final composing = _normalizeComposing(value.composing, value.text.length);
+    if (selection == value.selection && composing == value.composing) {
+      return value;
+    }
+    return value.copyWith(selection: selection, composing: composing);
+  }
+
+  TextSelection _normalizeSelection(TextSelection selection, int textLength) {
+    if (!selection.isValid) {
+      return TextSelection.collapsed(offset: textLength);
+    }
+
+    final baseOffset = selection.baseOffset.clamp(0, textLength);
+    final extentOffset = selection.extentOffset.clamp(0, textLength);
+
+    if (baseOffset == selection.baseOffset &&
+        extentOffset == selection.extentOffset) {
+      return selection;
+    }
+
+    return TextSelection(
+      baseOffset: baseOffset,
+      extentOffset: extentOffset,
+      affinity: selection.affinity,
+      isDirectional: selection.isDirectional,
+    );
+  }
+
+  TextRange _normalizeComposing(TextRange composing, int textLength) {
+    if (!composing.isValid ||
+        composing.start < 0 ||
+        composing.end < 0 ||
+        composing.start > textLength ||
+        composing.end > textLength ||
+        composing.start > composing.end) {
+      return TextRange.empty;
+    }
+    return composing;
   }
 
   void _handleSemanticsSetText(String text) {

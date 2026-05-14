@@ -16,6 +16,13 @@ void main() {
       expect(terminal.buffer.lines[0].getText(), equals(text));
     });
 
+    test('getText() should support cjk wide characters without spacer cells', () {
+      final text = '切换分支';
+      final terminal = Terminal();
+      terminal.write(text);
+      expect(terminal.buffer.lines[0].getText(), equals(text));
+    });
+
     test('can specify a range', () {
       final terminal = Terminal();
       terminal.write('Hello World');
