@@ -583,17 +583,23 @@ class Buffer {
     range = range.normalized;
 
     final builder = StringBuffer();
+    var isFirstSegment = true;
 
     for (var segment in range.toSegments()) {
       if (segment.line < 0 || segment.line >= height) {
         continue;
       }
       final line = lines[segment.line];
-      if (!(segment.line == range.begin.y ||
-          segment.line == 0 ||
-          line.isWrapped)) {
-        builder.write("\n");
+      // Add newline before this line UNLESS this is the first segment or
+      // the previous line wraps into this line (soft wrap).
+      if (!isFirstSegment) {
+        final isPrevLineWrapped =
+            lines[segment.line - 1].isWrapped;
+        if (!isPrevLineWrapped) {
+          builder.write('\n');
+        }
       }
+      isFirstSegment = false;
       builder.write(line.getText(segment.start, segment.end));
     }
 
