@@ -10,6 +10,7 @@ import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
+import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
 import 'package:xterm/src/terminal.dart';
@@ -546,12 +547,23 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     final effectFirstLine = firstLine.clamp(0, lines.length - 1);
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
+    final selection = _controller.selection?.normalized;
+    final cellData = CellData.empty();
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
-      _painter.paintLine(
+      final lineOffset = offset.translate(
+          0, (i * charHeight + _lineOffset).truncateToDouble());
+      if (selection == null || !_selectionIntersectsLine(selection, i)) {
+        _painter.paintLine(canvas, lineOffset, lines[i]);
+        continue;
+      }
+      _paintLineWithSelection(
         canvas,
-        offset.translate(0, (i * charHeight + _lineOffset).truncateToDouble()),
+        lineOffset,
         lines[i],
+        i,
+        selection,
+        cellData,
       );
     }
 
@@ -583,15 +595,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       effectFirstLine,
       effectLastLine,
     );
-
-    if (_controller.selection != null) {
-      _paintSelection(
-        canvas,
-        _controller.selection!,
-        effectFirstLine,
-        effectLastLine,
-      );
-    }
   }
 
   /// Paints the text that is currently being composed in IME to [canvas] at
@@ -623,30 +626,55 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     canvas.drawParagraph(paragraph, Offset(0, offset.dy));
   }
 
-  // RenderTerminal 中的 _paintSelection 方法更新版本
+  bool _selectionIntersectsLine(BufferRange selection, int line) {
+    final begin = selection.begin;
+    final end = selection.end;
+    return line >= begin.y && line <= end.y;
+  }
 
-  void _paintSelection(
+  void _paintLineWithSelection(
     Canvas canvas,
+    Offset offset,
+    BufferLine line,
+    int lineIndex,
     BufferRange selection,
-    int firstLine,
-    int lastLine,
+    CellData cellData,
   ) {
-    final segments = selection.toSegments();
-    for (final segment in segments) {
-      if (segment.line >= _terminal.buffer.lines.length) {
-        break;
+    final cellWidth = _painter.cellSize.width;
+    final startColumn = _selectedStartColumn(selection, lineIndex);
+    final endColumn = _selectedEndColumn(selection, lineIndex);
+
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+
+      final charWidth = cellData.content >> CellContent.widthShift;
+      final cellOffset = offset.translate(i * cellWidth, 0);
+      final isSelected = i >= startColumn && i < endColumn;
+
+      if (isSelected) {
+        _painter.paintSelectedCell(canvas, cellOffset, cellData);
+      } else {
+        _painter.paintCell(canvas, cellOffset, cellData);
       }
 
-      if (segment.line < firstLine) {
-        continue;
+      if (charWidth == 2) {
+        i++;
       }
-
-      if (segment.line > lastLine) {
-        break;
-      }
-
-      _paintSegment(canvas, segment, _painter.theme.selection);
     }
+  }
+
+  int _selectedStartColumn(BufferRange selection, int lineIndex) {
+    if (lineIndex == selection.begin.y) {
+      return selection.begin.x;
+    }
+    return 0;
+  }
+
+  int _selectedEndColumn(BufferRange selection, int lineIndex) {
+    if (lineIndex == selection.end.y) {
+      return selection.end.x;
+    }
+    return _terminal.viewWidth;
   }
 
   void _paintHighlights(

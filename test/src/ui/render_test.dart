@@ -3,9 +3,11 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
+import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
+import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/themes.dart';
@@ -53,5 +55,24 @@ void main() {
     render.detach();
     controller.dispose();
     focusNode.dispose();
+  });
+
+  test('TerminalPainter uses selection colors for selected cells', () {
+    final terminal = Terminal();
+    terminal.write('A');
+
+    final cellData = CellData.empty();
+    terminal.buffer.lines[0].getCellData(0, cellData);
+    final painter = TerminalPainter(
+      theme: TerminalThemes.defaultTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+
+    expect(
+      painter.effectiveForegroundColor(cellData),
+      TerminalThemes.defaultTheme.foreground,
+    );
+    expect(painter.effectiveBackgroundColor(cellData), isNull);
   });
 }

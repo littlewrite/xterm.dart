@@ -1,4 +1,5 @@
 import 'package:flutter/painting.dart';
+import 'package:flutter/foundation.dart';
 
 import 'package:flutter/rendering.dart';
 import 'package:xterm/src/ui/char_metrics.dart';
@@ -146,10 +147,25 @@ class TerminalPainter {
     paintCellForeground(canvas, offset, cellData);
   }
 
+  @pragma('vm:prefer-inline')
+  void paintSelectedCell(Canvas canvas, Offset offset, CellData cellData) {
+    paintHighlight(
+      canvas,
+      offset,
+      cellData.content >> CellContent.widthShift == 2 ? 2 : 1,
+      _theme.selection,
+    );
+    paintCellForeground(canvas, offset, cellData);
+  }
+
   /// Paints the character in the cell represented by [cellData] to [canvas] at
   /// [offset].
   @pragma('vm:prefer-inline')
-  void paintCellForeground(Canvas canvas, Offset offset, CellData cellData) {
+  void paintCellForeground(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData,
+  ) {
     final charCode = cellData.content & CellContent.codepointMask;
     if (charCode == 0) return;
 
@@ -159,9 +175,7 @@ class TerminalPainter {
     if (paragraph == null) {
       final cellFlags = cellData.flags;
 
-      var color = cellFlags & CellFlags.inverse == 0
-          ? resolveForegroundColor(cellData.foreground)
-          : resolveBackgroundColor(cellData.background);
+      var color = effectiveForegroundColor(cellData);
 
       if (cellData.flags & CellFlags.faint != 0) {
         color = color.withOpacity(0.5);
@@ -194,6 +208,28 @@ class TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
+  }
+
+  @visibleForTesting
+  Color effectiveForegroundColor(CellData cellData) {
+    return cellData.flags & CellFlags.inverse == 0
+        ? resolveForegroundColor(cellData.foreground)
+        : resolveBackgroundColor(cellData.background);
+  }
+
+  @visibleForTesting
+  Color? effectiveBackgroundColor(CellData cellData) {
+    final colorType = cellData.background & CellColor.typeMask;
+
+    if (cellData.flags & CellFlags.inverse != 0) {
+      return resolveForegroundColor(cellData.foreground);
+    }
+
+    if (colorType == CellColor.normal) {
+      return null;
+    }
+
+    return resolveBackgroundColor(cellData.background);
   }
 
   /// Paints the background of a cell represented by [cellData] to [canvas] at
