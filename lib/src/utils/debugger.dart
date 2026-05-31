@@ -604,13 +604,6 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
-  void setTypingCommand(String command) {
-    // Provide the implementation for setTypingCommand
-    // You can add your logic here
-    print('Typing command set: $command');
-  }
-
-  @override
   void showSearch() {
     onCommand('showSearch');
   }

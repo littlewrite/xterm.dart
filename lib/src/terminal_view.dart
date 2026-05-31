@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/input/keys.dart';
@@ -56,8 +57,7 @@ class TerminalView extends StatefulWidget {
     this.hideScrollBar = true,
     this.viewOffset = Offset.zero,
     this.showToolbar = true,
-    this.selectionInteractionMode =
-        TerminalSelectionInteractionMode.adaptive,
+    this.selectionInteractionMode = TerminalSelectionInteractionMode.adaptive,
     this.enableSuggestions = true,
     this.scrollBehavior,
     this.toolbarBuilder,
@@ -718,8 +718,24 @@ class TerminalViewState extends State<TerminalView>
       return;
     }
 
-    setState(() {
-      _hasInputConnection = hasInputConnection;
+    void applyState() {
+      if (!mounted || _hasInputConnection == hasInputConnection) {
+        return;
+      }
+      setState(() {
+        _hasInputConnection = hasInputConnection;
+      });
+    }
+
+    final schedulerPhase = SchedulerBinding.instance.schedulerPhase;
+    if (schedulerPhase == SchedulerPhase.idle ||
+        schedulerPhase == SchedulerPhase.postFrameCallbacks) {
+      applyState();
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      applyState();
     });
   }
 
@@ -772,7 +788,6 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _scrollToLine(int line) {
-    print('scroll to line: $line');
     final renderTerminal =
         _viewportKey.currentContext?.findRenderObject() as RenderTerminal?;
     if (renderTerminal != null) {

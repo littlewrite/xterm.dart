@@ -54,9 +54,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   void Function(int width, int height, int pixelWidth, int pixelHeight)?
   onResize;
 
-  /// Function that is called when the user types a command. This is typically
-  void Function(String title)? onTypingCommand;
-
   /// The [TerminalInputHandler] used by this terminal. [defaultInputHandler] is
   /// used when not specified. User of this class can provide their own
   /// implementation of [TerminalInputHandler] or extend [defaultInputHandler]
@@ -89,7 +86,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     this.onPrivateOSC,
     this.reflowEnabled = true,
     this.wordSeparators,
-    this.onTypingCommand,
   });
 
   late final _parser = EscapeParser(this);
@@ -935,16 +931,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void unknownOSC(String ps, List<String> pt) {
     onPrivateOSC?.call(ps, pt);
-  }
-
-  // get shell
-  String getTypingCommand() {
-    return "git ";
-  }
-
-  @override
-  void setTypingCommand(String command) {
-    onTypingCommand?.call(command);
   }
 
   void dispose() {
