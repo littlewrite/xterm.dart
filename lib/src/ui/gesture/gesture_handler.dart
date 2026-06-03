@@ -25,8 +25,7 @@ class TerminalGestureHandler extends StatefulWidget {
     this.readOnly = false,
     this.viewOffset = Offset.zero,
     this.showToolbar = true,
-    this.selectionInteractionMode =
-        TerminalSelectionInteractionMode.adaptive,
+    this.selectionInteractionMode = TerminalSelectionInteractionMode.adaptive,
     this.cursorColor = Colors.cyan,
     this.scrollController,
   });
@@ -252,7 +251,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     }
 
     // 3. 双指缩放
-    if (_trackedPointers.length == 2 && !_isDraggingHandle && !_isDragHandleReady) {
+    if (_trackedPointers.length == 2 &&
+        !_isDraggingHandle &&
+        !_isDragHandleReady) {
       _handlePinchZoomUpdate();
       return;
     }
@@ -693,11 +694,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     }
 
     if (current == base) {
-      _applySelection(BufferRangeLine.collapsed(base));
+      _commitSelection(renderTerminal.selectCharacters(base));
       return false;
     }
 
-    _applySelectionBetween(base, current, scrollPosition: localPosition);
+    _commitSelection(
+      renderTerminal.selectCharacters(base, current),
+      scrollPosition: localPosition,
+    );
     return true;
   }
 
@@ -747,12 +751,18 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _resetDragHandleState();
     }
 
-    widget.onTapUp?.call(details);
+    _tapUp(
+      widget.onTapUp,
+      details,
+      TerminalMouseButton.left,
+      forceCallback: true,
+    );
 
     if (_selectedRange != null) {
       // 检查是否点击了拖杆
-      final dragHandle =
-          _shouldShowHandles ? _detectDragHandle(details.localPosition) : _DragHandleType.none;
+      final dragHandle = _shouldShowHandles
+          ? _detectDragHandle(details.localPosition)
+          : _DragHandleType.none;
       if (dragHandle != _DragHandleType.none) {
         // 点击了拖杆，不做任何操作，等待可能的拖动
         return;
@@ -935,29 +945,18 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     }
   }
 
-  void _applySelection(BufferRangeLine range) {
-    final BufferRangeLine normalized = range.normalized;
-    if (normalized.isCollapsed) {
-      renderTerminal.selectCharacters(normalized.begin);
+  /// Apply [range] to local state. The selection must already be set on the
+  /// controller via [renderTerminal.selectCharacters] or
+  /// [renderTerminal.selectBufferRange] before calling this.
+  void _commitSelection(BufferRangeLine range, {Offset? scrollPosition}) {
+    final previousRange = _selectedRange;
+    if (previousRange != range) {
+      setState(() {
+        _selectedRange = range;
+      });
     } else {
-      renderTerminal.selectBufferRange(normalized);
+      _selectedRange = range;
     }
-
-    _syncSelectionFromController();
-  }
-
-  /// 创建从 [a] 到 [b] 的选区范围并应用。
-  /// 两个端点无需排序，方法会自动创建归一化的范围。
-  /// 如果提供了 [scrollPosition]，还会触发自动滚动。
-  void _applySelectionBetween(
-    CellOffset a,
-    CellOffset b, {
-    Offset? scrollPosition,
-  }) {
-    final range = a.isBefore(b)
-        ? BufferRangeLine(a, b)
-        : BufferRangeLine(b, a);
-    _applySelection(range);
     if (scrollPosition != null) {
       terminalView.autoScrollDown(scrollPosition);
     }
@@ -1008,17 +1007,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
     if (details.kind == PointerDeviceKind.touch) {
       // 触摸设备：选中整个单词
-      final BufferRangeLine? wordRange = renderTerminal.selectWord(cellOffset);
+      final wordRange = renderTerminal.selectWord(cellOffset);
       if (wordRange != null) {
-        _applySelection(wordRange);
+        _commitSelection(wordRange);
       }
       _selectionHandlesVisible = usesTouchSelectionUi;
     } else {
       // 鼠标设备：选中单个字符
-      renderTerminal.selectCharacters(cellOffset, cellOffset);
-      if (widget.terminalController.selection != null) {
-        _applySelection(BufferRangeLine(cellOffset, cellOffset));
-      }
+      _commitSelection(renderTerminal.selectCharacters(cellOffset, cellOffset));
       _selectionHandlesVisible = usesTouchSelectionUi;
     }
 
@@ -1061,7 +1057,10 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _dragHandleFixedPoint = newEnd;
     }
 
-    _applySelectionBetween(newStart, newEnd, scrollPosition: localPosition);
+    _commitSelection(
+      renderTerminal.selectCharacters(newStart, newEnd),
+      scrollPosition: localPosition,
+    );
   }
 
   void _clearSelection() {
@@ -1107,7 +1106,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     // 直接选中单词而非折叠选区（符合 Android 原生行为）
     final wordRange = renderTerminal.selectWord(longPressCellOffset);
     if (wordRange != null) {
-      _applySelection(wordRange);
+      _commitSelection(wordRange);
       _selectionHandlesVisible = true;
 
       // 立即显示工具栏
@@ -1120,7 +1119,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     } else {
       // 如果无法选中单词，回退到选中单个字符
       _longPressInitialCellOffset = longPressCellOffset;
-      _applySelection(BufferRangeLine.collapsed(longPressCellOffset));
+      _commitSelection(renderTerminal.selectCharacters(longPressCellOffset));
       _selectionHandlesVisible = true;
     }
 
@@ -1151,9 +1150,11 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       return;
     }
 
-    _applySelectionBetween(
-      _longPressInitialCellOffset!,
-      currentCellOffset,
+    _commitSelection(
+      renderTerminal.selectCharacters(
+        _longPressInitialCellOffset!,
+        currentCellOffset,
+      ),
       scrollPosition: details.localPosition,
     );
   }

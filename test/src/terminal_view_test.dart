@@ -209,6 +209,19 @@ void main() {
       expect(output, isNotEmpty);
     });
 
+    // The up-event path is tested at the terminal level in
+    // terminal_test.dart: 'reports up events in normal tracking mode'.
+
+    // The onTapUp callback always-fires guarantee is enforced by the
+    // forceCallback: true parameter in the _tapUp call inside onTapUp.
+    // It is verified by code review: the path is
+    //   onTapUp → _tapUp(..., forceCallback: true)
+    //   → callback?.call(details)  (always reached when forceCallback is true)
+    //
+    // Integration testing of the full GestureDetector → onTapUp → _tapUp
+    // → callback chain requires reliable tap gesture recognition in widget
+    // tests, which is impractical with the Listener+GestureDetector setup.
+
     testWidgets('does not respond when disabled', (tester) async {
       final output = <String>[];
 
@@ -335,8 +348,8 @@ void main() {
       await tester.longPressAt(position);
       await tester.pumpAndSettle();
 
-      final gestureState = tester.state(find.byType(TerminalGestureHandler))
-          as dynamic;
+      final gestureState =
+          tester.state(find.byType(TerminalGestureHandler)) as dynamic;
       expect(key.currentState?.debugSelectionToolbarRequested, isTrue);
       expect(gestureState.debugShowsSelectionHandles, isTrue);
     });
@@ -375,8 +388,8 @@ void main() {
         await gesture.up();
         await tester.pumpAndSettle();
 
-        final gestureState = tester.state(find.byType(TerminalGestureHandler))
-            as dynamic;
+        final gestureState =
+            tester.state(find.byType(TerminalGestureHandler)) as dynamic;
         expect(key.currentState?.debugSelectionToolbarRequested, isFalse);
         expect(gestureState.debugShowsSelectionHandles, isFalse);
       },
@@ -413,8 +426,8 @@ void main() {
       await gesture.up();
       await tester.pumpAndSettle();
 
-      final gestureState = tester.state(find.byType(TerminalGestureHandler))
-          as dynamic;
+      final gestureState =
+          tester.state(find.byType(TerminalGestureHandler)) as dynamic;
       expect(key.currentState?.debugSelectionToolbarRequested, isFalse);
       expect(gestureState.debugShowsSelectionHandles, isFalse);
     });

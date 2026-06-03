@@ -537,29 +537,31 @@ class Buffer {
     }
 
     var line = lines[position.y];
-    var start = position.x;
-    var end = position.x;
+    var start = line.getCharacterStart(position.x);
+    var end = line.getCharacterEnd(position.x);
 
     do {
       if (start == 0) {
         break;
       }
-      final char = line.getCodePoint(start - 1);
+      final previousIndex = line.getCharacterStart(start - 1);
+      final char = line.getCodePoint(previousIndex);
       if (separators.contains(char)) {
         break;
       }
-      start--;
+      start = previousIndex;
     } while (true);
 
     do {
       if (end >= viewWidth) {
         break;
       }
-      final char = line.getCodePoint(end);
+      final nextIndex = line.getCharacterStart(end);
+      final char = line.getCodePoint(nextIndex);
       if (separators.contains(char)) {
         break;
       }
-      end++;
+      end = line.getCharacterEnd(nextIndex);
     } while (true);
 
     if (start == end) {

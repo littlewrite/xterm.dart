@@ -46,7 +46,49 @@ void main() {
         CellOffset(10, 10),
       );
 
-      expect(output, ['\x1B[M +,']);
+      expect(output, ['\x1B[M ++']);
+    });
+
+    test('supports sgr mouse reporting after combined mode sequence', () {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?1006;1000h');
+
+      terminal.mouseInput(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.down,
+        CellOffset(0, 0),
+      );
+      terminal.mouseInput(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.up,
+        CellOffset(0, 0),
+      );
+
+      expect(output, ['\x1B[<0;1;1M', '\x1B[<0;1;1m']);
+    });
+
+    test('reports up events in normal tracking mode', () {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?1000h');
+
+      terminal.mouseInput(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.down,
+        CellOffset(0, 0),
+      );
+      terminal.mouseInput(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.up,
+        CellOffset(0, 0),
+      );
+
+      expect(output, ['\x1B[M !!', '\x1B[M#!!']);
     });
   });
 

@@ -61,6 +61,37 @@ class BufferLine with IndexedItem {
     return _data[index * _cellSize + _cellContent] >> CellContent.widthShift;
   }
 
+  bool isWideCharContinuationCell(int index) {
+    if (index <= 0 || index >= _length) {
+      return false;
+    }
+    return getCodePoint(index) == 0 && getWidth(index - 1) == 2;
+  }
+
+  int getCharacterStart(int index) {
+    if (index <= 0) {
+      return 0;
+    }
+    if (index >= _length) {
+      return _length;
+    }
+    return isWideCharContinuationCell(index) ? index - 1 : index;
+  }
+
+  int getCharacterEnd(int index) {
+    if (index < 0) {
+      return 0;
+    }
+    if (index >= _length) {
+      return _length;
+    }
+
+    final start = getCharacterStart(index);
+    final width = getWidth(start);
+    final effectiveWidth = width > 0 ? width : 1;
+    return min(start + effectiveWidth, _length);
+  }
+
   void getCellData(int index, CellData cellData) {
     final offset = index * _cellSize;
     cellData.foreground = _data[offset + _cellForeground];
@@ -339,19 +370,12 @@ class BufferLine with IndexedItem {
       final width = getWidth(i);
       if (codePoint != 0 && i + width <= to) {
         builder.writeCharCode(codePoint);
-      } else if (codePoint == 0 && !_isWideCharContinuationCell(i)) {
+      } else if (codePoint == 0 && !isWideCharContinuationCell(i)) {
         builder.writeCharCode(32); // write space
       }
     }
 
     return builder.toString();
-  }
-
-  bool _isWideCharContinuationCell(int index) {
-    if (index <= 0 || index >= _length) {
-      return false;
-    }
-    return getCodePoint(index) == 0 && getWidth(index - 1) == 2;
   }
 
   CellAnchor createAnchor(int offset) {

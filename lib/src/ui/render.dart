@@ -323,6 +323,16 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     );
   }
 
+  CellOffset _selectionStartFor(CellOffset offset) {
+    final line = _terminal.buffer.lines[offset.y];
+    return CellOffset(line.getCharacterStart(offset.x), offset.y);
+  }
+
+  CellOffset _selectionEndFor(CellOffset offset) {
+    final line = _terminal.buffer.lines[offset.y];
+    return CellOffset(line.getCharacterEnd(offset.x), offset.y);
+  }
+
   Iterable<int> _getYOffsetForFindingWord(int y) sync* {
     yield 0;
     if (y > 0) yield -1;
@@ -345,8 +355,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (fromBoundary == null) return null;
 
     if (to == null) {
-      selectBufferRange(fromBoundary, mode: SelectionMode.line);
-      return fromBoundary;
+      return selectBufferRange(fromBoundary, mode: SelectionMode.line);
     } else {
       /// Same as find [fromBoundary]
       BufferRangeLine? toBoundary;
@@ -358,8 +367,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       if (toBoundary == null) return null;
 
       final range = fromBoundary.merge(toBoundary);
-      selectBufferRange(range, mode: SelectionMode.line);
-      return range;
+      return selectBufferRange(range, mode: SelectionMode.line);
     }
   }
 
@@ -377,30 +385,48 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   /// Selects characters in the terminal that starts from [from] to [to]. At
   /// least one cell is selected even if [from] and [to] are same.
-  void selectCharacters(CellOffset from, [CellOffset? to]) {
+  ///
+  /// Returns the actual [BufferRangeLine] that was applied, with wide-character
+  /// normalization applied to both endpoints.
+  BufferRangeLine selectCharacters(CellOffset from, [CellOffset? to]) {
+    final normalizedFrom = _selectionStartFor(from);
+
     if (to == null) {
       _controller.setSelection(
-        _terminal.buffer.createAnchorFromOffset(from),
-        _terminal.buffer.createAnchorFromOffset(from),
+        _terminal.buffer.createAnchorFromOffset(normalizedFrom),
+        _terminal.buffer.createAnchorFromOffset(normalizedFrom),
       );
-    } else {
-      if (to.x >= from.x) {
-        to = CellOffset(to.x + 1, to.y);
-      }
-      _controller.setSelection(
-        _terminal.buffer.createAnchorFromOffset(from),
-        _terminal.buffer.createAnchorFromOffset(to),
-      );
+      return BufferRangeLine.collapsed(normalizedFrom);
     }
+
+    final normalizedTo = _selectionStartFor(to);
+    final forward = normalizedFrom.isBeforeOrSame(normalizedTo);
+    final begin = forward ? normalizedFrom : normalizedTo;
+    final end = forward
+        ? _selectionEndFor(normalizedTo)
+        : _selectionEndFor(normalizedFrom);
+
+    _controller.setSelection(
+      _terminal.buffer.createAnchorFromOffset(begin),
+      _terminal.buffer.createAnchorFromOffset(end),
+    );
+    return BufferRangeLine(begin, end);
   }
 
-  void selectBufferRange(BufferRange range, {SelectionMode? mode}) {
+  /// Selects the given [range] in the terminal. Both endpoints are normalized
+  /// for wide characters. The [range]'s exclusive-end is preserved.
+  ///
+  /// Returns the actual [BufferRangeLine] that was applied.
+  BufferRangeLine selectBufferRange(BufferRange range, {SelectionMode? mode}) {
     final normalized = range.normalized;
+    final begin = _selectionStartFor(normalized.begin);
+    final end = _selectionStartFor(normalized.end);
     _controller.setSelection(
-      _terminal.buffer.createAnchorFromOffset(normalized.begin),
-      _terminal.buffer.createAnchorFromOffset(normalized.end),
+      _terminal.buffer.createAnchorFromOffset(begin),
+      _terminal.buffer.createAnchorFromOffset(end),
       mode: mode ?? _controller.selectionMode,
     );
+    return BufferRangeLine(begin, end);
   }
 
   /// Selects all content in the terminal buffer.
@@ -644,6 +670,15 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final startColumn = _selectedStartColumn(selection, lineIndex);
     final endColumn = _selectedEndColumn(selection, lineIndex);
 
+    if (endColumn > startColumn) {
+      _painter.paintHighlight(
+        canvas,
+        offset.translate(startColumn * cellWidth, 0),
+        endColumn - startColumn,
+        _painter.theme.selection,
+      );
+    }
+
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
 
@@ -652,7 +687,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       final isSelected = i >= startColumn && i < endColumn;
 
       if (isSelected) {
-        _painter.paintSelectedCell(canvas, cellOffset, cellData);
+        _painter.paintCellForeground(canvas, cellOffset, cellData);
       } else {
         _painter.paintCell(canvas, cellOffset, cellData);
       }
