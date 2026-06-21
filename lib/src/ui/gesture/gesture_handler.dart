@@ -340,7 +340,6 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         }
       });
     } else {
-      _selectedRange = nextRange;
       if (nextRange == null || nextRange.isCollapsed) {
         _selectionHandlesVisible = false;
       }
@@ -994,7 +993,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   void onTertiaryTapUp(TapUpDetails details) {
-    _tapUp(widget.onTertiaryTapUp, details, TerminalMouseButton.right);
+    _tapUp(widget.onTertiaryTapUp, details, TerminalMouseButton.middle);
   }
 
   void onDoubleTapDown(TapDownDetails details) {
@@ -1005,18 +1004,13 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     final usesTouchSelectionUi =
         _shouldUseTouchSelectionUiForPointer(details.kind);
 
-    if (details.kind == PointerDeviceKind.touch) {
-      // 触摸设备：选中整个单词
-      final wordRange = renderTerminal.selectWord(cellOffset);
-      if (wordRange != null) {
-        _commitSelection(wordRange);
-      }
-      _selectionHandlesVisible = usesTouchSelectionUi;
+    final wordRange = renderTerminal.selectWord(cellOffset);
+    if (wordRange != null) {
+      _commitSelection(wordRange);
     } else {
-      // 鼠标设备：选中单个字符
       _commitSelection(renderTerminal.selectCharacters(cellOffset, cellOffset));
-      _selectionHandlesVisible = usesTouchSelectionUi;
     }
+    _selectionHandlesVisible = usesTouchSelectionUi;
 
     if (widget.showToolbar && usesTouchSelectionUi) {
       final Rect? selectionRect = _currentSelectionGlobalRect();

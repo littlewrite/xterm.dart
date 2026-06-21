@@ -222,7 +222,7 @@ class EscapeParser {
 
   /// The last parsed [_Csi]. This is a mutable singletion by design to reduce
   /// object allocations.
-  final _csi = _Csi(finalByte: 0, params: []);
+  final _csi = _Csi(finalByte: 0, params: [], separators: []);
 
   /// Parse a CSI from the head of the queue. Return false if the CSI isn't
   /// complete. After a CSI is successfully parsed, [_csi] is updated.
@@ -232,6 +232,7 @@ class EscapeParser {
     }
 
     _csi.params.clear();
+    _csi.separators.clear();
 
     // test whether the csi is a `CSI ? Ps ...` or `CSI Ps ...`
     final prefix = _queue.peek();
@@ -252,11 +253,13 @@ class EscapeParser {
 
       final char = _queue.consume();
 
-      if (char == Ascii.semicolon) {
+      if (char == Ascii.semicolon || char == Ascii.colon) {
         if (hasParam) {
           _csi.params.add(param);
+          _csi.separators.add(char);
         }
         param = 0;
+        hasParam = false;
         continue;
       }
 
@@ -362,6 +365,9 @@ class EscapeParser {
 
     if (_csi.params.isNotEmpty) {
       y = _csi.params[0];
+      if (y == 0) {
+        y = 1;
+      }
     }
 
     handler.setCursorY(y - 1);
@@ -424,6 +430,10 @@ class EscapeParser {
   ///
   /// https://terminalguide.namepad.de/seq/csi_sm/
   void _csiHandleSgr() {
+    if (_csi.prefix != null) {
+      return handler.unknownCSI(_csi.finalByte);
+    }
+
     final params = _csi.params;
 
     if (params.isEmpty) {
@@ -432,204 +442,337 @@ class EscapeParser {
 
     // This is a workaround for a bug in the analyzer.
     // ignore: dead_code
-    for (var i = 0; i < _csi.params.length; i++) {
+    for (var i = 0; i < params.length;) {
+      var groupEnd = i;
+      while (groupEnd < params.length - 1 &&
+          groupEnd < _csi.separators.length &&
+          _csi.separators[groupEnd] == Ascii.colon) {
+        groupEnd++;
+      }
+
       final param = params[i];
       switch (param) {
         case 0:
           handler.resetCursorStyle();
+          i = groupEnd + 1;
           continue;
         case 1:
           handler.setCursorBold();
+          i = groupEnd + 1;
           continue;
         case 2:
           handler.setCursorFaint();
+          i = groupEnd + 1;
           continue;
         case 3:
           handler.setCursorItalic();
+          i = groupEnd + 1;
           continue;
         case 4:
-          handler.setCursorUnderline();
+          if (groupEnd > i && params[i + 1] == 0) {
+            handler.unsetCursorUnderline();
+          } else {
+            handler.setCursorUnderline();
+          }
+          i = groupEnd + 1;
           continue;
         case 5:
           handler.setCursorBlink();
+          i = groupEnd + 1;
           continue;
         case 7:
           handler.setCursorInverse();
+          i = groupEnd + 1;
           continue;
         case 8:
           handler.setCursorInvisible();
+          i = groupEnd + 1;
           continue;
         case 9:
           handler.setCursorStrikethrough();
+          i = groupEnd + 1;
           continue;
 
         case 21:
           handler.unsetCursorBold();
+          i = groupEnd + 1;
           continue;
         case 22:
           handler.unsetCursorFaint();
+          i = groupEnd + 1;
           continue;
         case 23:
           handler.unsetCursorItalic();
+          i = groupEnd + 1;
           continue;
         case 24:
           handler.unsetCursorUnderline();
+          i = groupEnd + 1;
           continue;
         case 25:
           handler.unsetCursorBlink();
+          i = groupEnd + 1;
           continue;
         case 27:
           handler.unsetCursorInverse();
+          i = groupEnd + 1;
           continue;
         case 28:
           handler.unsetCursorInvisible();
+          i = groupEnd + 1;
           continue;
         case 29:
           handler.unsetCursorStrikethrough();
+          i = groupEnd + 1;
           continue;
 
         case 30:
           handler.setForegroundColor16(NamedColor.black);
+          i = groupEnd + 1;
           continue;
         case 31:
           handler.setForegroundColor16(NamedColor.red);
+          i = groupEnd + 1;
           continue;
         case 32:
           handler.setForegroundColor16(NamedColor.green);
+          i = groupEnd + 1;
           continue;
         case 33:
           handler.setForegroundColor16(NamedColor.yellow);
+          i = groupEnd + 1;
           continue;
         case 34:
           handler.setForegroundColor16(NamedColor.blue);
+          i = groupEnd + 1;
           continue;
         case 35:
           handler.setForegroundColor16(NamedColor.magenta);
+          i = groupEnd + 1;
           continue;
         case 36:
           handler.setForegroundColor16(NamedColor.cyan);
+          i = groupEnd + 1;
           continue;
         case 37:
           handler.setForegroundColor16(NamedColor.white);
+          i = groupEnd + 1;
           continue;
         case 38:
-          final mode = params[i + 1];
-          switch (mode) {
-            case 2:
-              final r = params[i + 2];
-              final g = params[i + 3];
-              final b = params[i + 4];
-              handler.setForegroundColorRgb(r, g, b);
-              i += 4;
-              break;
-            case 5:
-              final index = params[i + 2];
-              handler.setForegroundColor256(index);
-              i += 2;
-              break;
+          if (groupEnd > i) {
+            final mode = params[i + 1];
+            switch (mode) {
+              case 2:
+                if (groupEnd >= i + 4) {
+                  final r = params[i + 2];
+                  final g = params[i + 3];
+                  final b = params[i + 4];
+                  handler.setForegroundColorRgb(r, g, b);
+                }
+                i = groupEnd + 1;
+                continue;
+              case 5:
+                if (groupEnd >= i + 2) {
+                  final index = params[i + 2];
+                  handler.setForegroundColor256(index);
+                }
+                i = groupEnd + 1;
+                continue;
+            }
+          } else {
+            if (i + 1 >= params.length) {
+              i = params.length;
+              continue;
+            }
+            final mode = params[i + 1];
+            switch (mode) {
+              case 2:
+                if (i + 4 >= params.length) {
+                  i = params.length;
+                  continue;
+                }
+                final r = params[i + 2];
+                final g = params[i + 3];
+                final b = params[i + 4];
+                handler.setForegroundColorRgb(r, g, b);
+                i += 5;
+                continue;
+              case 5:
+                if (i + 2 >= params.length) {
+                  i = params.length;
+                  continue;
+                }
+                final index = params[i + 2];
+                handler.setForegroundColor256(index);
+                i += 3;
+                continue;
+            }
           }
+          i = groupEnd + 1;
           continue;
         case 39:
           handler.resetForeground();
+          i = groupEnd + 1;
           continue;
 
         case 40:
           handler.setBackgroundColor16(NamedColor.black);
+          i = groupEnd + 1;
           continue;
         case 41:
           handler.setBackgroundColor16(NamedColor.red);
+          i = groupEnd + 1;
           continue;
         case 42:
           handler.setBackgroundColor16(NamedColor.green);
+          i = groupEnd + 1;
           continue;
         case 43:
           handler.setBackgroundColor16(NamedColor.yellow);
+          i = groupEnd + 1;
           continue;
         case 44:
           handler.setBackgroundColor16(NamedColor.blue);
+          i = groupEnd + 1;
           continue;
         case 45:
           handler.setBackgroundColor16(NamedColor.magenta);
+          i = groupEnd + 1;
           continue;
         case 46:
           handler.setBackgroundColor16(NamedColor.cyan);
+          i = groupEnd + 1;
           continue;
         case 47:
           handler.setBackgroundColor16(NamedColor.white);
+          i = groupEnd + 1;
           continue;
         case 48:
-          final mode = params[i + 1];
-          switch (mode) {
-            case 2:
-              final r = params[i + 2];
-              final g = params[i + 3];
-              final b = params[i + 4];
-              handler.setBackgroundColorRgb(r, g, b);
-              i += 4;
-              break;
-            case 5:
-              final index = params[i + 2];
-              handler.setBackgroundColor256(index);
-              i += 2;
-              break;
+          if (groupEnd > i) {
+            final mode = params[i + 1];
+            switch (mode) {
+              case 2:
+                if (groupEnd >= i + 4) {
+                  final r = params[i + 2];
+                  final g = params[i + 3];
+                  final b = params[i + 4];
+                  handler.setBackgroundColorRgb(r, g, b);
+                }
+                i = groupEnd + 1;
+                continue;
+              case 5:
+                if (groupEnd >= i + 2) {
+                  final index = params[i + 2];
+                  handler.setBackgroundColor256(index);
+                }
+                i = groupEnd + 1;
+                continue;
+            }
+          } else {
+            if (i + 1 >= params.length) {
+              i = params.length;
+              continue;
+            }
+            final mode = params[i + 1];
+            switch (mode) {
+              case 2:
+                if (i + 4 >= params.length) {
+                  i = params.length;
+                  continue;
+                }
+                final r = params[i + 2];
+                final g = params[i + 3];
+                final b = params[i + 4];
+                handler.setBackgroundColorRgb(r, g, b);
+                i += 5;
+                continue;
+              case 5:
+                if (i + 2 >= params.length) {
+                  i = params.length;
+                  continue;
+                }
+                final index = params[i + 2];
+                handler.setBackgroundColor256(index);
+                i += 3;
+                continue;
+            }
           }
+          i = groupEnd + 1;
           continue;
         case 49:
           handler.resetBackground();
+          i = groupEnd + 1;
           continue;
 
         case 90:
           handler.setForegroundColor16(NamedColor.brightBlack);
+          i = groupEnd + 1;
           continue;
         case 91:
           handler.setForegroundColor16(NamedColor.brightRed);
+          i = groupEnd + 1;
           continue;
         case 92:
           handler.setForegroundColor16(NamedColor.brightGreen);
+          i = groupEnd + 1;
           continue;
         case 93:
           handler.setForegroundColor16(NamedColor.brightYellow);
+          i = groupEnd + 1;
           continue;
         case 94:
           handler.setForegroundColor16(NamedColor.brightBlue);
+          i = groupEnd + 1;
           continue;
         case 95:
           handler.setForegroundColor16(NamedColor.brightMagenta);
+          i = groupEnd + 1;
           continue;
         case 96:
           handler.setForegroundColor16(NamedColor.brightCyan);
+          i = groupEnd + 1;
           continue;
         case 97:
           handler.setForegroundColor16(NamedColor.brightWhite);
+          i = groupEnd + 1;
           continue;
 
         case 100:
           handler.setBackgroundColor16(NamedColor.brightBlack);
+          i = groupEnd + 1;
           continue;
         case 101:
           handler.setBackgroundColor16(NamedColor.brightRed);
+          i = groupEnd + 1;
           continue;
         case 102:
           handler.setBackgroundColor16(NamedColor.brightGreen);
+          i = groupEnd + 1;
           continue;
         case 103:
           handler.setBackgroundColor16(NamedColor.brightYellow);
+          i = groupEnd + 1;
           continue;
         case 104:
           handler.setBackgroundColor16(NamedColor.brightBlue);
+          i = groupEnd + 1;
           continue;
         case 105:
           handler.setBackgroundColor16(NamedColor.brightMagenta);
+          i = groupEnd + 1;
           continue;
         case 106:
           handler.setBackgroundColor16(NamedColor.brightCyan);
+          i = groupEnd + 1;
           continue;
         case 107:
           handler.setBackgroundColor16(NamedColor.brightWhite);
+          i = groupEnd + 1;
           continue;
 
         default:
           handler.unsupportedStyle(param);
+          i = groupEnd + 1;
           continue;
       }
     }
@@ -1147,6 +1290,7 @@ class EscapeParser {
 class _Csi {
   _Csi({
     required this.params,
+    required this.separators,
     required this.finalByte,
     // required this.intermediates,
   });
@@ -1154,6 +1298,7 @@ class _Csi {
   int? prefix;
 
   List<int> params;
+  List<int> separators;
 
   int finalByte;
   // final List<int> intermediates;

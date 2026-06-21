@@ -201,6 +201,95 @@ void main() {
         BufferRangeLine(CellOffset(5, 0), CellOffset(7, 0)),
       );
     });
+
+    test('stops at default punctuation separators', () {
+      final terminal = Terminal();
+
+      terminal.write('foo,bar baz');
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(1, 0)),
+        BufferRangeLine(CellOffset(0, 0), CellOffset(3, 0)),
+      );
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(3, 0)),
+        isNull,
+      );
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(5, 0)),
+        BufferRangeLine(CellOffset(4, 0), CellOffset(7, 0)),
+      );
+    });
+
+    test('keeps hyphenated and underscored identifiers together', () {
+      final terminal = Terminal();
+
+      terminal.write('foo-bar foo_bar');
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(1, 0)),
+        BufferRangeLine(CellOffset(0, 0), CellOffset(7, 0)),
+      );
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(9, 0)),
+        BufferRangeLine(CellOffset(8, 0), CellOffset(15, 0)),
+      );
+    });
+
+    test('treats shell punctuation as separators', () {
+      final terminal = Terminal();
+
+      terminal.write('foo@bar %baz ^qux ~zap `cmd #tag');
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(1, 0)),
+        BufferRangeLine(CellOffset(0, 0), CellOffset(3, 0)),
+      );
+
+      expect(terminal.mainBuffer.getWordBoundary(CellOffset(3, 0)), isNull);
+      expect(terminal.mainBuffer.getWordBoundary(CellOffset(8, 0)), isNull);
+      expect(terminal.mainBuffer.getWordBoundary(CellOffset(13, 0)), isNull);
+      expect(terminal.mainBuffer.getWordBoundary(CellOffset(18, 0)), isNull);
+      expect(terminal.mainBuffer.getWordBoundary(CellOffset(23, 0)), isNull);
+      expect(terminal.mainBuffer.getWordBoundary(CellOffset(28, 0)), isNull);
+    });
+
+    test('expands across soft-wrapped lines', () {
+      final terminal = Terminal();
+      terminal.resize(5, 6);
+
+      terminal.write('foobar');
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(1, 0)),
+        BufferRangeLine(CellOffset(0, 0), CellOffset(1, 1)),
+      );
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(0, 1)),
+        BufferRangeLine(CellOffset(0, 0), CellOffset(1, 1)),
+      );
+    });
+
+    test('does not expand across hard line breaks', () {
+      final terminal = Terminal();
+      terminal.resize(5, 6);
+
+      terminal.write('foo\r\nbar');
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(1, 0)),
+        BufferRangeLine(CellOffset(0, 0), CellOffset(3, 0)),
+      );
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(1, 1)),
+        BufferRangeLine(CellOffset(0, 1), CellOffset(3, 1)),
+      );
+    });
   });
 
   test('does not delete lines beyond the scroll region', () {

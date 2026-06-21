@@ -300,6 +300,9 @@ class Buffer {
   }
 
   void cursorGoForward() {
+    // Allow one-past-the-edge "pending wrap" so the next printable character
+    // can trigger autowrap. Callers that need an in-bounds cursor should use
+    // setCursorX/moveCursorX instead.
     _cursorX = min(_cursorX + 1, viewWidth);
   }
 
@@ -519,15 +522,36 @@ class Buffer {
   static final defaultWordSeparators = <int>{
     0,
     r' '.codeUnitAt(0),
-    r'.'.codeUnitAt(0),
-    r':'.codeUnitAt(0),
-    r'-'.codeUnitAt(0),
-    r'\'.codeUnitAt(0),
+    r'\t'.codeUnitAt(0),
+    r'!'.codeUnitAt(0),
     r'"'.codeUnitAt(0),
+    r'#'.codeUnitAt(0),
+    r'%'.codeUnitAt(0),
+    r'&'.codeUnitAt(0),
+    r"'".codeUnitAt(0),
+    r'('.codeUnitAt(0),
+    r')'.codeUnitAt(0),
     r'*'.codeUnitAt(0),
     r'+'.codeUnitAt(0),
+    r'.'.codeUnitAt(0),
+    r','.codeUnitAt(0),
     r'/'.codeUnitAt(0),
+    r':'.codeUnitAt(0),
+    r';'.codeUnitAt(0),
+    r'<'.codeUnitAt(0),
+    r'='.codeUnitAt(0),
+    r'>'.codeUnitAt(0),
+    r'?'.codeUnitAt(0),
+    r'@'.codeUnitAt(0),
+    r'['.codeUnitAt(0),
     r'\'.codeUnitAt(0),
+    r']'.codeUnitAt(0),
+    r'^'.codeUnitAt(0),
+    r'`'.codeUnitAt(0),
+    r'{'.codeUnitAt(0),
+    r'|'.codeUnitAt(0),
+    r'}'.codeUnitAt(0),
+    r'~'.codeUnitAt(0),
   };
 
   BufferRangeLine? getWordBoundary(CellOffset position) {
@@ -536,13 +560,34 @@ class Buffer {
       return null;
     }
 
-    var line = lines[position.y];
+    var lineIndex = position.y;
+    var line = lines[lineIndex];
     var start = line.getCharacterStart(position.x);
     var end = line.getCharacterEnd(position.x);
+    final currentChar = line.getCodePoint(start);
+
+    if (separators.contains(currentChar)) {
+      return null;
+    }
 
     do {
       if (start == 0) {
-        break;
+        if (lineIndex <= 0) {
+          break;
+        }
+        final previousLineIndex = lineIndex - 1;
+        final previousLine = lines[previousLineIndex];
+        if (!previousLine.isWrapped) {
+          break;
+        }
+        final previousLineEnd = previousLine.getTrimmedLength(viewWidth);
+        if (previousLineEnd == 0) {
+          break;
+        }
+        lineIndex = previousLineIndex;
+        line = previousLine;
+        start = line.getCharacterStart(previousLineEnd - 1);
+        continue;
       }
       final previousIndex = line.getCharacterStart(start - 1);
       final char = line.getCodePoint(previousIndex);
@@ -552,9 +597,26 @@ class Buffer {
       start = previousIndex;
     } while (true);
 
+    final startLineIndex = lineIndex;
+    final startColumn = start;
+
+    lineIndex = position.y;
+    line = lines[lineIndex];
+
     do {
-      if (end >= viewWidth) {
-        break;
+      if (end >= viewWidth || end >= line.getTrimmedLength(viewWidth)) {
+        if (!line.isWrapped || lineIndex >= lines.length - 1) {
+          break;
+        }
+        final nextLineIndex = lineIndex + 1;
+        final nextLine = lines[nextLineIndex];
+        if (nextLine.getTrimmedLength(viewWidth) == 0) {
+          break;
+        }
+        lineIndex = nextLineIndex;
+        line = nextLine;
+        end = line.getCharacterEnd(0);
+        continue;
       }
       final nextIndex = line.getCharacterStart(end);
       final char = line.getCodePoint(nextIndex);
@@ -569,8 +631,8 @@ class Buffer {
     }
 
     return BufferRangeLine(
-      CellOffset(start, position.y),
-      CellOffset(end, position.y),
+      CellOffset(startColumn, startLineIndex),
+      CellOffset(end, lineIndex),
     );
   }
 
@@ -595,8 +657,7 @@ class Buffer {
       // Add newline before this line UNLESS this is the first segment or
       // the previous line wraps into this line (soft wrap).
       if (!isFirstSegment) {
-        final isPrevLineWrapped =
-            lines[segment.line - 1].isWrapped;
+        final isPrevLineWrapped = lines[segment.line - 1].isWrapped;
         if (!isPrevLineWrapped) {
           builder.write('\n');
         }

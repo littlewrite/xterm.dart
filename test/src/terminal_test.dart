@@ -1,5 +1,6 @@
 import 'package:test/test.dart';
 import 'package:xterm/core.dart';
+import 'package:xterm/src/core/cell.dart';
 
 void main() {
   group('Terminal.inputHandler', () {
@@ -236,6 +237,28 @@ void main() {
 
       expect(lastCode, isNull);
       expect(lastData, isNull);
+    });
+  });
+
+  group('Terminal.sgr', () {
+    test('does not treat underline subparameters as background colors', () {
+      final terminal = Terminal(maxLines: 10);
+
+      terminal.write('\x1b[4:3mA');
+
+      final line = terminal.buffer.lines[0];
+      expect(line.getAttributes(0) & CellAttr.underline, isNot(0));
+      expect(line.getBackground(0), 0);
+    });
+
+    test('supports disabling underline via sgr subparameters', () {
+      final terminal = Terminal(maxLines: 10);
+
+      terminal.write('\x1b[4mA\x1b[4:0mB');
+
+      final line = terminal.buffer.lines[0];
+      expect(line.getAttributes(0) & CellAttr.underline, isNot(0));
+      expect(line.getAttributes(1) & CellAttr.underline, 0);
     });
   });
 }

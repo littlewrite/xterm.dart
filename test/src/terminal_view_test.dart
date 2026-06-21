@@ -323,6 +323,106 @@ void main() {
   });
 
   group('TerminalView.selection toolbar', () {
+    testWidgets('double click with mouse selects the whole word',
+        (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+      final key = GlobalKey<TerminalViewState>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              key: key,
+              controller: controller,
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('hello world');
+      await tester.pump();
+
+      final render = key.currentState!.renderTerminal;
+      final gestureState =
+          tester.state(find.byType(TerminalGestureHandler)) as dynamic;
+      final localPosition = render.getOffset(const CellOffset(1, 0)) +
+          Offset(render.cellSize.width / 2, render.cellSize.height / 2);
+      final globalPosition =
+          tester.getTopLeft(find.byType(TerminalView)) + localPosition;
+
+      gestureState.onDoubleTapDown(
+        TapDownDetails(
+          globalPosition: globalPosition,
+          localPosition: localPosition,
+          kind: PointerDeviceKind.mouse,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        controller.selection,
+        BufferRangeLine(
+          CellOffset(0, 0),
+          CellOffset(5, 0),
+        ),
+      );
+      expect(terminal.buffer.getText(controller.selection!), equals('hello'));
+
+      controller.dispose();
+    });
+
+    testWidgets('double click on separator falls back to a single character',
+        (tester) async {
+      final terminal = Terminal();
+      final controller = TerminalController(vsync: tester);
+      final key = GlobalKey<TerminalViewState>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              key: key,
+              controller: controller,
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('foo,bar');
+      await tester.pump();
+
+      final render = key.currentState!.renderTerminal;
+      final gestureState =
+          tester.state(find.byType(TerminalGestureHandler)) as dynamic;
+      final localPosition = render.getOffset(const CellOffset(3, 0)) +
+          Offset(render.cellSize.width / 2, render.cellSize.height / 2);
+      final globalPosition =
+          tester.getTopLeft(find.byType(TerminalView)) + localPosition;
+
+      gestureState.onDoubleTapDown(
+        TapDownDetails(
+          globalPosition: globalPosition,
+          localPosition: localPosition,
+          kind: PointerDeviceKind.mouse,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        controller.selection,
+        BufferRangeLine(
+          CellOffset(3, 0),
+          CellOffset(4, 0),
+        ),
+      );
+      expect(terminal.buffer.getText(controller.selection!), equals(','));
+
+      controller.dispose();
+    });
+
     testWidgets('shows toolbar for touch long press selection', (tester) async {
       final terminal = Terminal();
       final key = GlobalKey<TerminalViewState>();
