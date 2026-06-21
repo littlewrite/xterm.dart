@@ -195,6 +195,10 @@ key F12 +AnyMod  : "\E[24;*~"
 
 key Space +Control : "\x00"
 
+# Plain Space without modifiers — macOS IME may not deliver Space through
+# the TextInput path, so we handle it explicitly in the keytab.
+key Space : " "
+
 # Some keys are used by konsole to cause operations.
 # The scroll* operations refer to the history buffer.
 
