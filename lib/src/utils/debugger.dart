@@ -450,6 +450,16 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void setModifyOtherKeys(int value) {
+    onCommand('setModifyOtherKeys($value)');
+  }
+
+  @override
+  void setFormatOtherKeys(int value) {
+    onCommand('setFormatOtherKeys($value)');
+  }
+
+  @override
   void setUnknownDecMode(int mode, bool enabled) {
     onCommand('setUnknownDecMode($mode, $enabled)', error: true);
   }

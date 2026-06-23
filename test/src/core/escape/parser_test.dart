@@ -56,9 +56,38 @@ void main() {
 
       parser.write('\x1b[>4;2m');
 
-      verify(handler.unknownCSI('m'.codeUnitAt(0)));
+      verify(handler.setModifyOtherKeys(2));
       verifyNever(handler.setCursorUnderline());
       verifyNever(handler.setCursorFaint());
+    });
+
+    test('parses xterm formatOtherKeys resource', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+
+      parser.write('\x1b[>4;1f');
+
+      verify(handler.setFormatOtherKeys(1));
+      verifyNever(handler.unknownCSI('f'.codeUnitAt(0)));
+    });
+
+    test('does not parse formatOtherKeys as XTMODKEYS', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+
+      parser.write('\x1b[>1;2m');
+
+      verifyNever(handler.setFormatOtherKeys(2));
+      verify(handler.unknownCSI('m'.codeUnitAt(0)));
+    });
+
+    test('ignores unsupported xterm key modifier resources', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+
+      parser.write('\x1b[>2;1m');
+
+      verify(handler.unknownCSI('m'.codeUnitAt(0)));
     });
 
     test('treats VPA parameter 0 as row 1', () {

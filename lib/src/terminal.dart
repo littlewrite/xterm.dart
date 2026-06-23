@@ -152,6 +152,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   bool _bracketedPasteMode = false;
 
+  int _modifyOtherKeys = 0;
+
+  int _formatOtherKeys = 0;
+
   // 标记当前批次是否已经产生了需要通知 UI 的变更。
   bool _hasPendingFlush = false;
   // 避免同一帧内重复注册刷新回调，确保一帧最多触发一次通知。
@@ -217,6 +221,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   bool get bracketedPasteMode => _bracketedPasteMode;
 
+  @override
+  int get modifyOtherKeys => _modifyOtherKeys;
+
+  @override
+  int get formatOtherKeys => _formatOtherKeys;
+
   /// Current active buffer of the terminal. This is initially [mainBuffer] and
   /// can be switched back and forth from [altBuffer] to [mainBuffer] when
   /// the underlying program requests it.
@@ -258,6 +268,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// - [paste]
   bool keyInput(
     TerminalKey key, {
+    String? character,
     bool shift = false,
     bool alt = false,
     bool ctrl = false,
@@ -265,6 +276,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     final output = inputHandler?.call(
       TerminalKeyboardEvent(
         key: key,
+        character: character,
         shift: shift,
         alt: alt,
         ctrl: ctrl,
@@ -777,6 +789,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void setBracketedPasteMode(bool enabled) {
     _bracketedPasteMode = enabled;
+  }
+
+  @override
+  void setModifyOtherKeys(int value) {
+    _modifyOtherKeys = value.clamp(0, 3);
+  }
+
+  @override
+  void setFormatOtherKeys(int value) {
+    _formatOtherKeys = value.clamp(0, 1);
   }
 
   @override

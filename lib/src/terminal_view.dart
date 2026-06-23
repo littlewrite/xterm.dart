@@ -456,6 +456,7 @@ class TerminalViewState extends State<TerminalView>
     child = TerminalActions(
       terminal: widget.terminal,
       controller: _controller,
+      onPaste: widget.onPaste,
       child: child,
     );
 
@@ -627,7 +628,7 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _onInsert(String text) {
-    final key = charToTerminalKey(text.trim());
+    final key = charToTerminalKey(text);
 
     // On mobile platforms there is no guarantee that virtual keyboard will
     // generate hardware key events. So we need first try to send the key
@@ -676,7 +677,7 @@ class TerminalViewState extends State<TerminalView>
       return KeyEventResult.ignored;
     }
 
-    final handled = _sendTerminalKey(key);
+    final handled = _sendTerminalKey(key, character: event.character);
 
     if (!handled) {
       return KeyEventResult.ignored;
@@ -685,9 +686,10 @@ class TerminalViewState extends State<TerminalView>
     return KeyEventResult.handled;
   }
 
-  bool _sendTerminalKey(TerminalKey key) {
+  bool _sendTerminalKey(TerminalKey key, {String? character}) {
     final handled = widget.terminal.keyInput(
       key,
+      character: character,
       ctrl: HardwareKeyboard.instance.isControlPressed,
       alt: HardwareKeyboard.instance.isAltPressed,
       shift: HardwareKeyboard.instance.isShiftPressed,

@@ -291,11 +291,11 @@ class EscapeParser {
     'b'.codeUnitAt(0): _csiHandleRepeatPreviousCharacter,
     'c'.codeUnitAt(0): _csiHandleSendDeviceAttributes,
     'd'.codeUnitAt(0): _csiHandleLinePositionAbsolute,
-    'f'.codeUnitAt(0): _csiHandleCursorPosition,
+    'f'.codeUnitAt(0): _csiHandleCursorPositionOrXtermFormatOtherKeys,
     'g'.codeUnitAt(0): _csiHandelClearTabStop,
     'h'.codeUnitAt(0): _csiHandleMode,
     'l'.codeUnitAt(0): _csiHandleMode,
-    'm'.codeUnitAt(0): _csiHandleSgr,
+    'm'.codeUnitAt(0): _csiHandleSgrOrXtermModifyOtherKeys,
     'n'.codeUnitAt(0): _csiHandleDeviceStatusReport,
     'r'.codeUnitAt(0): _csiHandleSetMargins,
     't'.codeUnitAt(0): _csiWindowManipulation,
@@ -412,7 +412,6 @@ class EscapeParser {
   /// - `ESC [ ? [ Pm ] l` Reset Mode (?) (RM) https://terminalguide.namepad.de/seq/csi_sl__p/
   void _csiHandleMode() {
     final isEnabled = _csi.finalByte == Ascii.h;
-
     final isDecModes = _csi.prefix == Ascii.questionMark;
 
     if (isDecModes) {
@@ -426,10 +425,15 @@ class EscapeParser {
     }
   }
 
-  /// `ESC [ [ Ps ] m` Select Graphic Rendition (SGR)
+  /// `ESC [ ... m` CSI final byte `m`
   ///
-  /// https://terminalguide.namepad.de/seq/csi_sm/
-  void _csiHandleSgr() {
+  /// Handles both SGR and xterm modifyOtherKeys resources that share the same
+  /// final byte.
+  void _csiHandleSgrOrXtermModifyOtherKeys() {
+    if (_csi.prefix == Ascii.greaterThan) {
+      return _csiHandleXtermModifyOtherKeys();
+    }
+
     if (_csi.prefix != null) {
       return handler.unknownCSI(_csi.finalByte);
     }
@@ -776,6 +780,42 @@ class EscapeParser {
           continue;
       }
     }
+  }
+
+  /// `ESC [ ... f` CSI final byte `f`
+  ///
+  /// Handles both HVP and xterm formatOtherKeys resources that share the same
+  /// final byte.
+  void _csiHandleCursorPositionOrXtermFormatOtherKeys() {
+    if (_csi.prefix == Ascii.greaterThan) {
+      return _csiHandleXtermFormatOtherKeys();
+    }
+
+    if (_csi.prefix != null) {
+      return handler.unknownCSI(_csi.finalByte);
+    }
+
+    return _csiHandleCursorPosition();
+  }
+
+  void _csiHandleXtermModifyOtherKeys() {
+    if (_csi.params.isEmpty || _csi.params[0] != 4) {
+      return handler.unknownCSI(_csi.finalByte);
+    }
+
+    final value = _csi.params.length >= 2 ? _csi.params[1] : 0;
+
+    handler.setModifyOtherKeys(value);
+  }
+
+  void _csiHandleXtermFormatOtherKeys() {
+    if (_csi.params.isEmpty || _csi.params[0] != 4) {
+      return handler.unknownCSI(_csi.finalByte);
+    }
+
+    final value = _csi.params.length >= 2 ? _csi.params[1] : 0;
+
+    handler.setFormatOtherKeys(value);
   }
 
   /// `ESC [ Ps n` Device Status Report [Dispatch] (DSR)

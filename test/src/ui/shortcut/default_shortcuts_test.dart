@@ -54,4 +54,33 @@ void main() {
       isTrue,
     );
   });
+
+  test('macOS shortcuts use command+v for paste', () {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+
+    final shortcuts = defaultTerminalShortcuts;
+
+    bool hasActivator(bool Function(SingleActivator) predicate) {
+      return shortcuts.keys.whereType<SingleActivator>().any(predicate);
+    }
+
+    expect(
+      hasActivator(
+        (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyV &&
+            activator.meta &&
+            !activator.control,
+      ),
+      isTrue,
+    );
+
+    expect(
+      hasActivator(
+        (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyV &&
+            activator.control,
+      ),
+      isFalse,
+    );
+  });
 }

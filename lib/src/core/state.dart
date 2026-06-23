@@ -43,4 +43,8 @@ abstract class TerminalState {
   bool get altBufferMouseScrollMode;
 
   bool get bracketedPasteMode;
+
+  int get modifyOtherKeys;
+
+  int get formatOtherKeys;
 }

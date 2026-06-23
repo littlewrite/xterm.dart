@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
+import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/xterm.dart';
 
@@ -644,6 +645,55 @@ void main() {
 
       verify(inputHandler.call(any));
       expect(terminalOutput.join(), 'AAA');
+    });
+
+    testWidgets('keeps plain space input intact', (tester) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+
+      await tester.pumpWidget(MaterialApp(
+        home: TerminalView(terminal, autofocus: true),
+      ));
+
+      await tester.tap(find.byType(TerminalView));
+      await tester.pump(const Duration(seconds: 1));
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+
+      state.widget.onInsert(' ');
+      await tester.pump();
+
+      expect(terminalOutput.join(), ' ');
+    });
+
+    testWidgets('paste shortcut uses host onPaste callback when provided', (
+      tester,
+    ) async {
+      var pasteCount = 0;
+      final terminal = Terminal();
+
+      await tester.pumpWidget(MaterialApp(
+        home: TerminalView(
+          terminal,
+          autofocus: true,
+          onPaste: () {
+            pasteCount++;
+          },
+        ),
+      ));
+
+      await tester.tap(find.byType(TerminalView));
+      await tester.pump(const Duration(seconds: 1));
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.control);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.control);
+      await tester.pumpAndSettle();
+
+      expect(pasteCount, 1);
     });
   });
 

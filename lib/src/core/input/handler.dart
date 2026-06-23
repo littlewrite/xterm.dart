@@ -2,6 +2,7 @@ import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/input/keytab/keytab.dart';
 import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/platform.dart';
+import 'package:xterm/src/utils/ascii.dart';
 
 /// The key event received from the keyboard, along with the state of the
 /// modifier keys and state of the terminal. Typically consumed by the
@@ -12,6 +13,8 @@ import 'package:xterm/src/core/platform.dart';
 /// - [TerminalInputHandler]
 class TerminalKeyboardEvent {
   final TerminalKey key;
+
+  final String? character;
 
   final bool shift;
 
@@ -27,6 +30,7 @@ class TerminalKeyboardEvent {
 
   TerminalKeyboardEvent({
     required this.key,
+    this.character,
     required this.shift,
     required this.ctrl,
     required this.alt,
@@ -37,6 +41,7 @@ class TerminalKeyboardEvent {
 
   TerminalKeyboardEvent copyWith({
     TerminalKey? key,
+    String? character,
     bool? shift,
     bool? ctrl,
     bool? alt,
@@ -46,6 +51,7 @@ class TerminalKeyboardEvent {
   }) {
     return TerminalKeyboardEvent(
       key: key ?? this.key,
+      character: character ?? this.character,
       shift: shift ?? this.shift,
       ctrl: ctrl ?? this.ctrl,
       alt: alt ?? this.alt,
@@ -57,7 +63,7 @@ class TerminalKeyboardEvent {
 
   @override
   String toString() {
-    return 'TerminalKeyboardEvent(key: $key, shift: $shift, ctrl: $ctrl, alt: $alt, state: $state, altBuffer: $altBuffer, platform: $platform)';
+    return 'TerminalKeyboardEvent(key: $key, character: $character, shift: $shift, ctrl: $ctrl, alt: $alt, state: $state, altBuffer: $altBuffer, platform: $platform)';
   }
 }
 
@@ -99,10 +105,163 @@ class CascadeInputHandler implements TerminalInputHandler {
 /// See also:
 ///  * [CascadeInputHandler]
 const defaultInputHandler = CascadeInputHandler([
+  ModifyOtherKeysInputHandler(),
   KeytabInputHandler(),
   CtrlInputHandler(),
   AltInputHandler(),
 ]);
+
+class ModifyOtherKeysInputHandler implements TerminalInputHandler {
+  const ModifyOtherKeysInputHandler();
+
+  @override
+  String? call(TerminalKeyboardEvent event) {
+    final level = event.state.modifyOtherKeys;
+    if (level <= 0) {
+      return null;
+    }
+
+    if (!_shouldEncode(event, level)) {
+      return null;
+    }
+
+    final codePoint = _codePointFor(event);
+    if (codePoint == null) {
+      return null;
+    }
+
+    final modifier = _modifierValue(event);
+
+    // xterm supports two output styles for "other keys":
+    // - default: CSI 27 ; modifier ; codepoint ~
+    // - alternate (formatOtherKeys): CSI codepoint ; modifier u
+    if (event.state.formatOtherKeys == 1) {
+      return '\x1b[$codePoint;${modifier}u';
+    }
+
+    return '\x1b[27;$modifier;$codePoint~';
+  }
+
+  bool _shouldEncode(TerminalKeyboardEvent event, int level) {
+    if (level == 1) {
+      return _isPlainTextCharacter(event.character) &&
+          (event.shift || event.ctrl);
+    }
+
+    if (level == 2 && _isPlainTextCharacter(event.character)) {
+      return _hasModifiers(event);
+    }
+
+    return true;
+  }
+
+  bool _hasModifiers(TerminalKeyboardEvent event) {
+    return event.shift || event.alt || event.ctrl;
+  }
+
+  int _modifierValue(TerminalKeyboardEvent event) {
+    var value = 1;
+    if (event.shift) value += 1;
+    if (event.alt) value += 2;
+    if (event.ctrl) value += 4;
+    return value;
+  }
+
+  int? _codePointFor(TerminalKeyboardEvent event) {
+    final character = event.character;
+    if (character != null && _isPlainTextCharacter(character)) {
+      return character.runes.first;
+    }
+
+    final keyCodePoint = _codePointForKey(event.key, event.shift);
+    if (keyCodePoint != null) {
+      return keyCodePoint;
+    }
+
+    switch (event.key) {
+      case TerminalKey.enter:
+      case TerminalKey.returnKey:
+      case TerminalKey.numpadEnter:
+        return 13;
+      case TerminalKey.tab:
+      case TerminalKey.backtab:
+        return 9;
+      case TerminalKey.escape:
+        return 27;
+      case TerminalKey.backspace:
+      case TerminalKey.numpadBackspace:
+        return 127;
+      case TerminalKey.space:
+        return 32;
+      default:
+        return null;
+    }
+  }
+
+  int? _codePointForKey(TerminalKey key, bool shift) {
+    if (key.index >= TerminalKey.keyA.index &&
+        key.index <= TerminalKey.keyZ.index) {
+      return (shift ? Ascii.A : Ascii.a) + key.index - TerminalKey.keyA.index;
+    }
+
+    if (key.index >= TerminalKey.digit1.index &&
+        key.index <= TerminalKey.digit9.index) {
+      return Ascii.num1 + key.index - TerminalKey.digit1.index;
+    }
+
+    if (key == TerminalKey.digit0) {
+      return Ascii.num0;
+    }
+
+    return switch (key) {
+      TerminalKey.minus => Ascii.minus,
+      TerminalKey.equal => Ascii.equal,
+      TerminalKey.bracketLeft => Ascii.openBracket,
+      TerminalKey.bracketRight => Ascii.closeBracket,
+      TerminalKey.backslash => Ascii.backslash,
+      TerminalKey.semicolon => Ascii.semicolon,
+      TerminalKey.quote => Ascii.singleQuote,
+      TerminalKey.backquote => Ascii.graveAccent,
+      TerminalKey.comma => Ascii.comma,
+      TerminalKey.period => Ascii.dot,
+      TerminalKey.slash => Ascii.slash,
+      TerminalKey.numpadDivide => Ascii.slash,
+      TerminalKey.numpadMultiply => Ascii.asterisk,
+      TerminalKey.numpadSubtract => Ascii.minus,
+      TerminalKey.numpadAdd => Ascii.plus,
+      TerminalKey.numpadDecimal => Ascii.dot,
+      TerminalKey.numpadEqual => Ascii.equal,
+      TerminalKey.numpad0 => Ascii.num0,
+      TerminalKey.numpad1 => Ascii.num1,
+      TerminalKey.numpad2 => Ascii.num2,
+      TerminalKey.numpad3 => Ascii.num3,
+      TerminalKey.numpad4 => Ascii.num4,
+      TerminalKey.numpad5 => Ascii.num5,
+      TerminalKey.numpad6 => Ascii.num6,
+      TerminalKey.numpad7 => Ascii.num7,
+      TerminalKey.numpad8 => Ascii.num8,
+      TerminalKey.numpad9 => Ascii.num9,
+      _ => null,
+    };
+  }
+
+  bool _isPlainTextCharacter(String? character) {
+    if (character == null || character.isEmpty) {
+      return false;
+    }
+
+    if (character.runes.length != 1) {
+      return false;
+    }
+
+    final rune = character.runes.first;
+    if (rune < 0x20 || rune == 0x7f) {
+      return false;
+    }
+
+    return true;
+  }
+}
 
 /// A [TerminalInputHandler] that translates key events according to a keytab
 /// file. If no keytab is provided, [Keytab.defaultKeytab] is used.
