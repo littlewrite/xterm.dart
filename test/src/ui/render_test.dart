@@ -76,8 +76,69 @@ void main() {
     expect(painter.effectiveBackgroundColor(cellData), isNull);
   });
 
+  test('RenderTerminal exposes cursor visibility state for overlay', () {
+    final terminal = Terminal();
+    const vsync = TestVSync();
+    final controller = TerminalController(vsync: vsync);
+    final focusNode = FocusNode();
+
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: true,
+      cursorBlinkVisible: false,
+      alwaysShowCursor: false,
+    );
+
+    expect(render.shouldShowCursor, isTrue);
+    expect(render.shouldPaintCursor(cursorBlinkVisible: false), isTrue);
+    expect(render.shouldPaintCursor(cursorBlinkVisible: true), isTrue);
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal hides cursor when terminal visibility mode is disabled',
+      () {
+    final terminal = Terminal();
+    terminal.write('\x1b[?25l');
+    const vsync = TestVSync();
+    final controller = TerminalController(vsync: vsync);
+    final focusNode = FocusNode();
+
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    expect(render.shouldShowCursor, isFalse);
+    expect(render.shouldPaintCursor(cursorBlinkVisible: true), isFalse);
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
   group('RenderTerminal.selectCharacters with wide chars', () {
-    (RenderTerminal, TerminalController) _createRender(Terminal terminal) {
+    (RenderTerminal, TerminalController) createRender(Terminal terminal) {
       const vsync = TestVSync();
       final controller = TerminalController(vsync: vsync);
       final focusNode = FocusNode();
@@ -105,7 +166,7 @@ void main() {
       final terminal = Terminal();
       terminal.write('😀BC');
 
-      final (render, controller) = _createRender(terminal);
+      final (render, controller) = createRender(terminal);
 
       final result = render.selectCharacters(
         const CellOffset(0, 0),
@@ -128,7 +189,7 @@ void main() {
       final terminal = Terminal();
       terminal.write('😀BC');
 
-      final (render, controller) = _createRender(terminal);
+      final (render, controller) = createRender(terminal);
 
       // Click on continuation cell (index 1) of the wide char
       final result = render.selectCharacters(
@@ -153,7 +214,7 @@ void main() {
       final terminal = Terminal();
       terminal.write('😀BC');
 
-      final (render, controller) = _createRender(terminal);
+      final (render, controller) = createRender(terminal);
 
       // Single arg = collapsed selection at character start
       final result = render.selectCharacters(const CellOffset(1, 0));
@@ -171,7 +232,7 @@ void main() {
       final terminal = Terminal();
       terminal.write('中文AB');
 
-      final (render, controller) = _createRender(terminal);
+      final (render, controller) = createRender(terminal);
 
       // Each CJK char is width 2
       final result = render.selectCharacters(
@@ -192,7 +253,7 @@ void main() {
   });
 
   group('RenderTerminal.selectBufferRange with wide chars', () {
-    (RenderTerminal, TerminalController) _createRender(Terminal terminal) {
+    (RenderTerminal, TerminalController) createRender(Terminal terminal) {
       const vsync = TestVSync();
       final controller = TerminalController(vsync: vsync);
       final focusNode = FocusNode();
@@ -220,7 +281,7 @@ void main() {
       final terminal = Terminal();
       terminal.write('AB😀DE');
 
-      final (render, controller) = _createRender(terminal);
+      final (render, controller) = createRender(terminal);
 
       // '😀' occupies cells 2-3. end=3 is the continuation cell.
       final range = BufferRangeLine(
@@ -246,7 +307,7 @@ void main() {
       final terminal = Terminal();
       terminal.write('😀BC');
 
-      final (render, controller) = _createRender(terminal);
+      final (render, controller) = createRender(terminal);
 
       // normalized range: begin=0, end=2. Neither needs adjustment.
       final range = BufferRangeLine(
@@ -267,7 +328,7 @@ void main() {
       final terminal = Terminal();
       terminal.write('😀BC');
 
-      final (render, controller) = _createRender(terminal);
+      final (render, controller) = createRender(terminal);
 
       final range = BufferRangeLine(
         const CellOffset(0, 0),

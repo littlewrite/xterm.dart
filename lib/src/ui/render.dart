@@ -40,6 +40,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     required bool cursorBlinkEnabled,
     required bool cursorBlinkVisible,
     required bool alwaysShowCursor,
+    bool paintCursor = true,
     bool paintSelectionHandles = true,
     EditableRectCallback? onEditableRect,
     String? composingText,
@@ -53,6 +54,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         _cursorBlinkEnabled = cursorBlinkEnabled,
         _cursorBlinkVisible = cursorBlinkVisible,
         _alwaysShowCursor = alwaysShowCursor,
+        _paintCursor = paintCursor,
         _paintSelectionHandles = paintSelectionHandles,
         _shouldReportEditableRect = onEditableRect != null,
         _onEditableRect = onEditableRect,
@@ -126,6 +128,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   FocusNode _focusNode;
+  FocusNode get focusNode => _focusNode;
   set focusNode(FocusNode value) {
     if (value == _focusNode) return;
     if (attached) _focusNode.removeListener(_onFocusChange);
@@ -159,6 +162,13 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   set alwaysShowCursor(bool value) {
     if (value == _alwaysShowCursor) return;
     _alwaysShowCursor = value;
+    markNeedsPaint();
+  }
+
+  bool _paintCursor;
+  set paintCursor(bool value) {
+    if (value == _paintCursor) return;
+    _paintCursor = value;
     markNeedsPaint();
   }
 
@@ -529,6 +539,26 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     return _terminal.cursorVisibleMode || _alwaysShowCursor || _isComposingText;
   }
 
+  bool get shouldShowCursor {
+    return _shouldShowCursor;
+  }
+
+  bool shouldPaintCursor({required bool cursorBlinkVisible}) {
+    return _shouldShowCursor &&
+        (!_cursorBlinkEnabled ||
+            !_focusNode.hasFocus ||
+            cursorBlinkVisible ||
+            _isComposingText);
+  }
+
+  bool get shouldHintWillChange {
+    return _cursorBlinkEnabled &&
+        _focusNode.hasFocus &&
+        !_alwaysShowCursor &&
+        !_isComposingText &&
+        _terminal.cursorVisibleMode;
+  }
+
   double get _viewportHeight {
     return size.height - _padding.vertical;
   }
@@ -599,13 +629,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         _paintComposingText(canvas, offset + cursorOffset);
       }
 
-      final shouldPaintCursor = _shouldShowCursor &&
-          (!_cursorBlinkEnabled ||
-              !_focusNode.hasFocus ||
-              _cursorBlinkVisible ||
-              _isComposingText);
-
-      if (shouldPaintCursor) {
+      if (_paintCursor &&
+          shouldPaintCursor(cursorBlinkVisible: _cursorBlinkVisible)) {
         _painter.paintCursor(
           canvas,
           offset + cursorOffset,

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
@@ -13,6 +14,7 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
+import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/scroll_handler.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
@@ -45,6 +47,7 @@ class TerminalView extends StatefulWidget {
     this.keyboardAppearance = Brightness.dark,
     this.cursorType = TerminalCursorType.block,
     this.cursorBlink = false,
+    this.cursorBlinkMode = false,
     this.cursorBlinkInterval = const Duration(milliseconds: 530),
     this.alwaysShowCursor = false,
     this.deleteDetection = false,
@@ -131,6 +134,9 @@ class TerminalView extends StatefulWidget {
   /// Whether the cursor should blink. [false] by default to match legacy behavior.
   final bool cursorBlink;
 
+  /// Whether DEC mode 12 from the terminal should control blinking.
+  final bool cursorBlinkMode;
+
   /// Interval used when [cursorBlink] is enabled.
   final Duration cursorBlinkInterval;
 
@@ -215,6 +221,7 @@ class TerminalViewState extends State<TerminalView>
   Timer? _cursorBlinkTimer;
   final _cursorBlinkVisible = ValueNotifier<bool>(true);
   bool _previousBlinkEnabled = false;
+  bool _lastTerminalCursorBlinkMode = false;
 
   final _composingText = ValueNotifier<String?>(null);
 
@@ -247,6 +254,8 @@ class TerminalViewState extends State<TerminalView>
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
     );
     super.initState();
+    _lastTerminalCursorBlinkMode = widget.terminal.cursorBlinkMode;
+    widget.terminal.addListener(_handleTerminalChange);
     _updateCursorBlink(scheduleSetState: false);
     _initSearchBox();
     widget.terminal.onSearch = _showSearch;
@@ -299,13 +308,17 @@ class TerminalViewState extends State<TerminalView>
       textSizeNoti.value = widget.textStyle.fontSize;
     }
     if (oldWidget.cursorBlink != widget.cursorBlink ||
+        oldWidget.cursorBlinkMode != widget.cursorBlinkMode ||
         oldWidget.cursorBlinkInterval != widget.cursorBlinkInterval ||
         oldWidget.alwaysShowCursor != widget.alwaysShowCursor) {
       _updateCursorBlink(resetVisible: true);
     }
     if (oldWidget.terminal != widget.terminal) {
+      oldWidget.terminal.removeListener(_handleTerminalChange);
       oldWidget.terminal.onSearch = null;
       oldWidget.terminal.onCloseSearch = null;
+      _lastTerminalCursorBlinkMode = widget.terminal.cursorBlinkMode;
+      widget.terminal.addListener(_handleTerminalChange);
     }
     if (oldWidget.terminal != widget.terminal ||
         oldWidget.controller != widget.controller ||
@@ -335,6 +348,7 @@ class TerminalViewState extends State<TerminalView>
     _cursorBlinkTimer?.cancel();
     _cursorBlinkVisible.dispose();
     _composingText.dispose();
+    widget.terminal.removeListener(_handleTerminalChange);
     widget.terminal.onSearch = null;
     widget.terminal.onCloseSearch = null;
     super.dispose();
@@ -353,37 +367,33 @@ class TerminalViewState extends State<TerminalView>
             valueListenable: textSizeNoti,
             builder: (context1, textSize, child1) {
               return ValueListenableBuilder(
-                valueListenable: _cursorBlinkVisible,
-                builder: (context2, cursorBlinkVisible, child2) {
-                  return ValueListenableBuilder(
-                    valueListenable: _composingText,
-                    builder: (context3, composingText, child3) {
-                      return _TerminalView(
-                        key: _viewportKey,
-                        terminal: widget.terminal,
-                        controller: _controller,
-                        offset: offset,
-                        padding: MediaQuery.of(context).padding,
-                        autoResize: widget.autoResize,
-                        textStyle:
-                            widget.textStyle.copyWith(fontSize: textSize),
-                        textScaler: widget.textScaler ??
-                            MediaQuery.textScalerOf(context),
-                        theme: widget.theme,
-                        focusNode: _focusNode,
-                        cursorType: widget.cursorType,
-                        cursorBlinkEnabled: _cursorBlinkEnabled,
-                        cursorBlinkVisible: cursorBlinkVisible,
-                        alwaysShowCursor: widget.alwaysShowCursor,
-                        paintSelectionHandles: widget.showToolbar,
-                        onEditableRect: _hasInputConnection &&
-                                !widget.hardwareKeyboardOnly &&
-                                !widget.readOnly
-                            ? _onEditableRect
-                            : null,
-                        composingText: composingText,
-                      );
-                    },
+                valueListenable: _composingText,
+                builder: (context3, composingText, child3) {
+                  final viewport = _buildViewport(
+                    context,
+                    offset,
+                    textSize,
+                    composingText,
+                    cursorBlinkVisible: _cursorBlinkVisible.value,
+                    paintCursor: false,
+                  );
+
+                  return Stack(
+                    children: [
+                      viewport,
+                      Positioned.fill(
+                        child: _TerminalCursorOverlay(
+                          renderTerminal: () => _viewportKey.currentContext
+                              ?.findRenderObject() as RenderTerminal?,
+                          terminal: widget.terminal,
+                          focusNode: _focusNode,
+                          offset: offset,
+                          theme: widget.theme,
+                          cursorType: widget.cursorType,
+                          cursorBlinkVisibleListenable: _cursorBlinkVisible,
+                        ),
+                      ),
+                    ],
                   );
                 },
               );
@@ -556,9 +566,20 @@ class TerminalViewState extends State<TerminalView>
   }
 
   bool get _cursorBlinkEnabled {
-    return widget.cursorBlink &&
+    final shouldBlinkFromTerminal =
+        widget.cursorBlinkMode && widget.terminal.cursorBlinkMode;
+    return (widget.cursorBlink || shouldBlinkFromTerminal) &&
         _focusNode.hasFocus &&
         !widget.alwaysShowCursor;
+  }
+
+  void _handleTerminalChange() {
+    final terminalBlinkMode = widget.terminal.cursorBlinkMode;
+    if (terminalBlinkMode == _lastTerminalCursorBlinkMode) {
+      return;
+    }
+    _lastTerminalCursorBlinkMode = terminalBlinkMode;
+    _updateCursorBlink(resetVisible: true);
   }
 
   void _handleFocusChange() {
@@ -843,6 +864,42 @@ class TerminalViewState extends State<TerminalView>
   void _onSearchBoxPanEnd(DragEndDetails details) {
     _isDragging = false;
   }
+
+  Widget _buildViewport(
+    BuildContext context,
+    ViewportOffset offset,
+    double textSize,
+    String? composingText, {
+    required bool cursorBlinkVisible,
+    required bool paintCursor,
+  }) {
+    final viewport = _TerminalView(
+      key: _viewportKey,
+      terminal: widget.terminal,
+      controller: _controller,
+      offset: offset,
+      padding: MediaQuery.of(context).padding,
+      autoResize: widget.autoResize,
+      textStyle: widget.textStyle.copyWith(fontSize: textSize),
+      textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
+      theme: widget.theme,
+      focusNode: _focusNode,
+      cursorType: widget.cursorType,
+      cursorBlinkEnabled: _cursorBlinkEnabled,
+      cursorBlinkVisible: cursorBlinkVisible,
+      alwaysShowCursor: widget.alwaysShowCursor,
+      paintCursor: paintCursor,
+      paintSelectionHandles: widget.showToolbar,
+      onEditableRect: _hasInputConnection &&
+              !widget.hardwareKeyboardOnly &&
+              !widget.readOnly
+          ? _onEditableRect
+          : null,
+      composingText: composingText,
+    );
+
+    return viewport;
+  }
 }
 
 class _TerminalView extends LeafRenderObjectWidget {
@@ -861,6 +918,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.cursorBlinkEnabled,
     required this.cursorBlinkVisible,
     required this.alwaysShowCursor,
+    required this.paintCursor,
     required this.paintSelectionHandles,
     this.onEditableRect,
     this.composingText,
@@ -892,6 +950,8 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final bool alwaysShowCursor;
 
+  final bool paintCursor;
+
   final bool paintSelectionHandles;
 
   final EditableRectCallback? onEditableRect;
@@ -914,6 +974,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       cursorBlinkEnabled: cursorBlinkEnabled,
       cursorBlinkVisible: cursorBlinkVisible,
       alwaysShowCursor: alwaysShowCursor,
+      paintCursor: paintCursor,
       paintSelectionHandles: paintSelectionHandles,
       onEditableRect: onEditableRect,
       composingText: composingText,
@@ -936,9 +997,241 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..cursorBlinkEnabled = cursorBlinkEnabled
       ..cursorBlinkVisible = cursorBlinkVisible
       ..alwaysShowCursor = alwaysShowCursor
+      ..paintCursor = paintCursor
       ..paintSelectionHandles = paintSelectionHandles
       ..onEditableRect = onEditableRect
       ..composingText = composingText;
+  }
+}
+
+class _TerminalCursorOverlay extends LeafRenderObjectWidget {
+  const _TerminalCursorOverlay({
+    required this.renderTerminal,
+    required this.terminal,
+    required this.focusNode,
+    required this.offset,
+    required this.theme,
+    required this.cursorType,
+    required this.cursorBlinkVisibleListenable,
+  });
+
+  final RenderTerminal? Function() renderTerminal;
+
+  final Terminal terminal;
+
+  final FocusNode focusNode;
+
+  final ViewportOffset offset;
+
+  final TerminalTheme theme;
+
+  final TerminalCursorType cursorType;
+
+  final ValueListenable<bool> cursorBlinkVisibleListenable;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) {
+    return _RenderTerminalCursorOverlay(
+      renderTerminal: renderTerminal,
+      terminal: terminal,
+      focusNode: focusNode,
+      offset: offset,
+      theme: theme,
+      cursorType: cursorType,
+      cursorBlinkVisibleListenable: cursorBlinkVisibleListenable,
+    );
+  }
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant _RenderTerminalCursorOverlay renderObject,
+  ) {
+    renderObject
+      ..renderTerminal = renderTerminal
+      ..terminal = terminal
+      ..focusNode = focusNode
+      ..offset = offset
+      ..theme = theme
+      ..cursorType = cursorType
+      ..cursorBlinkVisibleListenable = cursorBlinkVisibleListenable;
+  }
+}
+
+class _RenderTerminalCursorOverlay extends RenderBox {
+  _RenderTerminalCursorOverlay({
+    required RenderTerminal? Function() renderTerminal,
+    required Terminal terminal,
+    required FocusNode focusNode,
+    required ViewportOffset offset,
+    required TerminalTheme theme,
+    required TerminalCursorType cursorType,
+    required ValueListenable<bool> cursorBlinkVisibleListenable,
+  })  : _renderTerminal = renderTerminal,
+        _terminal = terminal,
+        _focusNode = focusNode,
+        _offset = offset,
+        _theme = theme,
+        _cursorType = cursorType,
+        _cursorBlinkVisibleListenable = cursorBlinkVisibleListenable;
+
+  RenderTerminal? Function() _renderTerminal;
+  set renderTerminal(RenderTerminal? Function() value) {
+    if (identical(value, _renderTerminal)) return;
+    _renderTerminal = value;
+    markNeedsPaint();
+  }
+
+  Terminal _terminal;
+  set terminal(Terminal value) {
+    if (value == _terminal) return;
+    if (attached) _terminal.removeListener(_onTerminalChange);
+    _terminal = value;
+    if (attached) _terminal.addListener(_onTerminalChange);
+    markNeedsPaint();
+  }
+
+  FocusNode _focusNode;
+  set focusNode(FocusNode value) {
+    if (value == _focusNode) return;
+    if (attached) _focusNode.removeListener(_onFocusChange);
+    _focusNode = value;
+    if (attached) _focusNode.addListener(_onFocusChange);
+    markNeedsPaint();
+  }
+
+  ViewportOffset _offset;
+  set offset(ViewportOffset value) {
+    if (value == _offset) return;
+    if (attached) _offset.removeListener(markNeedsPaint);
+    _offset = value;
+    if (attached) _offset.addListener(markNeedsPaint);
+    markNeedsPaint();
+  }
+
+  TerminalTheme _theme;
+  set theme(TerminalTheme value) {
+    if (value == _theme) return;
+    _theme = value;
+    markNeedsPaint();
+  }
+
+  TerminalCursorType _cursorType;
+  set cursorType(TerminalCursorType value) {
+    if (value == _cursorType) return;
+    _cursorType = value;
+    markNeedsPaint();
+  }
+
+  ValueListenable<bool> _cursorBlinkVisibleListenable;
+  set cursorBlinkVisibleListenable(ValueListenable<bool> value) {
+    if (identical(value, _cursorBlinkVisibleListenable)) return;
+    if (attached) {
+      _cursorBlinkVisibleListenable.removeListener(_onCursorBlinkVisibleChange);
+    }
+    _cursorBlinkVisibleListenable = value;
+    if (attached) {
+      _cursorBlinkVisibleListenable.addListener(_onCursorBlinkVisibleChange);
+    }
+    markNeedsPaint();
+  }
+
+  @override
+  bool get isRepaintBoundary => true;
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _terminal.addListener(_onTerminalChange);
+    _focusNode.addListener(_onFocusChange);
+    _offset.addListener(markNeedsPaint);
+    _cursorBlinkVisibleListenable.addListener(_onCursorBlinkVisibleChange);
+  }
+
+  @override
+  void detach() {
+    _terminal.removeListener(_onTerminalChange);
+    _focusNode.removeListener(_onFocusChange);
+    _offset.removeListener(markNeedsPaint);
+    _cursorBlinkVisibleListenable.removeListener(_onCursorBlinkVisibleChange);
+    super.detach();
+  }
+
+  @override
+  void performLayout() {
+    size = constraints.biggest;
+  }
+
+  @override
+  bool hitTestSelf(Offset position) {
+    return false;
+  }
+
+  void _onCursorBlinkVisibleChange() {
+    markNeedsPaint();
+  }
+
+  void _onTerminalChange() {
+    markNeedsPaint();
+  }
+
+  void _onFocusChange() {
+    markNeedsPaint();
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    final renderTerminal = _renderTerminal();
+    _paint(context.canvas, offset, renderTerminal);
+    if (renderTerminal != null && renderTerminal.shouldHintWillChange) {
+      context.setWillChangeHint();
+    }
+  }
+
+  void _paint(
+    Canvas canvas,
+    Offset offset,
+    RenderTerminal? renderTerminal,
+  ) {
+    if (renderTerminal == null ||
+        !renderTerminal.attached ||
+        !renderTerminal.hasSize) {
+      return;
+    }
+
+    if (!renderTerminal.shouldShowCursor) {
+      return;
+    }
+
+    if (!renderTerminal.shouldPaintCursor(
+      cursorBlinkVisible: _cursorBlinkVisibleListenable.value,
+    )) {
+      return;
+    }
+
+    final cursorOffset = _cursorOffsetInOverlay(renderTerminal);
+    if (cursorOffset == null) {
+      return;
+    }
+
+    TerminalPainter.paintCursorShape(
+      canvas,
+      offset + cursorOffset,
+      color: _theme.cursor,
+      cellSize: renderTerminal.cellSize,
+      cursorType: _cursorType,
+      hasFocus: renderTerminal.focusNode.hasFocus,
+    );
+  }
+
+  Offset? _cursorOffsetInOverlay(RenderTerminal renderTerminal) {
+    final cursorGlobal = MatrixUtils.transformPoint(
+      renderTerminal.getTransformTo(null),
+      renderTerminal.cursorOffset,
+    );
+    final overlayToGlobal = getTransformTo(null);
+    final globalToOverlay = Matrix4.inverted(overlayToGlobal);
+    return MatrixUtils.transformPoint(globalToOverlay, cursorGlobal);
   }
 }
 
