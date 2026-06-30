@@ -52,7 +52,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   /// Function that is called when the dimensions of the terminal change.
   void Function(int width, int height, int pixelWidth, int pixelHeight)?
-  onResize;
+      onResize;
 
   /// The [TerminalInputHandler] used by this terminal. [defaultInputHandler] is
   /// used when not specified. User of this class can provide their own
@@ -359,8 +359,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool mouseInput(
     TerminalMouseButton button,
     TerminalMouseButtonState buttonState,
-    CellOffset position,
-  ) {
+    CellOffset position, {
+    bool motion = false,
+  }) {
     final output = mouseHandler?.call(
       TerminalMouseEvent(
         button: button,
@@ -368,6 +369,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         position: position,
         state: this,
         platform: platform,
+        motion: motion,
       ),
     );
     if (output != null) {

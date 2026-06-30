@@ -8,6 +8,7 @@ import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
 import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/gesture/gesture_handler.dart';
+import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/xterm.dart';
 
 import '../_fixture/_fixture.dart';
@@ -254,6 +255,45 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(output, isEmpty);
+    });
+
+    testWidgets('reports mouse drag when drag input is enabled',
+        (tester) async {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?1006;1002h');
+
+      final terminalView = TerminalController(
+        pointerInputs: PointerInputs.all(),
+        vsync: tester,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              controller: terminalView,
+            ),
+          ),
+        ),
+      );
+
+      final renderTerminal = tester.renderObject<RenderTerminal>(
+        find.byType(TerminalView),
+      );
+      final cellSize = renderTerminal.cellSize;
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      final downOffset = Offset(cellSize.width / 2, cellSize.height / 2);
+      final dragOffset = Offset(cellSize.width * 1.5, cellSize.height / 2);
+
+      await tester.sendEventToBinding(pointer.down(downOffset));
+      await tester.sendEventToBinding(pointer.move(dragOffset));
+      await tester.pumpAndSettle();
+
+      expect(output, contains('\x1B[<32;2;1M'));
     });
   });
 

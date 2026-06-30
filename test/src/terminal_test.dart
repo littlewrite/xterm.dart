@@ -91,6 +91,45 @@ void main() {
 
       expect(output, ['\x1B[M !!', '\x1B[M#!!']);
     });
+
+    test('reports drag motion events in sgr drag tracking mode', () {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?1006;1002h');
+
+      terminal.mouseInput(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.down,
+        CellOffset(0, 0),
+      );
+      terminal.mouseInput(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.down,
+        CellOffset(1, 0),
+        motion: true,
+      );
+
+      expect(output, ['\x1B[<0;1;1M', '\x1B[<32;2;1M']);
+    });
+
+    test('reports hover motion events in sgr any-event tracking mode', () {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?1006;1003h');
+
+      terminal.mouseInput(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.up,
+        CellOffset(2, 3),
+        motion: true,
+      );
+
+      expect(output, ['\x1B[<35;3;4M']);
+    });
   });
 
   group('Terminal.reflowEnabled', () {

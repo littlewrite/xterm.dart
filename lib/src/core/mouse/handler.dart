@@ -16,6 +16,10 @@ class TerminalMouseEvent {
   /// The position of button state change.
   final CellOffset position;
 
+  /// Whether this event is a mouse motion report rather than a button
+  /// transition.
+  final bool motion;
+
   /// The state of the terminal.
   final TerminalState state;
 
@@ -28,6 +32,7 @@ class TerminalMouseEvent {
     required this.position,
     required this.state,
     required this.platform,
+    this.motion = false,
   });
 }
 
@@ -68,12 +73,14 @@ class ClickMouseHandler implements TerminalMouseHandler {
       case MouseMode.clickOnly:
         // Only clicks and only the first 3 buttons are reported.
         if (event.buttonState == TerminalMouseButtonState.down &&
+            !event.motion &&
             (event.button.id < 3)) {
           return MouseReporter.report(
             event.button,
             event.buttonState,
             event.position,
             event.state.mouseReportMode,
+            motion: event.motion,
           );
         }
         return null;
@@ -96,8 +103,9 @@ class UpDownMouseHandler implements TerminalMouseHandler {
       case MouseMode.clickOnly:
         return null;
       case MouseMode.upDownScroll:
-      case MouseMode.upDownScrollDrag:
-      case MouseMode.upDownScrollMove:
+        if (event.motion) {
+          return null;
+        }
         // Up events are never reported for mouse wheel buttons.
         if (event.button.isWheel &&
             event.buttonState == TerminalMouseButtonState.up) {
@@ -108,6 +116,56 @@ class UpDownMouseHandler implements TerminalMouseHandler {
           event.buttonState,
           event.position,
           event.state.mouseReportMode,
+          motion: event.motion,
+        );
+      case MouseMode.upDownScrollDrag:
+        if (event.motion &&
+            event.buttonState == TerminalMouseButtonState.down &&
+            !event.button.isWheel) {
+          return MouseReporter.report(
+            event.button,
+            event.buttonState,
+            event.position,
+            event.state.mouseReportMode,
+            motion: true,
+          );
+        }
+        if (event.motion) {
+          return null;
+        }
+        // Up events are never reported for mouse wheel buttons.
+        if (event.button.isWheel &&
+            event.buttonState == TerminalMouseButtonState.up) {
+          return null;
+        }
+        return MouseReporter.report(
+          event.button,
+          event.buttonState,
+          event.position,
+          event.state.mouseReportMode,
+          motion: event.motion,
+        );
+      case MouseMode.upDownScrollMove:
+        if (event.motion && !event.button.isWheel) {
+          return MouseReporter.report(
+            event.button,
+            event.buttonState,
+            event.position,
+            event.state.mouseReportMode,
+            motion: true,
+          );
+        }
+        // Up events are never reported for mouse wheel buttons.
+        if (event.button.isWheel &&
+            event.buttonState == TerminalMouseButtonState.up) {
+          return null;
+        }
+        return MouseReporter.report(
+          event.button,
+          event.buttonState,
+          event.position,
+          event.state.mouseReportMode,
+          motion: event.motion,
         );
     }
   }

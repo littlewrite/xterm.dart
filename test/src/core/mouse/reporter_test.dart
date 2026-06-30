@@ -37,6 +37,30 @@ void main() {
       expect(output, equals('\x1B[<0;1;1M'));
     });
 
+    test('report() encodes sgr mouse motion', () {
+      final output = MouseReporter.report(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.down,
+        CellOffset(0, 0),
+        MouseReportMode.sgr,
+        motion: true,
+      );
+
+      expect(output, equals('\x1B[<32;1;1M'));
+    });
+
+    test('report() encodes sgr hover motion with M suffix', () {
+      final output = MouseReporter.report(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.up,
+        CellOffset(0, 0),
+        MouseReportMode.sgr,
+        motion: true,
+      );
+
+      expect(output, equals('\x1B[<35;1;1M'));
+    });
+
     test('report() supports urxvt mode', () {
       final output = MouseReporter.report(
         TerminalMouseButton.left,
@@ -46,6 +70,18 @@ void main() {
       );
 
       expect(output, equals('\x1B[32;1;1M'));
+    });
+
+    test('report() encodes urxvt mouse motion distinctly from press', () {
+      final output = MouseReporter.report(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.down,
+        CellOffset(0, 0),
+        MouseReportMode.urxvt,
+        motion: true,
+      );
+
+      expect(output, equals('\x1B[64;1;1M'));
     });
   });
 }

@@ -78,6 +78,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   bool _isMouseSelectionInProgress = false;
   CellOffset? _mouseSelectionBase;
   PointerDeviceKind? _mousePointerKind;
+  TerminalMouseButton _mouseButton = TerminalMouseButton.left;
   bool _suppressNextTapUp = false;
 
   // 双指缩放追踪
@@ -210,6 +211,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     if (_isPointerKindMouse(event.kind)) {
       _isMouseDeviceDown = true;
       _mousePointerKind = event.kind;
+      _mouseButton = _mouseButtonFor(event.buttons);
       _mouseSelectionBase = renderTerminal.getCellOffset(
         event.localPosition,
       );
@@ -246,7 +248,27 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
     // 2. 鼠标拖动选区（无延迟！）
     if (_isPointerKindMouse(event.kind) && _isMouseDeviceDown) {
+      if (widget.terminalController.shouldSendPointerInput(PointerInput.drag)) {
+        renderTerminal.mouseEvent(
+          _mouseButton,
+          TerminalMouseButtonState.down,
+          event.localPosition,
+          motion: true,
+        );
+        return;
+      }
       _handleMouseSelectionUpdate(event.localPosition);
+      return;
+    }
+
+    if (_isPointerKindMouse(event.kind) &&
+        widget.terminalController.shouldSendPointerInput(PointerInput.move)) {
+      renderTerminal.mouseEvent(
+        _mouseButtonFor(event.buttons),
+        TerminalMouseButtonState.up,
+        event.localPosition,
+        motion: true,
+      );
       return;
     }
 
@@ -621,6 +643,16 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         kind == PointerDeviceKind.trackpad ||
         kind == PointerDeviceKind.stylus ||
         kind == PointerDeviceKind.invertedStylus;
+  }
+
+  TerminalMouseButton _mouseButtonFor(int buttons) {
+    if ((buttons & kSecondaryMouseButton) != 0) {
+      return TerminalMouseButton.right;
+    }
+    if ((buttons & kMiddleMouseButton) != 0) {
+      return TerminalMouseButton.middle;
+    }
+    return TerminalMouseButton.left;
   }
 
   void _tapDown(
