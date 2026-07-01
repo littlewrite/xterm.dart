@@ -518,8 +518,13 @@ class MockEscapeHandler extends _i1.Mock implements _i2.EscapeHandler {
     returnValueForMissingStub: null,
   );
   @override
+  void setClipboard(String? selection, String? data) => super.noSuchMethod(
+    Invocation.method(#setClipboard, [selection, data]),
+    returnValueForMissingStub: null,
+  );
+  @override
   void unknownOSC(String? code, List<String>? args) => super.noSuchMethod(
-    Invocation.method(#unknownOSC, [code]),
+    Invocation.method(#unknownOSC, [code, args]),
     returnValueForMissingStub: null,
   );
 }

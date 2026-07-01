@@ -6,8 +6,6 @@ import 'package:xterm/src/utils/byte_consumer.dart';
 import 'package:xterm/src/utils/char_code.dart';
 import 'package:xterm/src/utils/lookup_table.dart';
 
-import 'package:xterm/src/utils/debugger.dart';
-
 /// [EscapeParser] translates control characters and escape sequences into
 /// function calls that the terminal can handle.
 ///
@@ -1273,6 +1271,11 @@ class EscapeParser {
           return true;
         case '2':
           handler.setTitle(pt);
+          return true;
+        case '52':
+          final selectionId = pt;
+          final data = _osc.length >= 3 ? _osc[2] : '';
+          handler.setClipboard(selectionId, data);
           return true;
       }
     }

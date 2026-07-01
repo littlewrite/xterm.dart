@@ -1,6 +1,5 @@
 import 'package:test/test.dart';
 import 'package:xterm/core.dart';
-import 'package:xterm/src/core/cell.dart';
 
 void main() {
   group('Terminal.inputHandler', () {
@@ -69,6 +68,48 @@ void main() {
       );
 
       expect(output, ['\x1B[<0;1;1M', '\x1B[<0;1;1m']);
+    });
+
+    test('reports sgr mouse wheel buttons with standard button codes', () {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?1006;1000h');
+
+      terminal.mouseInput(
+        TerminalMouseButton.wheelUp,
+        TerminalMouseButtonState.down,
+        CellOffset(57, 20),
+      );
+      terminal.mouseInput(
+        TerminalMouseButton.wheelDown,
+        TerminalMouseButtonState.down,
+        CellOffset(57, 20),
+      );
+
+      expect(output, ['\x1B[<64;58;21M', '\x1B[<65;58;21M']);
+    });
+
+    test('reports sgr horizontal wheel buttons with standard button codes', () {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?1006;1000h');
+
+      terminal.mouseInput(
+        TerminalMouseButton.wheelLeft,
+        TerminalMouseButtonState.down,
+        CellOffset(57, 20),
+      );
+      terminal.mouseInput(
+        TerminalMouseButton.wheelRight,
+        TerminalMouseButtonState.down,
+        CellOffset(57, 20),
+      );
+
+      expect(output, ['\x1B[<66;58;21M', '\x1B[<67;58;21M']);
     });
 
     test('reports up events in normal tracking mode', () {
@@ -298,6 +339,26 @@ void main() {
       final line = terminal.buffer.lines[0];
       expect(line.getAttributes(0) & CellAttr.underline, isNot(0));
       expect(line.getAttributes(1) & CellAttr.underline, 0);
+    });
+  });
+
+  group('Terminal.osc52', () {
+    test('routes OSC 52 clipboard payloads to onClipboard', () {
+      String? selection;
+      String? payload;
+
+      final terminal = Terminal(
+        onClipboard: (oscSelection, oscData) {
+          selection = oscSelection;
+          payload = oscData;
+        },
+      );
+
+      terminal.write('\x1b]52;c;aGVsbG8=\x07');
+
+      expect(selection, 'c');
+      expect(payload, 'aGVsbG8=');
+      expect(Terminal.decodeOsc52Payload(payload!), 'hello');
     });
   });
 }

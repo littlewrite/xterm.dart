@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' show max;
 
 import 'package:flutter/scheduler.dart';
@@ -66,6 +67,10 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// escape sequence.
   void Function(String code, List<String> args)? onPrivateOSC;
 
+  /// The callback that is called when the terminal receives an OSC clipboard
+  /// request, such as OSC 52.
+  void Function(String selection, String data)? onClipboard;
+
   /// Flag to toggle os specific behaviors.
   final TerminalTargetPlatform platform;
 
@@ -84,6 +89,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     this.inputHandler = defaultInputHandler,
     this.mouseHandler = defaultMouseHandler,
     this.onPrivateOSC,
+    this.onClipboard,
     this.reflowEnabled = true,
     this.wordSeparators,
   });
@@ -953,8 +959,26 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   @override
+  void setClipboard(String selection, String data) {
+    onClipboard?.call(selection, data);
+  }
+
+  @override
   void unknownOSC(String ps, List<String> pt) {
     onPrivateOSC?.call(ps, pt);
+  }
+
+  static String? decodeOsc52Payload(String data) {
+    if (data.isEmpty || data == '?') {
+      return null;
+    }
+
+    try {
+      final normalized = base64.normalize(data);
+      return utf8.decode(base64.decode(normalized));
+    } catch (_) {
+      return null;
+    }
   }
 
   void dispose() {

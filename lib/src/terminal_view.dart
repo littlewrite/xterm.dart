@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -7,6 +9,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/input/keys.dart';
+import 'package:xterm/src/core/mouse/button.dart';
+import 'package:xterm/src/core/mouse/button_state.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -15,6 +19,7 @@ import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/painter.dart';
+import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/scroll_handler.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
@@ -24,6 +29,14 @@ import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
 import 'package:xterm/src/ui/themes.dart';
 import 'package:xterm/src/ui/search_box.dart';
+
+const int _kMaxWheelEventsPerFrame = 50;
+
+enum TerminalShiftEnterMode {
+  carriageReturn,
+  modifyOtherKeys,
+  csiU,
+}
 
 class TerminalView extends StatefulWidget {
   const TerminalView(
@@ -56,6 +69,9 @@ class TerminalView extends StatefulWidget {
     this.readOnly = false,
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
+    this.invertWheelScroll = false,
+    this.wheelScrollLinesPerEvent = 1,
+    this.shiftEnterMode = TerminalShiftEnterMode.carriageReturn,
     this.getCustomSearchDelegate,
     this.hideScrollBar = true,
     this.viewOffset = Offset.zero,
@@ -171,6 +187,20 @@ class TerminalView extends StatefulWidget {
   /// emulators. True by default.
   final bool simulateScroll;
 
+  /// Inverts the direction of wheel events sent to terminal applications.
+  ///
+  /// This only affects wheel reports sent to applications that enabled mouse
+  /// reporting. Local scrollback keeps Flutter's platform scroll behavior.
+  final bool invertWheelScroll;
+
+  /// Number of terminal wheel reports to send per physical line of wheel delta.
+  ///
+  /// Values below 1 slow down wheel reporting for terminal applications.
+  final double wheelScrollLinesPerEvent;
+
+  /// Controls how Shift+Enter is reported to the terminal application.
+  final TerminalShiftEnterMode shiftEnterMode;
+
   final bool hideScrollBar;
 
   final Offset viewOffset;
@@ -237,6 +267,7 @@ class TerminalViewState extends State<TerminalView>
 
   bool _isDragging = false;
   bool _selectionToolbarRequested = false;
+  Offset? _activePanZoomLocalPosition;
 
   RenderTerminal get renderTerminal =>
       _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
@@ -356,50 +387,59 @@ class TerminalViewState extends State<TerminalView>
 
   @override
   Widget build(BuildContext context) {
-    Widget child = ScrollConfiguration(
-      behavior: widget.scrollBehavior ?? const _TerminalScrollBehavior(),
-      child: Scrollable(
-        key: _scrollableKey,
-        controller: _scrollController,
-        physics: const ClampingScrollPhysics(),
-        viewportBuilder: (context, offset) {
-          return ValueListenableBuilder(
-            valueListenable: textSizeNoti,
-            builder: (context1, textSize, child1) {
-              return ValueListenableBuilder(
-                valueListenable: _composingText,
-                builder: (context3, composingText, child3) {
-                  final viewport = _buildViewport(
-                    context,
-                    offset,
-                    textSize,
-                    composingText,
-                    cursorBlinkVisible: _cursorBlinkVisible.value,
-                    paintCursor: false,
-                  );
+    Widget child = Listener(
+      onPointerSignal: _handlePointerSignal,
+      onPointerPanZoomStart: _handlePointerPanZoomStart,
+      onPointerPanZoomUpdate: _handlePointerPanZoomUpdate,
+      onPointerPanZoomEnd: _handlePointerPanZoomEnd,
+      child: ScrollConfiguration(
+        behavior: widget.scrollBehavior ?? const _TerminalScrollBehavior(),
+        child: Scrollable(
+          key: _scrollableKey,
+          controller: _scrollController,
+          physics: _TerminalViewportScrollPhysics(
+            allowViewportScroll: _shouldViewportAcceptUserOffset,
+            parent: const ClampingScrollPhysics(),
+          ),
+          viewportBuilder: (context, offset) {
+            return ValueListenableBuilder(
+              valueListenable: textSizeNoti,
+              builder: (context1, textSize, child1) {
+                return ValueListenableBuilder(
+                  valueListenable: _composingText,
+                  builder: (context3, composingText, child3) {
+                    final viewport = _buildViewport(
+                      context,
+                      offset,
+                      textSize,
+                      composingText,
+                      cursorBlinkVisible: _cursorBlinkVisible.value,
+                      paintCursor: false,
+                    );
 
-                  return Stack(
-                    children: [
-                      viewport,
-                      Positioned.fill(
-                        child: _TerminalCursorOverlay(
-                          renderTerminal: () => _viewportKey.currentContext
-                              ?.findRenderObject() as RenderTerminal?,
-                          terminal: widget.terminal,
-                          focusNode: _focusNode,
-                          offset: offset,
-                          theme: widget.theme,
-                          cursorType: widget.cursorType,
-                          cursorBlinkVisibleListenable: _cursorBlinkVisible,
+                    return Stack(
+                      children: [
+                        viewport,
+                        Positioned.fill(
+                          child: _TerminalCursorOverlay(
+                            renderTerminal: () => _viewportKey.currentContext
+                                ?.findRenderObject() as RenderTerminal?,
+                            terminal: widget.terminal,
+                            focusNode: _focusNode,
+                            offset: offset,
+                            theme: widget.theme,
+                            cursorType: widget.cursorType,
+                            cursorBlinkVisibleListenable: _cursorBlinkVisible,
+                          ),
                         ),
-                      ),
-                    ],
-                  );
-                },
-              );
-            },
-          );
-        },
+                      ],
+                    );
+                  },
+                );
+              },
+            );
+          },
+        ),
       ),
     );
 
@@ -410,6 +450,8 @@ class TerminalViewState extends State<TerminalView>
     child = TerminalScrollGestureHandler(
       terminal: widget.terminal,
       simulateScroll: widget.simulateScroll,
+      invertWheelScroll: widget.invertWheelScroll,
+      wheelScrollLinesPerEvent: widget.wheelScrollLinesPerEvent,
       getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
       getLineHeight: () => renderTerminal.lineHeight,
       child: child,
@@ -708,12 +750,33 @@ class TerminalViewState extends State<TerminalView>
   }
 
   bool _sendTerminalKey(TerminalKey key, {String? character}) {
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final ctrl = HardwareKeyboard.instance.isControlPressed;
+    final alt = HardwareKeyboard.instance.isAltPressed;
+
+    if (key == TerminalKey.enter && shift && !ctrl && !alt) {
+      switch (widget.shiftEnterMode) {
+        case TerminalShiftEnterMode.carriageReturn:
+          break;
+        case TerminalShiftEnterMode.modifyOtherKeys:
+          widget.terminal.textInput('\x1b[27;2;13~');
+          _scrollToBottom();
+          _updateCursorBlink(resetVisible: true);
+          return true;
+        case TerminalShiftEnterMode.csiU:
+          widget.terminal.textInput('\x1b[13;2u');
+          _scrollToBottom();
+          _updateCursorBlink(resetVisible: true);
+          return true;
+      }
+    }
+
     final handled = widget.terminal.keyInput(
       key,
       character: character,
-      ctrl: HardwareKeyboard.instance.isControlPressed,
-      alt: HardwareKeyboard.instance.isAltPressed,
-      shift: HardwareKeyboard.instance.isShiftPressed,
+      ctrl: ctrl,
+      alt: alt,
+      shift: shift,
     );
 
     if (handled) {
@@ -773,25 +836,262 @@ class TerminalViewState extends State<TerminalView>
     }
   }
 
+  bool _shouldViewportAcceptUserOffset(ScrollMetrics position) {
+    if (widget.readOnly) {
+      return true;
+    }
+    if (widget.terminal.isUsingAltBuffer) {
+      return false;
+    }
+    if (!_controller.shouldSendPointerInput(PointerInput.scroll)) {
+      return true;
+    }
+    return !widget.terminal.mouseMode.reportScroll;
+  }
+
+  bool _shouldHandlePointerScroll(PointerScrollEvent event) {
+    if (widget.readOnly) {
+      return false;
+    }
+    if (widget.terminal.isUsingAltBuffer) {
+      // Alt-buffer wheel gestures are handled by TerminalScrollGestureHandler.
+      return false;
+    }
+    if (!_controller.shouldSendPointerInput(PointerInput.scroll)) {
+      return false;
+    }
+    return widget.terminal.mouseMode.reportScroll;
+  }
+
+  bool get _shouldHandleTrackpadPanZoom {
+    if (widget.readOnly) {
+      return false;
+    }
+    if (!_controller.shouldSendPointerInput(PointerInput.scroll)) {
+      return false;
+    }
+    if (widget.terminal.isUsingAltBuffer) {
+      // Pan-zoom updates do not flow through the alternate-buffer scroll wrapper,
+      // so TerminalView handles them directly in this mode.
+      return widget.terminal.mouseMode.reportScroll ||
+          widget.simulateScroll ||
+          widget.terminal.altBufferMouseScrollMode;
+    }
+    return widget.terminal.mouseMode.reportScroll;
+  }
+
+  void _handlePointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) {
+      return;
+    }
+    if (!_shouldHandlePointerScroll(event)) {
+      return;
+    }
+    GestureBinding.instance.pointerSignalResolver.register(
+      event,
+      _handleResolvedPointerSignal,
+    );
+  }
+
+  void _handlePointerPanZoomStart(PointerPanZoomStartEvent event) {
+    if (!_shouldHandleTrackpadPanZoom) {
+      return;
+    }
+    _activePanZoomLocalPosition = event.localPosition;
+  }
+
+  void _handlePointerPanZoomUpdate(PointerPanZoomUpdateEvent event) {
+    if (!_shouldHandleTrackpadPanZoom) {
+      return;
+    }
+    _activePanZoomLocalPosition = event.localPosition;
+    _sendWheelDelta(
+      _activePanZoomLocalPosition!,
+      event.localPanDelta,
+    );
+  }
+
+  void _handlePointerPanZoomEnd(PointerPanZoomEndEvent event) {
+    _activePanZoomLocalPosition = null;
+  }
+
+  void _handleResolvedPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) {
+      return;
+    }
+    final renderObject =
+        _viewportKey.currentContext?.findRenderObject() as RenderTerminal?;
+    if (renderObject == null ||
+        !renderObject.attached ||
+        !renderObject.hasSize) {
+      return;
+    }
+
+    final horizontal = event.scrollDelta.dx;
+    final vertical = event.scrollDelta.dy;
+    _sendWheelDelta(
+      event.localPosition,
+      Offset(horizontal, vertical),
+    );
+  }
+
+  void _sendWheelDelta(
+    Offset localPosition,
+    Offset delta,
+  ) {
+    final renderObject =
+        _viewportKey.currentContext?.findRenderObject() as RenderTerminal?;
+    if (renderObject == null ||
+        !renderObject.attached ||
+        !renderObject.hasSize) {
+      return;
+    }
+
+    final horizontal = delta.dx;
+    final vertical = widget.invertWheelScroll ? -delta.dy : delta.dy;
+    final useHorizontal = horizontal.abs() > vertical.abs();
+
+    if (useHorizontal && horizontal != 0) {
+      _sendWheelEvents(
+        renderObject,
+        localPosition,
+        horizontal > 0
+            ? TerminalMouseButton.wheelRight
+            : TerminalMouseButton.wheelLeft,
+        horizontal.abs(),
+        renderObject.cellSize.width,
+      );
+      return;
+    }
+
+    if (vertical != 0) {
+      _sendWheelEvents(
+        renderObject,
+        localPosition,
+        vertical > 0
+            ? TerminalMouseButton.wheelDown
+            : TerminalMouseButton.wheelUp,
+        vertical.abs(),
+        renderObject.lineHeight,
+      );
+    }
+  }
+
+  void _sendWheelEvents(
+    RenderTerminal renderObject,
+    Offset localPosition,
+    TerminalMouseButton button,
+    double delta,
+    double extent,
+  ) {
+    final stepExtent = extent <= 0 ? 1.0 : extent;
+    final speed = widget.wheelScrollLinesPerEvent <= 0
+        ? 1.0
+        : widget.wheelScrollLinesPerEvent;
+    final steps = math.min(
+      _kMaxWheelEventsPerFrame,
+      math.max(1, (delta / stepExtent * speed).ceil()),
+    );
+    bool anyHandled = false;
+    for (var i = 0; i < steps; i++) {
+      if (renderObject.mouseEvent(
+        button,
+        TerminalMouseButtonState.down,
+        localPosition,
+      )) {
+        anyHandled = true;
+      }
+    }
+    if (!anyHandled &&
+        (widget.simulateScroll || widget.terminal.altBufferMouseScrollMode) &&
+        widget.terminal.isUsingAltBuffer) {
+      for (var i = 0; i < steps; i++) {
+        _sendAltBufferFallbackKey(button);
+      }
+    }
+  }
+
+  bool autoScrollSelection(Offset localPointerPosition) {
+    final scrollThreshold = renderTerminal.lineHeight * 3;
+    final shouldScrollDown =
+        localPointerPosition.dy > renderTerminal.size.height - scrollThreshold;
+    final shouldScrollUp = localPointerPosition.dy < scrollThreshold;
+
+    if (!widget.terminal.isUsingAltBuffer) {
+      autoScrollDown(localPointerPosition);
+      return shouldScrollDown || shouldScrollUp;
+    }
+
+    if (!shouldScrollDown && !shouldScrollUp) {
+      return false;
+    }
+
+    final button = shouldScrollDown
+        ? TerminalMouseButton.wheelDown
+        : TerminalMouseButton.wheelUp;
+    return _sendSelectionAutoScrollEvent(localPointerPosition, button);
+  }
+
+  bool _sendSelectionAutoScrollEvent(
+    Offset localPointerPosition,
+    TerminalMouseButton button,
+  ) {
+    final renderObject =
+        _viewportKey.currentContext?.findRenderObject() as RenderTerminal?;
+    if (renderObject == null ||
+        !renderObject.attached ||
+        !renderObject.hasSize) {
+      return false;
+    }
+
+    final handled = renderObject.mouseEvent(
+      button,
+      TerminalMouseButtonState.down,
+      localPointerPosition,
+    );
+    if (handled) {
+      return true;
+    }
+
+    if (widget.simulateScroll || widget.terminal.altBufferMouseScrollMode) {
+      return _sendAltBufferFallbackKey(button);
+    }
+
+    return false;
+  }
+
+  bool _sendAltBufferFallbackKey(TerminalMouseButton button) {
+    switch (button) {
+      case TerminalMouseButton.wheelUp:
+        widget.terminal.keyInput(TerminalKey.arrowUp);
+        return true;
+      case TerminalMouseButton.wheelDown:
+        widget.terminal.keyInput(TerminalKey.arrowDown);
+        return true;
+      default:
+        return false;
+    }
+  }
+
   void autoScrollDown(Offset localPointerPosition) {
-    final scrollThrshold = renderTerminal.lineHeight * 3;
+    final scrollThreshold = renderTerminal.lineHeight * 3;
     final position = _scrollableKey.currentState?.position;
     if (position == null) return;
     final notBottom = position.pixels < position.maxScrollExtent;
     final shouldScrollDown =
-        localPointerPosition.dy > renderTerminal.size.height - scrollThrshold;
+        localPointerPosition.dy > renderTerminal.size.height - scrollThreshold;
     if (shouldScrollDown && notBottom) {
       position.animateTo(
-        position.pixels + scrollThrshold,
+        position.pixels + scrollThreshold,
         duration: const Duration(milliseconds: 177),
         curve: Curves.fastEaseInToSlowEaseOut,
       );
     }
     final notTop = position.pixels > 0;
-    final shouldScrollUp = localPointerPosition.dy < scrollThrshold;
+    final shouldScrollUp = localPointerPosition.dy < scrollThreshold;
     if (shouldScrollUp && notTop) {
       position.animateTo(
-        position.pixels - scrollThrshold,
+        position.pixels - scrollThreshold,
         duration: const Duration(milliseconds: 177),
         curve: Curves.fastEaseInToSlowEaseOut,
       );
@@ -1209,6 +1509,10 @@ class _RenderTerminalCursorOverlay extends RenderBox {
       return;
     }
 
+    if (!renderTerminal.isCursorInViewport) {
+      return;
+    }
+
     final cursorOffset = _cursorOffsetInOverlay(renderTerminal);
     if (cursorOffset == null) {
       return;
@@ -1230,7 +1534,10 @@ class _RenderTerminalCursorOverlay extends RenderBox {
       renderTerminal.cursorOffset,
     );
     final overlayToGlobal = getTransformTo(null);
-    final globalToOverlay = Matrix4.inverted(overlayToGlobal);
+    final globalToOverlay = Matrix4.copy(overlayToGlobal);
+    if (globalToOverlay.invert() == 0.0) {
+      return null;
+    }
     return MatrixUtils.transformPoint(globalToOverlay, cursorGlobal);
   }
 }
@@ -1245,5 +1552,30 @@ class _TerminalScrollBehavior extends ScrollBehavior {
     ScrollableDetails details,
   ) {
     return child;
+  }
+}
+
+class _TerminalViewportScrollPhysics extends ScrollPhysics {
+  const _TerminalViewportScrollPhysics({
+    required this.allowViewportScroll,
+    super.parent,
+  });
+
+  final bool Function(ScrollMetrics position) allowViewportScroll;
+
+  @override
+  _TerminalViewportScrollPhysics applyTo(ScrollPhysics? ancestor) {
+    return _TerminalViewportScrollPhysics(
+      allowViewportScroll: allowViewportScroll,
+      parent: buildParent(ancestor),
+    );
+  }
+
+  @override
+  bool shouldAcceptUserOffset(ScrollMetrics position) {
+    if (!allowViewportScroll(position)) {
+      return false;
+    }
+    return super.shouldAcceptUserOffset(position);
   }
 }

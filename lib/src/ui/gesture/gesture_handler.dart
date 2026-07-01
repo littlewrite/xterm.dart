@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
@@ -9,6 +10,9 @@ import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/xterm.dart';
 
 enum _DragHandleType { none, start, end }
+
+// Tuned for responsive edge-selection scrolling without flooding the app.
+const Duration _kSelectionAutoScrollInterval = Duration(milliseconds: 70);
 
 class TerminalGestureHandler extends StatefulWidget {
   const TerminalGestureHandler({
@@ -77,9 +81,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   bool _isMouseDeviceDown = false;
   bool _isMouseSelectionInProgress = false;
   CellOffset? _mouseSelectionBase;
+  CellAnchor? _mouseSelectionBaseAnchor;
   PointerDeviceKind? _mousePointerKind;
   TerminalMouseButton _mouseButton = TerminalMouseButton.left;
   bool _suppressNextTapUp = false;
+  bool _mouseReportedDragMotion = false;
+  bool _mouseDragWasHandledByTerminal = false;
+  Timer? _autoScrollTimer;
+  Offset? _pendingAutoScrollPosition;
 
   // 双指缩放追踪
   final Map<int, Offset> _trackedPointers = {};
@@ -196,6 +205,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     widget.terminalController.removeListener(_handleControllerSelectionChanged);
     _detachScrollController(_attachedScrollController);
     _trackedPointers.clear();
+    _stopSelectionAutoScroll();
     super.dispose();
   }
 
@@ -212,9 +222,13 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _isMouseDeviceDown = true;
       _mousePointerKind = event.kind;
       _mouseButton = _mouseButtonFor(event.buttons);
+      _mouseReportedDragMotion = false;
+      _mouseDragWasHandledByTerminal = false;
       _mouseSelectionBase = renderTerminal.getCellOffset(
         event.localPosition,
       );
+      _mouseSelectionBaseAnchor =
+          renderTerminal.createSelectionAnchor(_mouseSelectionBase!);
       _isMouseSelectionInProgress = false;
     } else {
       // 触摸设备：检查是否点击了拖杆
@@ -248,13 +262,21 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
     // 2. 鼠标拖动选区（无延迟！）
     if (_isPointerKindMouse(event.kind) && _isMouseDeviceDown) {
-      if (widget.terminalController.shouldSendPointerInput(PointerInput.drag)) {
-        renderTerminal.mouseEvent(
+      if (widget.terminalController.shouldSendPointerInput(PointerInput.drag) &&
+          !_shouldForceLocalMouseSelection) {
+        final handled = renderTerminal.mouseEvent(
           _mouseButton,
           TerminalMouseButtonState.down,
           event.localPosition,
           motion: true,
         );
+        if (handled) {
+          _mouseReportedDragMotion = true;
+          _mouseDragWasHandledByTerminal = true;
+          return;
+        }
+      }
+      if (_mouseDragWasHandledByTerminal && !_isMouseSelectionInProgress) {
         return;
       }
       _handleMouseSelectionUpdate(event.localPosition);
@@ -262,7 +284,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     }
 
     if (_isPointerKindMouse(event.kind) &&
-        widget.terminalController.shouldSendPointerInput(PointerInput.move)) {
+        widget.terminalController.shouldSendPointerInput(PointerInput.move) &&
+        !_shouldForceLocalMouseSelection) {
       renderTerminal.mouseEvent(
         _mouseButtonFor(event.buttons),
         TerminalMouseButtonState.up,
@@ -283,6 +306,25 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
   void _onPointerUp(PointerUpEvent event) {
     if (_isPointerKindMouse(event.kind)) {
+      final shouldReleaseAppDrag =
+          _mouseDragWasHandledByTerminal &&
+          _mouseReportedDragMotion;
+
+      if (shouldReleaseAppDrag) {
+        renderTerminal.mouseEvent(
+          _mouseButton,
+          TerminalMouseButtonState.up,
+          event.localPosition,
+        );
+        _suppressNextTapUp = true;
+        _resetMouseSelectionState();
+        _trackedPointers.remove(event.pointer);
+        if (_trackedPointers.length < 2) {
+          _zoomInitialDistance = null;
+        }
+        return;
+      }
+
       if (_isMouseSelectionInProgress) {
         _finishMouseSelection();
       } else if (!_isDraggingHandle && !_isDragHandleReady) {
@@ -645,6 +687,10 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         kind == PointerDeviceKind.invertedStylus;
   }
 
+  bool get _shouldForceLocalMouseSelection {
+    return HardwareKeyboard.instance.isShiftPressed;
+  }
+
   TerminalMouseButton _mouseButtonFor(int buttons) {
     if ((buttons & kSecondaryMouseButton) != 0) {
       return TerminalMouseButton.right;
@@ -662,7 +708,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     bool forceCallback = false,
   }) {
     var handled = false;
-    if (_shouldSendTapEvent && !_isNearSelection(details.localPosition)) {
+    if (_shouldSendTapEvent &&
+        !_shouldForceLocalMouseSelection &&
+        !_isNearSelection(details.localPosition)) {
       handled = renderTerminal.mouseEvent(
         button,
         TerminalMouseButtonState.down,
@@ -681,7 +729,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     bool forceCallback = false,
   }) {
     var handled = false;
-    if (_shouldSendTapEvent && !_isNearSelection(details.localPosition)) {
+    if (_shouldSendTapEvent &&
+        !_shouldForceLocalMouseSelection &&
+        !_isNearSelection(details.localPosition)) {
       handled = renderTerminal.mouseEvent(
         button,
         TerminalMouseButtonState.up,
@@ -698,12 +748,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         !_isPointerKindMouse(_mousePointerKind) ||
         _isDraggingHandle ||
         _isDragHandleReady ||
-        widget.terminalController.shouldSendPointerInput(PointerInput.drag)) {
+        (widget.terminalController.shouldSendPointerInput(PointerInput.drag) &&
+            !_shouldForceLocalMouseSelection)) {
       return false;
     }
 
     final base = _mouseSelectionBase;
-    if (base == null) {
+    final baseAnchor = _mouseSelectionBaseAnchor;
+    if (base == null || baseAnchor == null || !baseAnchor.attached) {
       return false;
     }
 
@@ -730,13 +782,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     }
 
     _commitSelection(
-      renderTerminal.selectCharacters(base, current),
+      renderTerminal.selectCharactersFromAnchor(baseAnchor, current),
       scrollPosition: localPosition,
     );
     return true;
   }
 
   void _finishMouseSelection() {
+    _stopSelectionAutoScroll();
     if (!_isMouseSelectionInProgress) {
       _resetInteractionState();
       return;
@@ -752,9 +805,13 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   void _resetMouseSelectionState() {
+    _stopSelectionAutoScroll();
     _isMouseDeviceDown = false;
     _isMouseSelectionInProgress = false;
+    _mouseReportedDragMotion = false;
+    _mouseDragWasHandledByTerminal = false;
     _mouseSelectionBase = null;
+    _mouseSelectionBaseAnchor = null;
     _mousePointerKind = null;
   }
 
@@ -989,8 +1046,47 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _selectedRange = range;
     }
     if (scrollPosition != null) {
-      terminalView.autoScrollDown(scrollPosition);
+      if (terminalView.autoScrollSelection(scrollPosition)) {
+        _startSelectionAutoScroll(scrollPosition);
+      } else {
+        _stopSelectionAutoScroll();
+      }
+    } else {
+      _stopSelectionAutoScroll();
     }
+  }
+
+  /// Starts a repeating edge-auto-scroll loop while the pointer remains
+  /// near the viewport boundary during selection drag.
+  void _startSelectionAutoScroll(Offset localPosition) {
+    _pendingAutoScrollPosition = localPosition;
+    _autoScrollTimer ??= Timer.periodic(
+      _kSelectionAutoScrollInterval,
+      (_) {
+        final pending = _pendingAutoScrollPosition;
+        if (!mounted || pending == null) {
+          _stopSelectionAutoScroll();
+          return;
+        }
+        try {
+          terminalView.autoScrollSelection(pending);
+        } catch (error, stackTrace) {
+          FlutterError.reportError(FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'xterm',
+            context: ErrorDescription('while auto-scrolling a selection drag'),
+          ));
+          _stopSelectionAutoScroll();
+        }
+      },
+    );
+  }
+
+  void _stopSelectionAutoScroll() {
+    _autoScrollTimer?.cancel();
+    _autoScrollTimer = null;
+    _pendingAutoScrollPosition = null;
   }
 
   /// 重置拖杆状态

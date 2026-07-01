@@ -116,5 +116,14 @@ void main() {
       verifyNever(handler.setBackgroundColorRgb(any, any, any));
       verifyNever(handler.setBackgroundColor256(any));
     });
+
+    test('routes OSC 52 to clipboard handler', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+
+      parser.write('\x1b]52;c;aGVsbG8=\x07');
+
+      verify(handler.setClipboard('c', 'aGVsbG8='));
+    });
   });
 }

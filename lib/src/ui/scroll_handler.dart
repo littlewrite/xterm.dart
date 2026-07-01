@@ -1,6 +1,9 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 import 'package:xterm/core.dart';
 import 'package:xterm/src/ui/infinite_scroll_view.dart';
+
+const int _kMaxAltBufferScrollEventsPerFrame = 20;
 
 /// Handles scrolling gestures in the alternate screen buffer. In alternate
 /// screen buffer, the terminal don't have a scrollback buffer, instead, the
@@ -13,6 +16,8 @@ class TerminalScrollGestureHandler extends StatefulWidget {
     required this.getCellOffset,
     required this.getLineHeight,
     this.simulateScroll = true,
+    this.invertWheelScroll = false,
+    this.wheelScrollLinesPerEvent = 1,
     required this.child,
   });
 
@@ -29,6 +34,10 @@ class TerminalScrollGestureHandler extends StatefulWidget {
   /// is the default behavior of most terminals.
   final bool simulateScroll;
 
+  final bool invertWheelScroll;
+
+  final double wheelScrollLinesPerEvent;
+
   final Widget child;
 
   @override
@@ -42,13 +51,15 @@ class _TerminalScrollGestureHandlerState
   /// widget does nothing.
   var isAltBuffer = false;
 
-  /// The variable that tracks the line offset in last scroll event. Used to
-  /// determine how many the scroll events should be sent to the terminal.
-  var lastLineOffset = 0;
-
   /// This variable tracks the last offset where the scroll gesture started.
   /// Used to calculate the cell offset of the terminal mouse event.
   var lastPointerPosition = Offset.zero;
+
+  /// The variable that tracks the line offset in last drag scroll event. Used
+  /// to determine how many the scroll events should be sent to the terminal.
+  var lastDragLineOffset = 0;
+
+  double _accumulatedVerticalDelta = 0;
 
   @override
   void initState() {
@@ -76,6 +87,7 @@ class _TerminalScrollGestureHandlerState
   void _onTerminalUpdated() {
     if (isAltBuffer != widget.terminal.isUsingAltBuffer) {
       isAltBuffer = widget.terminal.isUsingAltBuffer;
+      _accumulatedVerticalDelta = 0;
       setState(() {});
     }
   }
@@ -92,23 +104,60 @@ class _TerminalScrollGestureHandlerState
       position,
     );
 
-    if (!handled && widget.simulateScroll) {
+    if (!handled &&
+        (widget.simulateScroll || widget.terminal.altBufferMouseScrollMode)) {
       widget.terminal.keyInput(
         up ? TerminalKey.arrowUp : TerminalKey.arrowDown,
       );
     }
   }
 
-  void _onScroll(double offset) {
-    final currentLineOffset = offset ~/ widget.getLineHeight();
+  void _handlePointerScroll(PointerScrollEvent event) {
+    lastPointerPosition = event.localPosition;
+    final verticalDelta =
+        widget.invertWheelScroll ? -event.scrollDelta.dy : event.scrollDelta.dy;
+    _accumulatedVerticalDelta += verticalDelta;
 
-    final delta = currentLineOffset - lastLineOffset;
+    final lineHeight = widget.getLineHeight();
+    if (lineHeight <= 0) return;
 
-    for (var i = 0; i < delta.abs(); i++) {
+    final speed = widget.wheelScrollLinesPerEvent <= 0
+        ? 1.0
+        : widget.wheelScrollLinesPerEvent;
+    final lines = (_accumulatedVerticalDelta / lineHeight * speed).truncate();
+    if (lines == 0) return;
+
+    final iterations = lines.abs() > _kMaxAltBufferScrollEventsPerFrame
+        ? _kMaxAltBufferScrollEventsPerFrame
+        : lines.abs();
+    for (var i = 0; i < iterations; i++) {
+      _sendScrollEvent(lines < 0);
+    }
+
+    _accumulatedVerticalDelta -= lines * lineHeight / speed;
+  }
+
+  void _handleResolvedPointerSignal(PointerSignalEvent event) {
+    if (event is PointerScrollEvent) {
+      _handlePointerScroll(event);
+    }
+  }
+
+  void _handleDragScroll(double offset) {
+    final lineHeight = widget.getLineHeight();
+    if (lineHeight <= 0) return;
+
+    final currentLineOffset = offset ~/ lineHeight;
+    final delta = currentLineOffset - lastDragLineOffset;
+
+    final iterations = delta.abs() > _kMaxAltBufferScrollEventsPerFrame
+        ? _kMaxAltBufferScrollEventsPerFrame
+        : delta.abs();
+    for (var i = 0; i < iterations; i++) {
       _sendScrollEvent(delta < 0);
     }
 
-    lastLineOffset = currentLineOffset;
+    lastDragLineOffset = currentLineOffset;
   }
 
   @override
@@ -119,13 +168,20 @@ class _TerminalScrollGestureHandlerState
 
     return Listener(
       onPointerSignal: (event) {
-        lastPointerPosition = event.position;
+        if (event is PointerScrollEvent) {
+          GestureBinding.instance.pointerSignalResolver.register(
+            event,
+            _handleResolvedPointerSignal,
+          );
+        }
       },
       onPointerDown: (event) {
-        lastPointerPosition = event.position;
+        lastPointerPosition = event.localPosition;
+        _accumulatedVerticalDelta = 0;
+        lastDragLineOffset = 0;
       },
       child: InfiniteScrollView(
-        onScroll: _onScroll,
+        onScroll: _handleDragScroll,
         child: widget.child,
       ),
     );

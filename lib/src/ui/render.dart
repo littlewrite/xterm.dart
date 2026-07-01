@@ -389,8 +389,28 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     return _terminal.buffer.getText(selection);
   }
 
+  CellAnchor createSelectionAnchor(CellOffset offset) {
+    return _terminal.buffer.createAnchorFromOffset(_selectionStartFor(offset));
+  }
+
   void selectCharsetByCell(CellAnchor from, CellAnchor to) {
     _controller.setSelection(from, to);
+  }
+
+  BufferRangeLine selectCharactersFromAnchor(CellAnchor from, CellOffset to) {
+    final normalizedFrom = _selectionStartFor(from.offset);
+    final normalizedTo = _selectionStartFor(to);
+    final forward = normalizedFrom.isBeforeOrSame(normalizedTo);
+    final begin = forward ? normalizedFrom : normalizedTo;
+    final end = forward
+        ? _selectionEndFor(normalizedTo)
+        : _selectionEndFor(normalizedFrom);
+
+    _controller.setSelection(
+      _terminal.buffer.createAnchorFromOffset(begin),
+      _terminal.buffer.createAnchorFromOffset(end),
+    );
+    return BufferRangeLine(begin, end);
   }
 
   /// Selects characters in the terminal that starts from [from] to [to]. At
@@ -555,6 +575,20 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
             !_focusNode.hasFocus ||
             cursorBlinkVisible ||
             _isComposingText);
+  }
+
+  bool get isCursorInViewport {
+    final lines = _terminal.lines;
+    if (lines.length == 0) {
+      return false;
+    }
+    final firstLine = _scrollOffset ~/ _painter.cellSize.height;
+    final lastLine = (_scrollOffset + size.height - _padding.vertical) ~/
+        _painter.cellSize.height;
+    final effectFirstLine = firstLine.clamp(0, lines.length - 1);
+    final effectLastLine = lastLine.clamp(0, lines.length - 1);
+    return _terminal.buffer.absoluteCursorY >= effectFirstLine &&
+        _terminal.buffer.absoluteCursorY <= effectLastLine;
   }
 
   bool get shouldHintWillChange {

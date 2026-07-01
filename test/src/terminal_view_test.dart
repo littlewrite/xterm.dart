@@ -295,6 +295,190 @@ void main() {
 
       expect(output, contains('\x1B[<32;2;1M'));
     });
+
+    testWidgets(
+      'falls back to local selection when drag reporting is enabled but motion is unsupported',
+      (tester) async {
+        final output = <String>[];
+        final terminal = Terminal(onOutput: output.add);
+
+        terminal.write('\x1b[?1000h');
+        terminal.write('hello world');
+
+        final terminalView = TerminalController(
+          pointerInputs: PointerInputs.all(),
+          vsync: tester,
+        );
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalView(
+                terminal,
+                controller: terminalView,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        final rect = tester.getRect(find.byType(TerminalView));
+        final start = rect.topLeft + const Offset(8, 8);
+        final end = rect.topLeft + const Offset(80, 8);
+        final pointer = TestPointer(1, PointerDeviceKind.mouse);
+
+        await tester.sendEventToBinding(pointer.down(start));
+        await tester.sendEventToBinding(pointer.move(end));
+        await tester.pump();
+
+        expect(output, isNotEmpty);
+        expect(output.any((item) => item.contains('[<32;')), isFalse);
+        expect(terminalView.selection, isNotNull);
+        expect(terminal.buffer.getText(terminalView.selection!), isNotEmpty);
+      },
+    );
+
+    testWidgets('reports mouse up after drag when drag input is enabled',
+        (tester) async {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?1006;1002h');
+
+      final terminalView = TerminalController(
+        pointerInputs: PointerInputs.all(),
+        vsync: tester,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              controller: terminalView,
+            ),
+          ),
+        ),
+      );
+
+      final renderTerminal = tester.renderObject<RenderTerminal>(
+        find.byType(TerminalView),
+      );
+      final cellSize = renderTerminal.cellSize;
+      final rect = tester.getRect(find.byType(TerminalView));
+      final downOffset = rect.topLeft + Offset(cellSize.width / 2, cellSize.height / 2);
+      final dragOffset = rect.topLeft + Offset(cellSize.width * 1.5, cellSize.height / 2);
+
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: downOffset);
+      await tester.pump();
+      await gesture.down(downOffset);
+      await tester.pump();
+      await gesture.moveTo(dragOffset);
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(output, contains('\x1B[<0;1;1M'));
+      expect(output, contains('\x1B[<32;2;1M'));
+      expect(output, contains('\x1B[<0;2;1m'));
+    });
+
+    testWidgets(
+      'still reports mouse up after drag when Shift is pressed before release',
+      (tester) async {
+        final output = <String>[];
+
+        final terminal = Terminal(onOutput: output.add);
+        terminal.write('\x1b[?1006;1002h');
+
+        final terminalView = TerminalController(
+          pointerInputs: PointerInputs.all(),
+          vsync: tester,
+        );
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalView(
+                terminal,
+                controller: terminalView,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        final renderTerminal = tester.renderObject<RenderTerminal>(
+          find.byType(TerminalView),
+        );
+        final cellSize = renderTerminal.cellSize;
+        final rect = tester.getRect(find.byType(TerminalView));
+        final downOffset =
+            rect.topLeft + Offset(cellSize.width / 2, cellSize.height / 2);
+        final dragOffset =
+            rect.topLeft + Offset(cellSize.width * 1.5, cellSize.height / 2);
+
+        final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await gesture.addPointer(location: downOffset);
+        await tester.pump();
+        await gesture.down(downOffset);
+        await tester.pump();
+        await gesture.moveTo(dragOffset);
+        await tester.pump();
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.pump();
+        await gesture.up();
+        await tester.pump();
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+
+        expect(output, contains('\x1B[<0;1;1M'));
+        expect(output, contains('\x1B[<32;2;1M'));
+        expect(output, contains('\x1B[<0;2;1m'));
+      },
+    );
+
+    testWidgets('Shift+mouse drag prefers local selection over mouse reporting',
+        (tester) async {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?1006;1002h');
+      terminal.write('hello world');
+
+      final terminalView = TerminalController(
+        pointerInputs: PointerInputs.all(),
+        vsync: tester,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              controller: terminalView,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final rect = tester.getRect(find.byType(TerminalView));
+      final start = rect.topLeft + const Offset(8, 8);
+      final end = rect.topLeft + const Offset(80, 8);
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendEventToBinding(pointer.down(start));
+      await tester.sendEventToBinding(pointer.move(end));
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+
+      expect(output, isEmpty);
+      expect(terminalView.selection, isNotNull);
+      expect(terminal.buffer.getText(terminalView.selection!), isNotEmpty);
+    });
   });
 
   group('TerminalView.autofocus', () {
@@ -518,13 +702,15 @@ void main() {
         await tester.pump();
 
         final rect = tester.getRect(find.byType(TerminalView));
+        final start = rect.topLeft + const Offset(8, 8);
+        final end = rect.topLeft + const Offset(80, 8);
         final gesture =
             await tester.createGesture(kind: PointerDeviceKind.mouse);
-        await gesture.addPointer(location: rect.topLeft + const Offset(8, 8));
+        await gesture.addPointer(location: start);
         await tester.pump();
-        await gesture.down(rect.topLeft + const Offset(8, 8));
+        await gesture.down(start);
         await tester.pump();
-        await gesture.moveTo(rect.topLeft + const Offset(80, 8));
+        await gesture.moveTo(end);
         await tester.pump();
         await gesture.up();
         await tester.pumpAndSettle();
@@ -557,12 +743,14 @@ void main() {
       await tester.pump();
 
       final rect = tester.getRect(find.byType(TerminalView));
+      final start = rect.topLeft + const Offset(8, 8);
+      final end = rect.topLeft + const Offset(80, 8);
       final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
-      await gesture.addPointer(location: rect.topLeft + const Offset(8, 8));
+      await gesture.addPointer(location: start);
       await tester.pump();
-      await gesture.down(rect.topLeft + const Offset(8, 8));
+      await gesture.down(start);
       await tester.pump();
-      await gesture.moveTo(rect.topLeft + const Offset(80, 8));
+      await gesture.moveTo(end);
       await tester.pump();
       await gesture.up();
       await tester.pumpAndSettle();
@@ -734,6 +922,69 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(pasteCount, 1);
+    });
+  });
+
+  group('TerminalView.shiftEnterMode', () {
+    testWidgets('keeps Shift+Enter as carriage return by default',
+        (tester) async {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      await tester.pumpWidget(MaterialApp(
+        home: TerminalView(terminal, autofocus: true),
+      ));
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+
+      expect(output, ['\r']);
+    });
+
+    testWidgets('can report Shift+Enter as CSI-u', (tester) async {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      await tester.pumpWidget(MaterialApp(
+        home: TerminalView(
+          terminal,
+          autofocus: true,
+          shiftEnterMode: TerminalShiftEnterMode.csiU,
+        ),
+      ));
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+
+      expect(output, ['\x1b[13;2u']);
+    });
+
+    testWidgets('can report Shift+Enter as modifyOtherKeys sequence',
+        (tester) async {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      await tester.pumpWidget(MaterialApp(
+        home: TerminalView(
+          terminal,
+          autofocus: true,
+          shiftEnterMode: TerminalShiftEnterMode.modifyOtherKeys,
+        ),
+      ));
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+
+      expect(output, ['\x1b[27;2;13~']);
     });
   });
 

@@ -219,6 +219,8 @@ abstract class EscapeHandler {
 
   void setIconName(String name);
 
+  void setClipboard(String selection, String data);
+
   void unknownOSC(String code, List<String> args);
 
   void showSearch();
