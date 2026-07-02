@@ -264,7 +264,12 @@ extension on _MyHomePageState {
         isShiftPressed &&
         event.logicalKey == LogicalKeyboardKey.keyF) {
       debugPrint('[shortcut] ${describeKeyEvent(event)} -> search');
-      terminal.showSearch();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        terminal.showSearch();
+      });
       return KeyEventResult.handled;
     }
 

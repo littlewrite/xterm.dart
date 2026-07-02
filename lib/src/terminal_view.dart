@@ -1188,6 +1188,7 @@ class TerminalViewState extends State<TerminalView>
       cursorBlinkEnabled: _cursorBlinkEnabled,
       cursorBlinkVisible: cursorBlinkVisible,
       alwaysShowCursor: widget.alwaysShowCursor,
+      devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
       paintCursor: paintCursor,
       paintSelectionHandles: widget.showToolbar,
       onEditableRect: _hasInputConnection &&
@@ -1218,6 +1219,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.cursorBlinkEnabled,
     required this.cursorBlinkVisible,
     required this.alwaysShowCursor,
+    required this.devicePixelRatio,
     required this.paintCursor,
     required this.paintSelectionHandles,
     this.onEditableRect,
@@ -1250,6 +1252,8 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final bool alwaysShowCursor;
 
+  final double devicePixelRatio;
+
   final bool paintCursor;
 
   final bool paintSelectionHandles;
@@ -1274,6 +1278,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       cursorBlinkEnabled: cursorBlinkEnabled,
       cursorBlinkVisible: cursorBlinkVisible,
       alwaysShowCursor: alwaysShowCursor,
+      devicePixelRatio: devicePixelRatio,
       paintCursor: paintCursor,
       paintSelectionHandles: paintSelectionHandles,
       onEditableRect: onEditableRect,
@@ -1297,6 +1302,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..cursorBlinkEnabled = cursorBlinkEnabled
       ..cursorBlinkVisible = cursorBlinkVisible
       ..alwaysShowCursor = alwaysShowCursor
+      ..devicePixelRatio = devicePixelRatio
       ..paintCursor = paintCursor
       ..paintSelectionHandles = paintSelectionHandles
       ..onEditableRect = onEditableRect

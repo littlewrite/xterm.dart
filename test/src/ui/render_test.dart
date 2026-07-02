@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,9 +9,11 @@ import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
+import 'package:xterm/src/ui/custom_glyphs.dart';
 import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
+import 'package:xterm/src/ui/terminal_theme.dart';
 import 'package:xterm/src/ui/themes.dart';
 
 void main() {
@@ -74,6 +78,224 @@ void main() {
       TerminalThemes.defaultTheme.foreground,
     );
     expect(painter.effectiveBackgroundColor(cellData), isNull);
+  });
+
+  test('TerminalPainter uses geometry-based custom glyph painting', () {
+    final painter = TerminalPainter(
+      theme: TerminalThemes.defaultTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+
+    final fullBlock = CellData(
+      foreground: CellColor.rgb | 0x336699,
+      background: 0,
+      flags: 0,
+      content: 0x2588 | (1 << CellContent.widthShift),
+    );
+    final lowerHalf = CellData(
+      foreground: CellColor.rgb | 0x112233,
+      background: 0,
+      flags: 0,
+      content: 0x2584 | (1 << CellContent.widthShift),
+    );
+    final quadrant = CellData(
+      foreground: CellColor.rgb | 0xabcdef,
+      background: 0,
+      flags: 0,
+      content: 0x259A | (1 << CellContent.widthShift),
+    );
+    final lightShade = CellData(
+      foreground: CellColor.rgb | 0x778899,
+      background: 0,
+      flags: 0,
+      content: 0x2591 | (1 << CellContent.widthShift),
+    );
+    final powerlineSeparator = CellData(
+      foreground: CellColor.rgb | 0xff8800,
+      background: 0,
+      flags: 0,
+      content: 0xE0B0 | (1 << CellContent.widthShift),
+    );
+
+    final fullBlockPaint = painter.customGlyphPaint(fullBlock);
+    final lowerHalfPaint = painter.customGlyphPaint(lowerHalf);
+    final quadrantPaint = painter.customGlyphPaint(quadrant);
+    final lightShadePaint = painter.customGlyphPaint(lightShade);
+    final powerlinePaint = painter.customGlyphPaint(powerlineSeparator);
+
+    expect(fullBlockPaint, isNotNull);
+    expect(fullBlockPaint!.color, const Color(0xFF336699));
+    expect(
+      fullBlockPaint.glyph.type,
+      TerminalCustomGlyphType.solidOctantBlockVector,
+    );
+    expect(
+      fullBlockPaint.glyph.blocks.single,
+      const TerminalCustomGlyphBlock(x: 0, y: 0, w: 8, h: 8),
+    );
+
+    expect(lowerHalfPaint, isNotNull);
+    expect(
+      lowerHalfPaint!.glyph.blocks.single,
+      const TerminalCustomGlyphBlock(x: 0, y: 4, w: 8, h: 4),
+    );
+
+    expect(quadrantPaint, isNotNull);
+    expect(
+      quadrantPaint!.glyph.blocks,
+      const [
+        TerminalCustomGlyphBlock(x: 0, y: 0, w: 4, h: 4),
+        TerminalCustomGlyphBlock(x: 4, y: 4, w: 4, h: 4),
+      ],
+    );
+
+    expect(lightShadePaint, isNotNull);
+    expect(
+      lightShadePaint!.glyph.type,
+      TerminalCustomGlyphType.blockPattern,
+    );
+    expect(lightShadePaint.glyph.pattern, const [
+      [1, 0],
+      [0, 0],
+    ]);
+
+    expect(powerlinePaint, isNotNull);
+    expect(
+      powerlinePaint!.glyph.type,
+      TerminalCustomGlyphType.vectorShape,
+    );
+    expect(powerlinePaint.glyph.path, 'M0,0 L1,.5 L0,1');
+    expect(powerlinePaint.glyph.vectorType, TerminalCustomGlyphVectorType.fill);
+    expect(powerlinePaint.glyph.leftPadding, 0);
+    expect(powerlinePaint.glyph.rightPadding, 2);
+  });
+
+  test('TerminalCustomGlyphRasterizer ignores malformed vector instructions',
+      () {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final rasterizer = TerminalCustomGlyphRasterizer(
+      canvas: canvas,
+      offset: Offset.zero,
+      cellSize: const Size(16, 16),
+      color: const Color(0xFF336699),
+      fontSize: 14,
+      devicePixelRatio: 2,
+    );
+
+    expect(
+      () => rasterizer.paint(
+        const TerminalCustomGlyph.vectorShape(
+          path: 'M0,0 C1,0,1,1',
+          vectorType: TerminalCustomGlyphVectorType.fill,
+        ),
+      ),
+      returnsNormally,
+    );
+    expect(
+      () => rasterizer.paint(
+        const TerminalCustomGlyph.vectorShape(
+          path: 'M0,0 Q1,0,1',
+          vectorType: TerminalCustomGlyphVectorType.fill,
+        ),
+      ),
+      returnsNormally,
+    );
+    expect(
+      () => rasterizer.paint(
+        const TerminalCustomGlyph.vectorShape(
+          path: 'M0,0 H, V',
+          vectorType: TerminalCustomGlyphVectorType.fill,
+        ),
+      ),
+      returnsNormally,
+    );
+    expect(
+      () => rasterizer.paint(
+        const TerminalCustomGlyph.vectorShape(
+          path: 'M0,0 L1,1',
+          vectorType: TerminalCustomGlyphVectorType.fill,
+        ),
+      ),
+      returnsNormally,
+    );
+
+    recorder.endRecording();
+  });
+
+  test('TerminalPainter selected cells do not paint the original background',
+      () async {
+    const selectionColor = Color(0x802222FF);
+    final defaultTheme = TerminalThemes.defaultTheme;
+    final theme = TerminalTheme(
+      cursor: defaultTheme.cursor,
+      selectionCursor: defaultTheme.selectionCursor,
+      selection: selectionColor,
+      foreground: defaultTheme.foreground,
+      background: defaultTheme.background,
+      black: defaultTheme.black,
+      white: defaultTheme.white,
+      red: defaultTheme.red,
+      green: defaultTheme.green,
+      yellow: defaultTheme.yellow,
+      blue: defaultTheme.blue,
+      magenta: defaultTheme.magenta,
+      cyan: defaultTheme.cyan,
+      brightBlack: defaultTheme.brightBlack,
+      brightRed: defaultTheme.brightRed,
+      brightGreen: defaultTheme.brightGreen,
+      brightYellow: defaultTheme.brightYellow,
+      brightBlue: defaultTheme.brightBlue,
+      brightMagenta: defaultTheme.brightMagenta,
+      brightCyan: defaultTheme.brightCyan,
+      brightWhite: defaultTheme.brightWhite,
+      searchHitBackground: defaultTheme.searchHitBackground,
+      searchHitBackgroundCurrent: defaultTheme.searchHitBackgroundCurrent,
+      searchHitForeground: defaultTheme.searchHitForeground,
+    );
+    final painter = TerminalPainter(
+      theme: theme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+    final cellData = CellData(
+      foreground: CellColor.normal,
+      background: CellColor.rgb | 0x00FF0000,
+      flags: 0,
+      content: 1 << CellContent.widthShift,
+    );
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    painter.paintSelectedCell(canvas, Offset.zero, cellData);
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(
+      painter.cellSize.width.ceil(),
+      painter.cellSize.height.ceil(),
+    );
+    final byteData = await image.toByteData(
+      format: ui.ImageByteFormat.rawRgba,
+    );
+
+    expect(byteData, isNotNull);
+
+    final bytes = byteData!.buffer.asUint8List();
+    final width = painter.cellSize.width.ceil();
+    final height = painter.cellSize.height.ceil();
+    final centerX = width ~/ 2;
+    final centerY = height ~/ 2;
+    final pixelOffset = (centerY * width + centerX) * 4;
+    final pixelColor = Color.fromARGB(
+      bytes[pixelOffset + 3],
+      bytes[pixelOffset],
+      bytes[pixelOffset + 1],
+      bytes[pixelOffset + 2],
+    );
+
+    expect(pixelColor, selectionColor);
   });
 
   test('RenderTerminal exposes cursor visibility state for overlay', () {

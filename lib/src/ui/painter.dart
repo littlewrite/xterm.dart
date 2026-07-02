@@ -1,8 +1,8 @@
 import 'package:flutter/painting.dart';
 import 'package:flutter/foundation.dart';
-
 import 'package:flutter/rendering.dart';
 import 'package:xterm/src/ui/char_metrics.dart';
+import 'package:xterm/src/ui/custom_glyphs.dart';
 import 'package:xterm/src/ui/palette_builder.dart';
 import 'package:xterm/src/ui/paragraph_cache.dart';
 import 'package:xterm/xterm.dart';
@@ -13,9 +13,11 @@ class TerminalPainter {
     required TerminalTheme theme,
     required TerminalStyle textStyle,
     required TextScaler textScaler,
+    double devicePixelRatio = 1.0,
   })  : _textStyle = textStyle,
         _theme = theme,
-        _textScaler = textScaler;
+        _textScaler = textScaler,
+        _devicePixelRatio = devicePixelRatio;
 
   /// A lookup table from terminal colors to Flutter colors.
   late var _colorPalette = PaletteBuilder(_theme).build();
@@ -53,6 +55,13 @@ class TerminalPainter {
     _theme = value;
     _colorPalette = PaletteBuilder(value).build();
     _paragraphCache.clear();
+  }
+
+  double get devicePixelRatio => _devicePixelRatio;
+  double _devicePixelRatio;
+  set devicePixelRatio(double value) {
+    if (value == _devicePixelRatio) return;
+    _devicePixelRatio = value;
   }
 
   Size _measureCharSize() {
@@ -146,6 +155,34 @@ class TerminalPainter {
   /// Paints [line] to [canvas] at [offset]. The x offset of [offset] is usually
   /// 0, and the y offset is the top of the line.
   void paintLine(Canvas canvas, Offset offset, BufferLine line) {
+    _paintLineCells(canvas, offset, line);
+  }
+
+  void paintLineBackgrounds(Canvas canvas, Offset offset, BufferLine line) {
+    _paintLineCells(
+      canvas,
+      offset,
+      line,
+      paintForeground: false,
+    );
+  }
+
+  void paintLineForegrounds(Canvas canvas, Offset offset, BufferLine line) {
+    _paintLineCells(
+      canvas,
+      offset,
+      line,
+      paintBackground: false,
+    );
+  }
+
+  void _paintLineCells(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line, {
+    bool paintBackground = true,
+    bool paintForeground = true,
+  }) {
     final cellData = CellData.empty();
     final cellWidth = _cellSize.width;
 
@@ -155,7 +192,12 @@ class TerminalPainter {
       final charWidth = cellData.content >> CellContent.widthShift;
       final cellOffset = offset.translate(i * cellWidth, 0);
 
-      paintCell(canvas, cellOffset, cellData);
+      if (paintBackground) {
+        paintCellBackground(canvas, cellOffset, cellData);
+      }
+      if (paintForeground) {
+        paintCellForeground(canvas, cellOffset, cellData);
+      }
 
       if (charWidth == 2) {
         i++;
@@ -190,6 +232,19 @@ class TerminalPainter {
   ) {
     final charCode = cellData.content & CellContent.codepointMask;
     if (charCode == 0) return;
+
+    final glyphPaint = customGlyphPaint(cellData);
+    if (glyphPaint != null) {
+      TerminalCustomGlyphRasterizer(
+        canvas: canvas,
+        offset: offset,
+        cellSize: _cellSize,
+        color: glyphPaint.color,
+        fontSize: _textScaler.scale(_textStyle.fontSize),
+        devicePixelRatio: _devicePixelRatio,
+      ).paint(glyphPaint.glyph);
+      return;
+    }
 
     final cacheKey = cellData.getHash() ^ _textScaler.hashCode;
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
@@ -230,6 +285,29 @@ class TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
+  }
+
+  @visibleForTesting
+  ({Color color, TerminalCustomGlyph glyph})? customGlyphPaint(
+    CellData cellData,
+  ) {
+    if (cellData.flags & CellFlags.invisible != 0) {
+      return null;
+    }
+
+    final glyph = TerminalCustomGlyphs.forCodePoint(
+      cellData.content & CellContent.codepointMask,
+    );
+    if (glyph == null) {
+      return null;
+    }
+
+    var color = effectiveForegroundColor(cellData);
+    if (cellData.flags & CellFlags.faint != 0) {
+      color = color.withOpacity(0.5);
+    }
+
+    return (color: color, glyph: glyph);
   }
 
   @visibleForTesting

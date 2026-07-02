@@ -75,8 +75,8 @@ class MockRepl {
   final void Function(String data) onOutput;
 
   void write(String input) {
-    for (var char in input.codeUnits) {
-      switch (char) {
+    for (final rune in input.runes) {
+      switch (rune) {
         case 13: // carriage return
           onOutput.call('\r\n');
           onOutput.call('\$ ');
@@ -85,7 +85,7 @@ class MockRepl {
           onOutput.call('\b \b');
           break;
         default:
-          onOutput.call(String.fromCharCode(char));
+          onOutput.call(String.fromCharCode(rune));
       }
     }
   }

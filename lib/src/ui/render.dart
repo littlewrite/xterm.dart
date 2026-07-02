@@ -40,6 +40,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     required bool cursorBlinkEnabled,
     required bool cursorBlinkVisible,
     required bool alwaysShowCursor,
+    double devicePixelRatio = 1.0,
     bool paintCursor = true,
     bool paintSelectionHandles = true,
     EditableRectCallback? onEditableRect,
@@ -63,6 +64,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
           theme: theme,
           textStyle: textStyle,
           textScaler: textScaler,
+          devicePixelRatio: devicePixelRatio,
         ) {
     _syncTerminalGeometryCache();
   }
@@ -124,6 +126,12 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   set theme(TerminalTheme value) {
     if (value == _painter.theme) return;
     _painter.theme = value;
+    markNeedsPaint();
+  }
+
+  set devicePixelRatio(double value) {
+    if (value == _painter.devicePixelRatio) return;
+    _painter.devicePixelRatio = value;
     markNeedsPaint();
   }
 
@@ -735,15 +743,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final startColumn = _selectedStartColumn(selection, lineIndex);
     final endColumn = _selectedEndColumn(selection, lineIndex);
 
-    if (endColumn > startColumn) {
-      _painter.paintHighlight(
-        canvas,
-        offset.translate(startColumn * cellWidth, 0),
-        endColumn - startColumn,
-        _painter.theme.selection,
-      );
-    }
-
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
 
@@ -752,7 +751,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       final isSelected = i >= startColumn && i < endColumn;
 
       if (isSelected) {
-        _painter.paintCellForeground(canvas, cellOffset, cellData);
+        _painter.paintSelectedCell(canvas, cellOffset, cellData);
       } else {
         _painter.paintCell(canvas, cellOffset, cellData);
       }
