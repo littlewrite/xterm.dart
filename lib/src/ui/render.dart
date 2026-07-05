@@ -141,13 +141,18 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     _composingCacheText = null;
   }
 
-  // [调试] 上一帧 paint 走的路径：0=全画, 1=滚动复用, 2=增量。
+  // [调试] 上一帧 paint 走的路径：0=全画, 1=滚动复用, 2=增量, 3=零成本滚动。
   // 仅用于 benchmark/测试观察，正式版可删。
   int dbgLastPaintMode = -1;
 
   // [调试] 上一帧 paint 实际重画的行索引集合（全画=所有可见行，
   // 增量/scroll=dirty+新露出）。测试用，验证新内容行确实被画。
   Set<int>? dbgLastPaintedLines;
+
+  // 零成本滚动路径专用：本次 paint 时，缓存 Picture 相对当前视口需要的 y 偏移。
+  // > 0 表示缓存内容需上移这么多像素（视口下移了）；画缓存 Picture 前要 translate。
+  // 仅在走 zeroCostScroll 路径时有效，其他路径为 0。
+  double _scrollTranslateDy = 0;
 
   void _invalidateContentCache() {
     if (TerminalPaintDebug.enabled) {
@@ -813,12 +818,44 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // 纯滚动：可见行数不变、size 不变、只是整体平移 lineDelta 行。
     // lineDelta > 0：视口下移（看更新的内容），屏幕内容上移，底部露新行。
     // lineDelta < 0：视口上移（看历史），屏幕内容下移，顶部露新行。
+    // 纯滚动：size 不变、只是整体平移 lineDelta 行。
+    // 注意：picRows 和 curRows 可能差 ±1——平滑滚动（触控板）下 scrollOff 是
+    // 分数，charHeight 也常是分数（如 15.53），effectFirstLine/LastLine 因
+    // ~/charHeight 取整会在边界抖动，使 curRows 在 N 和 N±1 之间跳。若严格
+    // 要求 picRows==curRows，这种抖动会让 isPureScroll 反复失败 → 每滚一步
+    // 全画整屏。这里容忍 |picRows-curRows|<=1，多/少的那行在 scroll 路径里
+    // 当作 exposed 单独重画。
+    final rowsDelta = (picRows - curRows).abs();
     final isPureScroll = _contentPicture != null &&
         !sizeChanged &&
-        picRows == curRows &&
+        rowsDelta <= 1 &&
         picRows > 0 &&
         lineDelta != 0 &&
         lineDelta.abs() < picRows;
+    // 零成本滚动：纯滚动且无 dirty、无 selection 叠加时，不需要录新 Picture。
+    // 旧缓存 Picture 仍有效（其内容 + translate 偏移即可呈现新视口），
+    // 新露出的行直接画到 canvas。这避免了"每帧录新 Picture + drawPicture 旧
+    // Picture"的嵌套开销——持续追加新行（如按住回车、tail -f）场景的 CPU 主因。
+    final zeroCostScroll = isPureScroll &&
+        !dirty.allDirty &&
+        dirty.lines.isEmpty &&
+        !hasOverlay;
+    if (TerminalPaintDebug.enabled &&
+        !isPureScroll &&
+        lineDelta != 0 &&
+        _contentPicture != null &&
+        !hasOverlay) {
+      // 滚动本应走 scroll 复用，却走了全画——打印为什么 isPureScroll 失败。
+      TerminalPaintDebug.log(
+          '    isPureScroll=false despite scroll: '
+          'picFirst=$_picFirstLine picLast=$_picLastLine '
+          'effFirst=$effectFirstLine effLast=$effectLastLine '
+          'picRows=$picRows curRows=$curRows '
+          'rowsEqual=${picRows == curRows} '
+          'lineDelta=$lineDelta '
+          'deltaLtRows=${lineDelta.abs() < picRows} '
+          'sizeChanged=$sizeChanged');
+    }
 
     final viewportChanged = _picScrollOffset != _scrollOffset ||
         _picSize != size ||
@@ -848,6 +885,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     if (fullRepaint) {
       dbgLastPaintMode = 0;
+      _scrollTranslateDy = 0;
       _contentPicture = _recordContentPicture(
         offset: offset,
         lines: lines,
@@ -865,36 +903,65 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       _picLastLine = effectLastLine;
       _picLineCount = lines.length;
     } else if (isPureScroll) {
-      dbgLastPaintMode = 1;
       // 滚动复用：把旧 Picture 整体平移，只重画 dirty 行 + 新露出的行。
+      // exposed 这里是粗略值（用于日志/测试），_recordScrollPicture 内部
+      // 有更精确（含行数抖动兜底）的计算。
       final exposed = <int>{};
       if (lineDelta > 0) {
         for (var i = effectLastLine - lineDelta + 1; i <= effectLastLine; i++) {
-          exposed.add(i);
+          if (i >= 0) exposed.add(i);
         }
       } else if (lineDelta < 0) {
         final n = -lineDelta;
         for (var i = effectFirstLine; i < effectFirstLine + n; i++) {
-          exposed.add(i);
+          if (i >= 0) exposed.add(i);
         }
       }
-      _contentPicture = _recordScrollPicture(
-        offset: offset,
-        lines: lines,
-        effectFirstLine: effectFirstLine,
-        effectLastLine: effectLastLine,
-        charHeight: charHeight,
-        cellWidth: cellWidth,
-        lineDelta: lineDelta,
-        dirtyLines: dirty.lines,
-      );
-      dbgLastPaintedLines = {...exposed, ...dirty.lines};
-      _picScrollOffset = _scrollOffset;
-      _picFirstLine = effectFirstLine;
-      _picLastLine = effectLastLine;
-      _picLineCount = lines.length;
+
+      if (zeroCostScroll) {
+        // 零成本滚动：不录新 Picture。缓存 Picture 内容不变，画时用 translate
+        // 补偿 scrollOffset 差。新露出的行直接画到主 canvas（不进缓存）。
+        // 缓存基准视口字段（_picFirstLine/ScrollOffset）保持不变，这样下次
+        // paint 仍能用同一缓存 + 新 translate。
+        dbgLastPaintMode = 3;
+        // 缓存 Picture 是按 _picScrollOffset 录的。当前视口 scrollOffset 是
+        // _scrollOffset。要把缓存内容对齐到当前视口，需 translate：
+        //   y = _picScrollOffset - _scrollOffset（缓存基准相对当前的偏移）
+        _scrollTranslateDy = _picScrollOffset - _scrollOffset;
+        dbgLastPaintedLines = {...exposed};
+        TerminalPaintDebug.log(
+            '    zero-cost scroll: lineDelta=$lineDelta '
+            'exposed=${exposed.length} translateDy=$_scrollTranslateDy '
+            '(no Picture rebuild)');
+        // 注意：不更新 _picFirstLine/_picScrollOffset/_picLastLine/_picLineCount
+        // ——它们继续指向缓存 Picture 的基准视口。
+      } else {
+        dbgLastPaintMode = 1;
+        _scrollTranslateDy = 0;
+        final beforeBytes = _contentPicture?.approximateBytesUsed ?? 0;
+        _contentPicture = _recordScrollPicture(
+          offset: offset,
+          lines: lines,
+          effectFirstLine: effectFirstLine,
+          effectLastLine: effectLastLine,
+          charHeight: charHeight,
+          cellWidth: cellWidth,
+          lineDelta: lineDelta,
+          dirtyLines: dirty.lines,
+        );
+        final afterBytes = _contentPicture?.approximateBytesUsed ?? 0;
+        TerminalPaintDebug.log(
+            '    scroll-recording bytes: $beforeBytes → $afterBytes '
+            '(delta=${afterBytes - beforeBytes})');
+        dbgLastPaintedLines = {...exposed, ...dirty.lines};
+        _picScrollOffset = _scrollOffset;
+        _picFirstLine = effectFirstLine;
+        _picLastLine = effectLastLine;
+        _picLineCount = lines.length;
+      }
     } else {
       dbgLastPaintMode = 2;
+      _scrollTranslateDy = 0;
       // 增量：在旧 Picture 之上覆盖重画脏行。
       _contentPicture = _recordIncrementalPicture(
         offset: offset,
@@ -917,8 +984,31 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // paint 成功，清 dirty。
     _terminal.buffer.clearDirty();
 
-    // 把整屏内容画到真实 canvas。
-    canvas.drawPicture(_contentPicture!);
+    if (dbgLastPaintMode == 3) {
+      // 零成本滚动：translate + drawPicture(缓存)，再在 canvas 画 exposed 行。
+      canvas.save();
+      canvas.translate(0, _scrollTranslateDy);
+      canvas.drawPicture(_contentPicture!);
+      canvas.restore();
+
+      // exposed 行画到 canvas（缓存 Picture 不含这些行）。
+      // 注意 _contentPicture 在 mode=3 没被替换，仍是基准视口的 Picture，
+      // 所以这里用 effectFirstLine/Last（当前视口）画新露出的行。
+      final bgPaint = Paint()..color = _painter.theme.background;
+      final exposed = dbgLastPaintedLines ?? const <int>{};
+      for (final i in exposed) {
+        if (i < effectFirstLine || i > effectLastLine) continue;
+        final lineTop = (i * charHeight + _lineOffset).truncateToDouble();
+        canvas.drawRect(
+          Offset(0, lineTop) & Size(size.width, charHeight),
+          bgPaint,
+        );
+        _painter.paintLine(canvas, offset.translate(0, lineTop), lines[i]);
+      }
+    } else {
+      // 把整屏内容画到真实 canvas。
+      canvas.drawPicture(_contentPicture!);
+    }
 
     // 叠加层（不进缓存，每帧画）。
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
@@ -1030,17 +1120,28 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     // 3. 计算新露出的行（平移后没有内容的区域）。
     final exposedLines = <int>{};
-    if (lineDelta > 0) {
-      // 内容上移，底部露出新行。
-      for (var i = effectLastLine - lineDelta + 1; i <= effectLastLine; i++) {
-        exposedLines.add(i);
+    void markIfInViewport(int lineIdx) {
+      if (lineIdx >= effectFirstLine && lineIdx <= effectLastLine) {
+        exposedLines.add(lineIdx);
       }
+    }
+
+    if (lineDelta > 0) {
+      // 内容上移，底部露出 lineDelta 行。
+      for (var i = effectLastLine - lineDelta + 1; i <= effectLastLine; i++) {
+        markIfInViewport(i);
+      }
+      // 行数抖动兜底：curRows 与 picRows 可能差 ±1（平滑滚动取整抖动），
+      // 多出来的边缘行不在上面 lineDelta 范围里，补画新视口末行。
+      markIfInViewport(effectLastLine);
     } else if (lineDelta < 0) {
-      // 内容下移，顶部露出新行。
+      // 内容下移，顶部露出 |lineDelta| 行。
       final n = -lineDelta;
       for (var i = effectFirstLine; i < effectFirstLine + n; i++) {
-        exposedLines.add(i);
+        markIfInViewport(i);
       }
+      // 行数抖动兜底：补画新视口首行。
+      markIfInViewport(effectFirstLine);
     }
 
     // 4. 重画"新露出的行" + "dirty 行"（去重）。

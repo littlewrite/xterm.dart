@@ -1,3 +1,4 @@
+import 'package:collection/collection.dart';
 import 'package:flutter/widgets.dart';
 
 const _kDefaultFontSize = 13.0;
@@ -110,4 +111,27 @@ class TerminalStyle {
       letterSpacing: letterSpacing ?? this.letterSpacing,
     );
   }
+
+  /// 值相等。重要：RenderTerminal.textStyle setter 用相等检查决定是否清空
+  /// 整个内容 Picture 缓存。若不做值相等，上层每次 rebuild 用 copyWith 生成
+  /// 的新实例（内容相同）会被判不等，导致缓存反复被清，下一帧被迫全屏重画。
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is TerminalStyle &&
+        other.fontSize == fontSize &&
+        other.height == height &&
+        other.fontFamily == fontFamily &&
+        other.letterSpacing == letterSpacing &&
+        const ListEquality<String>().equals(other.fontFamilyFallback, fontFamilyFallback);
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        fontSize,
+        height,
+        fontFamily,
+        letterSpacing,
+        Object.hashAll(fontFamilyFallback),
+      );
 }
