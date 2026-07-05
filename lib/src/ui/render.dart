@@ -174,6 +174,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     _picLastLine = -1;
     _picScrollOffset = double.nan;
     _picSize = Size.zero;
+    // 缓存失效：累积的"自缓存 dirty"也一并清空（无缓存时本集合无意义）。
+    _dirtySinceCache.clear();
   }
 
   set devicePixelRatio(double value) {
@@ -295,6 +297,17 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   // 缓存对应的可见行范围 [firstLine, lastLine]（相对索引）。
   int _picFirstLine = -1;
   int _picLastLine = -1;
+
+  // 自缓存 Picture 录制以来，缓冲区内容已变、但缓存里仍是旧内容的行（相对索引）。
+  //
+  // 为什么需要它：mode=2（原地编辑、不平移）每帧都 drawPicture(缓存) 当底——
+  // 缓存里画的是录制时的旧内容。若只重画"本帧 dirty"，上一帧画过的 delta 行
+  // 会被缓存里的旧内容擦掉，表现为"内容逐帧从上往下消失"（用户反馈：光换行、
+  // 之前的内容没了）。所以 mode=2 必须把"自缓存以来所有编辑过的行"都重画。
+  //
+  // mode=1/3（滚动）走 translate 复用——旧行内容不变、整体平移，缓存的旧内容
+  // 平移后仍正确，故不需要这个集合（且要求它为空才允许走滚动，否则提升全画）。
+  final Set<int> _dirtySinceCache = {};
 
   var _stickToBottom = true;
   bool _editableRectUpdateScheduled = false;
@@ -794,7 +807,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     final lines = _terminal.buffer.lines;
     final charHeight = _painter.cellSize.height;
-    final cellWidth = _painter.cellSize.width;
 
     final firstLineOffset = _scrollOffset - _padding.top;
     final lastLineOffset = _scrollOffset + size.height + _padding.bottom;
@@ -809,15 +821,16 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     // 取 dirty（不清空，paint 成功后再清）。
     final dirty = _terminal.buffer.takeDirtyLines();
+    // ignore: avoid_print
+    if (const bool.fromEnvironment('xterm.debug.dirty')) {
+      print('[xterm-dirty] allDirty=${dirty.allDirty} lines=${dirty.lines}');
+    }
 
     // 视口变化判定。
     final sizeChanged = _picSize != size;
     final lineDelta = effectFirstLine - _picFirstLine;
     final picRows = _picLastLine - _picFirstLine;
     final curRows = effectLastLine - effectFirstLine;
-    // 纯滚动：可见行数不变、size 不变、只是整体平移 lineDelta 行。
-    // lineDelta > 0：视口下移（看更新的内容），屏幕内容上移，底部露新行。
-    // lineDelta < 0：视口上移（看历史），屏幕内容下移，顶部露新行。
     // 纯滚动：size 不变、只是整体平移 lineDelta 行。
     // 注意：picRows 和 curRows 可能差 ±1——平滑滚动（触控板）下 scrollOff 是
     // 分数，charHeight 也常是分数（如 15.53），effectFirstLine/LastLine 因
@@ -826,20 +839,17 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // 全画整屏。这里容忍 |picRows-curRows|<=1，多/少的那行在 scroll 路径里
     // 当作 exposed 单独重画。
     final rowsDelta = (picRows - curRows).abs();
+    // 注意：滚动复用要求 _dirtySinceCache 为空——缓存 Picture 只是整体平移，
+    // 它画的是"录制时的旧行内容"，原地编辑过的行平移后仍是旧的。若已有
+    // 自缓存以来的编辑未消化，必须走全画（或等 mode=2 先消化）。
+    final hasStaleEdits = _dirtySinceCache.isNotEmpty;
     final isPureScroll = _contentPicture != null &&
         !sizeChanged &&
         rowsDelta <= 1 &&
         picRows > 0 &&
         lineDelta != 0 &&
-        lineDelta.abs() < picRows;
-    // 零成本滚动：纯滚动且无 dirty、无 selection 叠加时，不需要录新 Picture。
-    // 旧缓存 Picture 仍有效（其内容 + translate 偏移即可呈现新视口），
-    // 新露出的行直接画到 canvas。这避免了"每帧录新 Picture + drawPicture 旧
-    // Picture"的嵌套开销——持续追加新行（如按住回车、tail -f）场景的 CPU 主因。
-    final zeroCostScroll = isPureScroll &&
-        !dirty.allDirty &&
-        dirty.lines.isEmpty &&
-        !hasOverlay;
+        lineDelta.abs() < picRows &&
+        !hasStaleEdits;
     if (TerminalPaintDebug.enabled &&
         !isPureScroll &&
         lineDelta != 0 &&
@@ -883,7 +893,19 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
           'lineCount=${_picLineCount != lines.length})');
     }
 
-    if (fullRepaint) {
+    // 缓存 Picture 的"有效半径"：当前视口相对缓存基准视口偏移超过这个值，
+    // 缓存内容已大部分不在视口内，强制全画重建。设为半屏行数。
+    final maxTranslateRows = picRows > 0 ? picRows ~/ 2 : 10;
+    final cacheDrift = (_picScrollOffset - _scrollOffset).abs() / charHeight;
+    final cacheTooFar = _contentPicture != null && cacheDrift > maxTranslateRows;
+
+    // mode=2（原地编辑、不平移）每帧以缓存 Picture 当底。缓存是录制时的旧内容，
+    // 所以"自缓存以来编辑过的行"(_dirtySinceCache) 每帧都要重画，否则上一帧画
+    // 的 delta 会被缓存里的旧内容擦掉。但累积的 stale 行越多，每帧重画成本越高；
+    // 超过半屏时不如直接全画重建缓存（同时清空 stale 集合）。
+    final staleTooMany = _dirtySinceCache.length > maxTranslateRows;
+
+    if (fullRepaint || cacheTooFar || staleTooMany) {
       dbgLastPaintMode = 0;
       _scrollTranslateDy = 0;
       _contentPicture = _recordContentPicture(
@@ -902,10 +924,20 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       _picFirstLine = effectFirstLine;
       _picLastLine = effectLastLine;
       _picLineCount = lines.length;
+      // 缓存重建为最新内容——累积的 stale 行已反映在缓存里，清空。
+      final staleCount = _dirtySinceCache.length;
+      _dirtySinceCache.clear();
+      if (cacheTooFar) {
+        TerminalPaintDebug.log(
+            '    cache reset (drift=${cacheDrift.toStringAsFixed(1)} rows '
+            '> $maxTranslateRows)');
+      } else if (staleTooMany) {
+        TerminalPaintDebug.log(
+            '    cache reset (stale=$staleCount > $maxTranslateRows)');
+      }
     } else if (isPureScroll) {
-      // 滚动复用：把旧 Picture 整体平移，只重画 dirty 行 + 新露出的行。
-      // exposed 这里是粗略值（用于日志/测试），_recordScrollPicture 内部
-      // 有更精确（含行数抖动兜底）的计算。
+      // 滚动：缓存 Picture + translate 复用，exposed 行 + dirty 行画到 canvas。
+      // 不录新 Picture，避免嵌套 drawPicture 导致缓存字节量滚雪球式增长。
       final exposed = <int>{};
       if (lineDelta > 0) {
         for (var i = effectLastLine - lineDelta + 1; i <= effectLastLine; i++) {
@@ -917,62 +949,39 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
           if (i >= 0) exposed.add(i);
         }
       }
-
-      if (zeroCostScroll) {
-        // 零成本滚动：不录新 Picture。缓存 Picture 内容不变，画时用 translate
-        // 补偿 scrollOffset 差。新露出的行直接画到主 canvas（不进缓存）。
-        // 缓存基准视口字段（_picFirstLine/ScrollOffset）保持不变，这样下次
-        // paint 仍能用同一缓存 + 新 translate。
-        dbgLastPaintMode = 3;
-        // 缓存 Picture 是按 _picScrollOffset 录的。当前视口 scrollOffset 是
-        // _scrollOffset。要把缓存内容对齐到当前视口，需 translate：
-        //   y = _picScrollOffset - _scrollOffset（缓存基准相对当前的偏移）
-        _scrollTranslateDy = _picScrollOffset - _scrollOffset;
-        dbgLastPaintedLines = {...exposed};
-        TerminalPaintDebug.log(
-            '    zero-cost scroll: lineDelta=$lineDelta '
-            'exposed=${exposed.length} translateDy=$_scrollTranslateDy '
-            '(no Picture rebuild)');
-        // 注意：不更新 _picFirstLine/_picScrollOffset/_picLastLine/_picLineCount
-        // ——它们继续指向缓存 Picture 的基准视口。
-      } else {
-        dbgLastPaintMode = 1;
-        _scrollTranslateDy = 0;
-        final beforeBytes = _contentPicture?.approximateBytesUsed ?? 0;
-        _contentPicture = _recordScrollPicture(
-          offset: offset,
-          lines: lines,
-          effectFirstLine: effectFirstLine,
-          effectLastLine: effectLastLine,
-          charHeight: charHeight,
-          cellWidth: cellWidth,
-          lineDelta: lineDelta,
-          dirtyLines: dirty.lines,
-        );
-        final afterBytes = _contentPicture?.approximateBytesUsed ?? 0;
-        TerminalPaintDebug.log(
-            '    scroll-recording bytes: $beforeBytes → $afterBytes '
-            '(delta=${afterBytes - beforeBytes})');
-        dbgLastPaintedLines = {...exposed, ...dirty.lines};
-        _picScrollOffset = _scrollOffset;
-        _picFirstLine = effectFirstLine;
-        _picLastLine = effectLastLine;
-        _picLineCount = lines.length;
-      }
+      // 是否纯滚动无 dirty（零成本）；否则 dirty 行也要画到 canvas。
+      final zeroCost = dirty.lines.isEmpty && !hasOverlay;
+      dbgLastPaintMode = zeroCost ? 3 : 1;
+      _scrollTranslateDy = _picScrollOffset - _scrollOffset;
+      dbgLastPaintedLines = {...exposed, ...dirty.lines};
+      TerminalPaintDebug.log(
+          '    scroll ${zeroCost ? "(zero-cost)" : "(with dirty)"}: '
+          'lineDelta=$lineDelta exposed=${exposed.length} '
+          'dirty=${dirty.lines.length} translateDy=${_scrollTranslateDy.toStringAsFixed(1)} '
+          '(no Picture rebuild)');
+      // 缓存基准视口字段不变——继续复用同一缓存。
     } else {
+      // 增量（原地编辑、不平移）：缓存 Picture 当底 + 本帧 dirty 行画到 canvas。
+      // 不录新 Picture，避免字节量膨胀。
+      //
+      // 关键：缓存是"录制时的旧内容"，本帧 drawPicture(缓存) 会把上一帧画过的
+      // delta 行擦回旧内容。所以这里要重画"自缓存以来所有编辑过的行"
+      // (_dirtySinceCache ∩ 视口)，而不只是本帧 dirty——否则内容会逐帧消失
+      // （用户反馈：光换行、之前内容没了）。本帧 dirty 同时加入 stale 集合，
+      // 供后续帧补画；累积超半屏则提升全画（见上 staleTooMany）。
+      final staleInView = _dirtySinceCache
+          .where((i) => i >= effectFirstLine && i <= effectLastLine)
+          .toSet();
+      final toPaint = {...dirty.lines, ...staleInView};
+      _dirtySinceCache.addAll(dirty.lines);
       dbgLastPaintMode = 2;
-      _scrollTranslateDy = 0;
-      // 增量：在旧 Picture 之上覆盖重画脏行。
-      _contentPicture = _recordIncrementalPicture(
-        offset: offset,
-        lines: lines,
-        effectFirstLine: effectFirstLine,
-        effectLastLine: effectLastLine,
-        charHeight: charHeight,
-        cellWidth: cellWidth,
-        dirtyLines: dirty.lines,
-      );
-      dbgLastPaintedLines = {...dirty.lines};
+      _scrollTranslateDy = _picScrollOffset - _scrollOffset;
+      dbgLastPaintedLines = toPaint;
+      TerminalPaintDebug.log(
+          '    incremental: dirty=${dirty.lines.length} '
+          'stale=${staleInView.length} '
+          'translateDy=${_scrollTranslateDy.toStringAsFixed(1)} '
+          '(no Picture rebuild)');
     }
 
     TerminalPaintDebug.log(
@@ -984,30 +993,33 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // paint 成功，清 dirty。
     _terminal.buffer.clearDirty();
 
-    if (dbgLastPaintMode == 3) {
-      // 零成本滚动：translate + drawPicture(缓存)，再在 canvas 画 exposed 行。
+    if (dbgLastPaintMode == 0) {
+      // 全画：直接画缓存 Picture（无 translate）。
+      canvas.drawPicture(_contentPicture!);
+    } else {
+      // mode 1/2/3：translate + drawPicture(缓存)，再在 canvas 画 delta 行。
+      // 不录新 Picture，避免缓存字节量滚雪球膨胀。
       canvas.save();
-      canvas.translate(0, _scrollTranslateDy);
+      if (_scrollTranslateDy != 0) {
+        canvas.translate(0, _scrollTranslateDy);
+      }
       canvas.drawPicture(_contentPicture!);
       canvas.restore();
 
-      // exposed 行画到 canvas（缓存 Picture 不含这些行）。
-      // 注意 _contentPicture 在 mode=3 没被替换，仍是基准视口的 Picture，
-      // 所以这里用 effectFirstLine/Last（当前视口）画新露出的行。
-      final bgPaint = Paint()..color = _painter.theme.background;
-      final exposed = dbgLastPaintedLines ?? const <int>{};
-      for (final i in exposed) {
-        if (i < effectFirstLine || i > effectLastLine) continue;
-        final lineTop = (i * charHeight + _lineOffset).truncateToDouble();
-        canvas.drawRect(
-          Offset(0, lineTop) & Size(size.width, charHeight),
-          bgPaint,
-        );
-        _painter.paintLine(canvas, offset.translate(0, lineTop), lines[i]);
+      // delta 行（exposed + dirty）画到 canvas，覆盖在缓存内容之上。
+      final delta = dbgLastPaintedLines ?? const <int>{};
+      if (delta.isNotEmpty) {
+        final bgPaint = Paint()..color = _painter.theme.background;
+        for (final i in delta) {
+          if (i < effectFirstLine || i > effectLastLine) continue;
+          final lineTop = (i * charHeight + _lineOffset).truncateToDouble();
+          canvas.drawRect(
+            Offset(0, lineTop) & Size(size.width, charHeight),
+            bgPaint,
+          );
+          _painter.paintLine(canvas, offset.translate(0, lineTop), lines[i]);
+        }
       }
-    } else {
-      // 把整屏内容画到真实 canvas。
-      canvas.drawPicture(_contentPicture!);
     }
 
     // 叠加层（不进缓存，每帧画）。
@@ -1077,119 +1089,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         selection,
         cellData,
       );
-    }
-
-    return recorder.endRecording();
-  }
-
-  /// 录制滚动复用 Picture：把旧 Picture 整体平移 lineDelta 行，
-  /// 再用背景色覆盖并重画"新露出的行"和"dirty 行"。
-  ///
-  /// lineDelta > 0：视口下移（内容上移），底部露出 lineDelta 个新行。
-  /// lineDelta < 0：视口上移（内容下移），顶部露出 |lineDelta| 个新行。
-  Picture _recordScrollPicture({
-    required Offset offset,
-    required IndexAwareCircularBuffer<BufferLine> lines,
-    required int effectFirstLine,
-    required int effectLastLine,
-    required double charHeight,
-    required double cellWidth,
-    required int lineDelta,
-    required Set<int> dirtyLines,
-  }) {
-    final recorder = PictureRecorder();
-    final canvas = Canvas(recorder);
-
-    // 1. 先铺整屏背景（平移后可能露出的区域 + 平移产生的空隙都要背景）。
-    final bgPaint = Paint()..color = _painter.theme.background;
-    final bgTop =
-        (effectFirstLine * charHeight + _lineOffset).truncateToDouble();
-    final bgBottom =
-        ((effectLastLine + 1) * charHeight + _lineOffset).truncateToDouble();
-    canvas.drawRect(
-      Offset(0, bgTop) & Size(size.width, bgBottom - bgTop),
-      bgPaint,
-    );
-
-    // 2. clip 到可见区域，平移后 drawPicture 旧内容。
-    canvas.save();
-    canvas.clipRect(Offset(0, bgTop) & Size(size.width, bgBottom - bgTop));
-    canvas.translate(0, -lineDelta * charHeight);
-    canvas.drawPicture(_contentPicture!);
-    canvas.restore();
-
-    // 3. 计算新露出的行（平移后没有内容的区域）。
-    final exposedLines = <int>{};
-    void markIfInViewport(int lineIdx) {
-      if (lineIdx >= effectFirstLine && lineIdx <= effectLastLine) {
-        exposedLines.add(lineIdx);
-      }
-    }
-
-    if (lineDelta > 0) {
-      // 内容上移，底部露出 lineDelta 行。
-      for (var i = effectLastLine - lineDelta + 1; i <= effectLastLine; i++) {
-        markIfInViewport(i);
-      }
-      // 行数抖动兜底：curRows 与 picRows 可能差 ±1（平滑滚动取整抖动），
-      // 多出来的边缘行不在上面 lineDelta 范围里，补画新视口末行。
-      markIfInViewport(effectLastLine);
-    } else if (lineDelta < 0) {
-      // 内容下移，顶部露出 |lineDelta| 行。
-      final n = -lineDelta;
-      for (var i = effectFirstLine; i < effectFirstLine + n; i++) {
-        markIfInViewport(i);
-      }
-      // 行数抖动兜底：补画新视口首行。
-      markIfInViewport(effectFirstLine);
-    }
-
-    // 4. 重画"新露出的行" + "dirty 行"（去重）。
-    final linesToRedraw = {...exposedLines, ...dirtyLines};
-    for (final i in linesToRedraw) {
-      if (i < effectFirstLine || i > effectLastLine) continue;
-      final lineTop = (i * charHeight + _lineOffset).truncateToDouble();
-      // 覆盖该行背景（平移后的旧内容若落在这里也会被擦掉，确保干净）。
-      canvas.drawRect(
-        Offset(0, lineTop) & Size(size.width, charHeight),
-        bgPaint,
-      );
-      final lineOffset = offset.translate(0, lineTop);
-      _painter.paintLine(canvas, lineOffset, lines[i]);
-    }
-
-    return recorder.endRecording();
-  }
-  Picture _recordIncrementalPicture({
-    required Offset offset,
-    required IndexAwareCircularBuffer<BufferLine> lines,
-    required int effectFirstLine,
-    required int effectLastLine,
-    required double charHeight,
-    required double cellWidth,
-    required Set<int> dirtyLines,
-  }) {
-    final recorder = PictureRecorder();
-    final canvas = Canvas(recorder);
-
-    // 1. 重现上一帧整屏内容。
-    canvas.drawPicture(_contentPicture!);
-
-    // 2. 对每个在视口内的脏行：用背景色覆盖该行区域，然后重新 paintLine。
-    final bgPaint = Paint()..color = _painter.theme.background;
-    for (final i in dirtyLines) {
-      if (i < effectFirstLine || i > effectLastLine) continue;
-      final lineTop = (i * charHeight + _lineOffset).truncateToDouble();
-      // 覆盖该行（含 padding 影响下的整宽）。
-      canvas.drawRect(
-        Offset(0, lineTop) & Size(size.width, charHeight),
-        bgPaint,
-      );
-      final lineOffset =
-          offset.translate(0, lineTop);
-      // 增量路径下 selection 强制全画（hasOverlay 时不会走到这里），
-      // 所以这里只走普通 paintLine。
-      _painter.paintLine(canvas, lineOffset, lines[i]);
     }
 
     return recorder.endRecording();
