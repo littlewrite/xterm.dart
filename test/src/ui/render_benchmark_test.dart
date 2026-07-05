@@ -162,11 +162,16 @@ void main() {
       // 模拟 tail -f / ls 大目录：连续带换行的行输出，视口跟随到底部。
       // afterInput 模拟真实 widget：terminal 变化 → render 重算 scroll extent，
       // flushLayout 触发 stick-to-bottom（_scrollOffset 跟随到底部），
-      // effectFirstLine 上移——触发滚动复用路径（_recordScrollPicture）。
+      // effectFirstLine 上移后继续走滚动复用路径。
       final terminal = Terminal(maxLines: 1000);
       final modeCounts = <int, int>{0: 0, 1: 0, 2: 0};
+      RenderTerminal? benchRender;
       final us = measure(
-        setup: () => makeRender(terminal),
+        setup: () {
+          final pair = makeRender(terminal);
+          benchRender = pair.$1;
+          return pair;
+        },
         advanceInput: (frame) {
           terminal.write('line $frame: the quick brown fox jumps\r\n');
         },
@@ -182,11 +187,16 @@ void main() {
       // ignore: avoid_print
       print('  [DEBUG] scroll mode counts: '
           'full=${modeCounts[0]} scroll=${modeCounts[1]} incr=${modeCounts[2]}');
+      // ignore: avoid_print
+      print('  [DEBUG] scroll metric counts: '
+          'layout=${benchRender!.dbgLayoutCount}');
       report('scroll-output', us);
       expect(us, greaterThan(0.0));
       // 滚动复用路径应被大量触发（稳态下大部分帧是滚动）。
       expect(modeCounts[1]!, greaterThan(modeCounts[0]!),
           reason: 'scroll-output 稳态应以滚动复用为主，而非全画');
+      expect(benchRender!.dbgLayoutCount, greaterThan(0),
+          reason: '连续滚屏时应伴随 scroll extent 更新');
     });
 
     test('static-with-blink (静态屏，仅光标)', () {

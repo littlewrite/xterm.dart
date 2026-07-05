@@ -149,6 +149,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   // 增量/scroll=dirty+新露出）。测试用，验证新内容行确实被画。
   Set<int>? dbgLastPaintedLines;
 
+  // [调试] performLayout 调用次数。用于验证持续输出时是否仍然每行都 layout。
+  int dbgLayoutCount = 0;
+
   // 零成本滚动路径专用：本次 paint 时，缓存 Picture 相对当前视口需要的 y 偏移。
   // > 0 表示缓存内容需上移这么多像素（视口下移了）；画缓存 Picture 前要 translate。
   // 仅在走 zeroCostScroll 路径时有效，其他路径为 0。
@@ -339,13 +342,16 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   void _onTerminalChange() {
     // 终端内容变化并不总是需要重新 layout。
-    // 只有行数、活动 buffer、列/行尺寸这些“几何信息”变化时，
-    // 才需要重新计算 scroll extent 和 stick-to-bottom。
-    final geoChanged = _didTerminalGeometryChange();
+    // 只有活动 buffer、列/行尺寸这些“视口几何”变化时，才必须走 layout。
+    // lineCount 变化同样会影响 scroll extent，因此仍需在 layout 阶段更新
+    // ScrollPosition 的 content dimensions。
+    final viewportChanged = _didViewportGeometryChange();
+    final extentChanged = _didContentExtentChange();
     TerminalPaintDebug.log(
-        'onTerminalChange geo=$geoChanged lines=${_terminal.buffer.lines.length} '
+        'onTerminalChange viewport=$viewportChanged extent=$extentChanged '
+        'lines=${_terminal.buffer.lines.length} '
         'cursorAbsY=${_terminal.buffer.absoluteCursorY}');
-    if (geoChanged) {
+    if (viewportChanged) {
       _syncTerminalGeometryCache();
       markNeedsLayout();
       // 注意：必须同时 markNeedsPaint。markNeedsLayout 不保证触发 paint——
@@ -358,6 +364,13 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       return;
     }
 
+    if (extentChanged) {
+      _syncTerminalGeometryCache();
+      markNeedsLayout();
+      markNeedsPaint();
+      return;
+    }
+
     markNeedsPaint();
     _scheduleEditableRectUpdate();
   }
@@ -365,8 +378,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   void _onControllerUpdate() {
     // 选择、高亮等 controller 更新会影响内容 Picture（选区行用不同绘制路径）。
     // 失效缓存，下次全画。叠加层 highlights 本身每帧重画，不在缓存里。
-    TerminalPaintDebug.log(
-        '    _onControllerUpdate (invalidate cache) '
+    TerminalPaintDebug.log('    _onControllerUpdate (invalidate cache) '
         'selection=${_controller.selection != null} '
         'highlights=${_controller.highlights.length}');
     _invalidateContentCache();
@@ -408,6 +420,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   @override
   void performLayout() {
+    dbgLayoutCount++;
     size = constraints.biggest;
 
     _updateViewportSize();
@@ -431,7 +444,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   /// 调用此方法会像终端刚写入数据那样：标记需要 layout（重算 scroll extent）、
   /// 应用 stick-to-bottom、标记需要 paint。
   void simulateTerminalChangeForTest() {
-    if (_didTerminalGeometryChange()) {
+    if (_didViewportGeometryChange() || _didContentExtentChange()) {
       _syncTerminalGeometryCache();
       markNeedsLayout();
     }
@@ -856,8 +869,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         _contentPicture != null &&
         !hasOverlay) {
       // 滚动本应走 scroll 复用，却走了全画——打印为什么 isPureScroll 失败。
-      TerminalPaintDebug.log(
-          '    isPureScroll=false despite scroll: '
+      TerminalPaintDebug.log('    isPureScroll=false despite scroll: '
           'picFirst=$_picFirstLine picLast=$_picLastLine '
           'effFirst=$effectFirstLine effLast=$effectLastLine '
           'picRows=$picRows curRows=$curRows '
@@ -881,8 +893,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     if (TerminalPaintDebug.enabled && fullRepaint && !dirty.allDirty) {
       // 排查"dirty=0 却全画"的浪费：打印触发原因。
-      TerminalPaintDebug.log(
-          '    fullRepaint reason: '
+      TerminalPaintDebug.log('    fullRepaint reason: '
           'noCache=${_contentPicture == null} '
           'overlay=$hasOverlay '
           'viewportChanged=$viewportChanged '
@@ -897,7 +908,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // 缓存内容已大部分不在视口内，强制全画重建。设为半屏行数。
     final maxTranslateRows = picRows > 0 ? picRows ~/ 2 : 10;
     final cacheDrift = (_picScrollOffset - _scrollOffset).abs() / charHeight;
-    final cacheTooFar = _contentPicture != null && cacheDrift > maxTranslateRows;
+    final cacheTooFar =
+        _contentPicture != null && cacheDrift > maxTranslateRows;
 
     // mode=2（原地编辑、不平移）每帧以缓存 Picture 当底。缓存是录制时的旧内容，
     // 所以"自缓存以来编辑过的行"(_dirtySinceCache) 每帧都要重画，否则上一帧画
@@ -977,8 +989,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       dbgLastPaintMode = 2;
       _scrollTranslateDy = _picScrollOffset - _scrollOffset;
       dbgLastPaintedLines = toPaint;
-      TerminalPaintDebug.log(
-          '    incremental: dirty=${dirty.lines.length} '
+      TerminalPaintDebug.log('    incremental: dirty=${dirty.lines.length} '
           'stale=${staleInView.length} '
           'translateDy=${_scrollTranslateDy.toStringAsFixed(1)} '
           '(no Picture rebuild)');
@@ -1066,7 +1077,8 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // 增量路径 drawPicture 复用时，透明区域会露出底层 widget 背景，与
     // theme.background 不一致就会产生色差。
     final bgPaint = Paint()..color = _painter.theme.background;
-    final bgTop = (effectFirstLine * charHeight + _lineOffset).truncateToDouble();
+    final bgTop =
+        (effectFirstLine * charHeight + _lineOffset).truncateToDouble();
     final bgBottom =
         ((effectLastLine + 1) * charHeight + _lineOffset).truncateToDouble();
     canvas.drawRect(
@@ -1276,11 +1288,14 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     return [startLine, endLine];
   }
 
-  bool _didTerminalGeometryChange() {
-    return _lastKnownLineCount != _terminal.buffer.lines.length ||
-        _lastKnownViewWidth != _terminal.viewWidth ||
+  bool _didViewportGeometryChange() {
+    return _lastKnownViewWidth != _terminal.viewWidth ||
         _lastKnownViewHeight != _terminal.viewHeight ||
         !identical(_lastKnownBuffer, _terminal.buffer);
+  }
+
+  bool _didContentExtentChange() {
+    return _lastKnownLineCount != _terminal.buffer.lines.length;
   }
 
   void _syncTerminalGeometryCache() {

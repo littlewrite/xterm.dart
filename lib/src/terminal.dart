@@ -22,6 +22,7 @@ import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
+import 'package:xterm/src/utils/frame_debug.dart';
 import 'package:xterm/src/ui/search_box.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
@@ -168,6 +169,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _frameFlushScheduled = false;
   // 支持嵌套批量更新，只有最外层 write 结束后才安排刷新。
   int _updateBatchDepth = 0;
+
+  /// [调试] 主动调用 scheduleFrame() 的次数。
+  int dbgEngineFrameRequestCount = 0;
+
+  /// [调试] 复用已有 pending frame、未额外 scheduleFrame() 的次数。
+  int dbgReusedPendingFrameCount = 0;
+
+  /// [调试] 真正 flush 到监听器（notifyListeners）的次数。
+  int dbgListenerFlushCount = 0;
 
   /* State getters */
 
@@ -1044,14 +1054,26 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   bool _scheduleFrameFlush() {
     try {
+      final scheduler = SchedulerBinding.instance;
       // 主动请求一帧。scheduleFrameCallback 只注册回调，不保证 Flutter 会安排
       // 新帧——若 app 静止（无动画/无 PTY 输出/无光标闪烁），可能没有下一帧，
       // 导致 write 后的 notifyListeners 永远不触发，画面卡在旧状态，直到某个
       // 事件（鼠标移动、滚动、点击）偶然触发新帧才更新。
       // 症状：回车/命令执行后"要等一下或滚动一下才显示最新内容"。
-      // 加 scheduleFrame() 确保请求帧，回调必定执行。
-      SchedulerBinding.instance.scheduleFrame();
-      SchedulerBinding.instance.scheduleFrameCallback((_) {
+      //
+      // 但若 Flutter 自己已经有 pending frame，再次 scheduleFrame() 只会重复
+      // 请求 engine frame。持续输出场景里这类冗余请求会堆出大量
+      // "Frame Request Pending"。因此只在当前没有 pending frame 时才显式
+      // 请求，已有 frame 时直接挂 frame callback 复用即可。
+      if (!scheduler.hasScheduledFrame) {
+        dbgEngineFrameRequestCount++;
+        TerminalFrameDebug.log('request engine frame');
+        scheduler.scheduleFrame();
+      } else {
+        dbgReusedPendingFrameCount++;
+        TerminalFrameDebug.log('reuse pending frame');
+      }
+      scheduler.scheduleFrameCallback((_) {
         _flushPendingListeners();
       });
       return true;
@@ -1072,7 +1094,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     _hasPendingFlush = false;
+    dbgListenerFlushCount++;
+    TerminalFrameDebug.log('flush listeners');
     // 真正的 UI 通知只在这里发出，保证批量更新最终只触发一次监听回调。
     notifyListeners();
+  }
+
+  void debugResetFrameFlushCounters() {
+    dbgEngineFrameRequestCount = 0;
+    dbgReusedPendingFrameCount = 0;
+    dbgListenerFlushCount = 0;
   }
 }
