@@ -192,9 +192,13 @@ class TerminalController with ChangeNotifier {
       }
     });
 
-    controller.addListener(() {
-      notifyListeners();
-    });
+    // 注意：原实现里有 controller.addListener(() => notifyListeners())，
+    // 会在动画的每一帧都触发 notifyListeners → 全屏 markNeedsPaint。
+    // 但 selectionAnimation 的 scale/position 值在整个代码库中没有任何消费方
+    // （painter/render 都不读这些值），所以这些每帧 notify 是纯浪费——
+    // 一次选区更新会多触发约 6~9 帧无谓的全屏重绘。
+    // 因此这里移除每帧 notify，仅在动画完成时通知一次以收尾。
+    // 若将来真的需要按帧消费动画值，再加回此监听器。
 
     controller.forward();
 

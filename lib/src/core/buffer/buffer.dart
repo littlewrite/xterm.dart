@@ -61,6 +61,74 @@ class Buffer {
   /// greater than [viewHeight].
   late final lines = IndexAwareCircularBuffer<BufferLine>(maxLines);
 
+  // ---------------------------------------------------------------------------
+  // 行级 dirty 追踪
+  //
+  // 渲染层 paint 时只需重画"自上次 paint 后内容变化的行"，避免每帧全屏遍历。
+  // dirty 以**相对索引**（即 lines[i] 的 i，与渲染层 paint 循环一致）记录。
+  //
+  // 设计取舍（见 docs/perf-optimization.md §3.1）：
+  // - 单行修改（writeChar/eraseLine/...）→ 标脏 cursorY 单行，走优化路径。
+  // - 行引用移动 / 结构变化（scrollUp/Down/insertLines/deleteLines/clear/
+  //   clearScrollback/resize/reflow/alt-buffer 切换）→ 标全脏。这些场景视觉
+  //   本就是大面积变化，全画与现状一致，不引入额外开销，且正确性容易保证。
+  // - 渲染层另维护"上次 paint 的视口"，scrollOffset 变化时全画（覆盖
+  //   scrollback 增长等视口平移场景）。
+  //
+  // 漏标 dirty = 画面不更新（用户可见 bug），所以宁可多标不可漏标。
+  // ---------------------------------------------------------------------------
+
+  /// 自上次 [takeDirtyLines] 以来被标脏的相对行索引集合。
+  /// 当 [_allDirty] 为 true 时本集合无意义（视为全部 dirty）。
+  final Set<int> _dirtyLines = {};
+
+  /// 是否所有行都应视为 dirty。结构变化时置 true，避免逐行标记。
+  var _allDirty = true;
+
+  /// 标脏单行（相对索引）。
+  @pragma('vm:prefer-inline')
+  void _markLineDirty(int relativeIndex) {
+    if (_allDirty) return;
+    if (relativeIndex >= 0 && relativeIndex < height) {
+      _dirtyLines.add(relativeIndex);
+    }
+  }
+
+  /// 标脏 [start, end] 闭区间的相对行。
+  @pragma('vm:prefer-inline')
+  void _markRangeDirty(int start, int end) {
+    if (_allDirty) return;
+    for (var i = start; i <= end; i++) {
+      if (i >= 0 && i < height) {
+        _dirtyLines.add(i);
+      }
+    }
+  }
+
+  /// 标全脏（结构变化时使用）。
+  @pragma('vm:prefer-inline')
+  void _markAllDirty() {
+    _allDirty = true;
+    _dirtyLines.clear();
+  }
+
+  /// 渲染层调用：取走当前的 dirty 行索引集合。
+  /// - 若返回的 `allDirty` 为 true，调用方应重画整个视口；
+  /// - 否则只重画 `lines` 集合中与视口相交的行；
+  /// - 调用后 dirty 状态被清空（由消费方在 paint 完成后调 [clearDirty]）。
+  ///
+  /// 注意：取走不立即清空，因为 paint 可能因异常未完成；消费方应在 paint
+  /// 成功后调 [clearDirty]。若 paint 中途取了又没清，下次仍会拿到同一批。
+  DirtyLinesResult takeDirtyLines() {
+    return DirtyLinesResult(allDirty: _allDirty, lines: Set<int>.from(_dirtyLines));
+  }
+
+  /// 渲染层在成功 paint 后调用，清空 dirty 状态。
+  void clearDirty() {
+    _allDirty = false;
+    _dirtyLines.clear();
+  }
+
   /// Total number of lines in the buffer. Always equal or greater than
   /// [viewHeight].
   int get height => lines.length;
@@ -120,6 +188,7 @@ class Buffer {
 
     final line = currentLine;
     line.setCell(_cursorX, codePoint, cellWidth, terminal.cursor);
+    _markLineDirty(absoluteCursorY);
 
     if (_cursorX < viewWidth) {
       _cursorX++;
@@ -168,6 +237,7 @@ class Buffer {
       line.isWrapped = false;
       line.eraseRange(0, viewWidth, terminal.cursor);
     }
+    _markRangeDirty(absoluteCursorY, height - 1);
   }
 
   /// Erases the viewport from the top-left corner to the cursor, including the
@@ -180,6 +250,7 @@ class Buffer {
       line.isWrapped = false;
       line.eraseRange(0, viewWidth, terminal.cursor);
     }
+    _markRangeDirty(scrollBack, absoluteCursorY);
   }
 
   /// Erases the whole viewport.
@@ -189,6 +260,7 @@ class Buffer {
       line.isWrapped = false;
       line.eraseRange(0, viewWidth, terminal.cursor);
     }
+    _markRangeDirty(scrollBack, scrollBack + viewHeight - 1);
   }
 
   /// Erases the line from the cursor to the end of the line, including the
@@ -196,6 +268,7 @@ class Buffer {
   void eraseLineFromCursor() {
     currentLine.isWrapped = false;
     currentLine.eraseRange(_cursorX, viewWidth, terminal.cursor);
+    _markLineDirty(absoluteCursorY);
   }
 
   /// Erases the line from the start of the line to the cursor, including the
@@ -203,12 +276,14 @@ class Buffer {
   void eraseLineToCursor() {
     currentLine.isWrapped = false;
     currentLine.eraseRange(0, _cursorX, terminal.cursor);
+    _markLineDirty(absoluteCursorY);
   }
 
   /// Erases the line at the current cursor position.
   void eraseLine() {
     currentLine.isWrapped = false;
     currentLine.eraseRange(0, viewWidth, terminal.cursor);
+    _markLineDirty(absoluteCursorY);
   }
 
   // This line of text ends, line break.
@@ -222,6 +297,7 @@ class Buffer {
   void eraseChars(int count) {
     final start = _cursorX;
     currentLine.eraseRange(start, start + count, terminal.cursor);
+    _markLineDirty(absoluteCursorY);
   }
 
   void scrollDown(int lines) {
@@ -232,6 +308,8 @@ class Buffer {
         this.lines[i] = _newEmptyLine();
       }
     }
+    // 行引用移动：滚动区域内的相对位置内容全部重映射，全脏最稳妥。
+    _markAllDirty();
   }
 
   void scrollUp(int lines) {
@@ -242,6 +320,8 @@ class Buffer {
         this.lines[i] = _newEmptyLine();
       }
     }
+    // 行引用移动：滚动区域内的相对位置内容全部重映射，全脏最稳妥。
+    _markAllDirty();
   }
 
   /// https://vt100.net/docs/vt100-ug/chapter3.html#IND IND – Index
@@ -255,6 +335,10 @@ class Buffer {
     if (isInVerticalMargin) {
       if (_cursorY == _marginBottom) {
         if (marginTop == 0 && !isAltBuffer) {
+          // main buffer 底部换行：在末尾 insert 一行新空行。
+          // 与 push 分支同理：既有行内容不变，只是视口随 stick-to-bottom
+          // 整体下移一行（lineDelta=1），由渲染层用平移复用处理。
+          // 不标全脏，避免撤销 dirty 优化。
           lines.insert(absoluteMarginBottom + 1, _newEmptyLine());
         } else {
           scrollUp(1);
@@ -271,6 +355,9 @@ class Buffer {
       if (isAltBuffer) {
         scrollUp(1);
       } else {
+        // scrollback 增长：新空行加在末尾，既有行相对索引不变、内容不变，
+        // 故不标脏。视口若 stick-to-bottom 会跟随移动，由渲染层按视口变化
+        // 触发全画。
         lines.push(_newEmptyLine());
       }
     } else {
@@ -382,6 +469,7 @@ class Buffer {
     final start = _cursorX.clamp(0, viewWidth);
     count = min(count, viewWidth - start);
     currentLine.removeCells(start, count, terminal.cursor);
+    _markLineDirty(absoluteCursorY);
   }
 
   /// Remove all lines above the top of the viewport.
@@ -391,6 +479,8 @@ class Buffer {
     }
 
     lines.trimStart(scrollBack);
+    // 头部丢弃改变了所有行的相对索引，全脏。
+    _markAllDirty();
   }
 
   /// Clears the viewport and scrollback buffer. Then fill with empty lines.
@@ -399,10 +489,12 @@ class Buffer {
     for (int i = 0; i < viewHeight; i++) {
       lines.push(_newEmptyLine());
     }
+    _markAllDirty();
   }
 
   void insertBlankChars(int count) {
     currentLine.insertCells(_cursorX, count, terminal.cursor);
+    _markLineDirty(absoluteCursorY);
   }
 
   void insertLines(int count) {
@@ -430,6 +522,8 @@ class Buffer {
     for (var i = linesToMove; i < linesToInsert; i++) {
       lines[absoluteCursorY + i] = _newEmptyLine();
     }
+    // 行引用移动 + 插入空行，全脏。
+    _markAllDirty();
   }
 
   /// Remove [count] lines starting at the current cursor position. Lines below
@@ -454,6 +548,8 @@ class Buffer {
     for (var i = 0; i < count; i++) {
       lines[absoluteMarginBottom - i] = _newEmptyLine();
     }
+    // 行引用移动 + 末尾填空行，全脏。
+    _markAllDirty();
   }
 
   void resize(int oldWidth, int oldHeight, int newWidth, int newHeight) {
@@ -496,6 +592,9 @@ class Buffer {
         lines.forEach((item) => item.resize(newWidth));
       }
     }
+
+    // 尺寸/reflow 后行结构可能与几何都变了，全脏。
+    _markAllDirty();
   }
 
   /// Create a new [CellAnchor] at the specified [x] and [y] coordinates.
@@ -689,4 +788,15 @@ class Buffer {
 
     return builder.toString();
   }
+}
+
+/// [Buffer.takeDirtyLines] 的返回结果。
+class DirtyLinesResult {
+  /// 是否所有行都应视为 dirty（结构变化，如 scroll/resize/reflow/clear）。
+  final bool allDirty;
+
+  /// 被标脏的相对行索引集合。仅在 [allDirty] 为 false 时有意义。
+  final Set<int> lines;
+
+  const DirtyLinesResult({required this.allDirty, required this.lines});
 }

@@ -1044,7 +1044,13 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   bool _scheduleFrameFlush() {
     try {
-      // 把本轮批量写入合并到下一帧统一通知，降低高频输出时的重建压力。
+      // 主动请求一帧。scheduleFrameCallback 只注册回调，不保证 Flutter 会安排
+      // 新帧——若 app 静止（无动画/无 PTY 输出/无光标闪烁），可能没有下一帧，
+      // 导致 write 后的 notifyListeners 永远不触发，画面卡在旧状态，直到某个
+      // 事件（鼠标移动、滚动、点击）偶然触发新帧才更新。
+      // 症状：回车/命令执行后"要等一下或滚动一下才显示最新内容"。
+      // 加 scheduleFrame() 确保请求帧，回调必定执行。
+      SchedulerBinding.instance.scheduleFrame();
       SchedulerBinding.instance.scheduleFrameCallback((_) {
         _flushPendingListeners();
       });

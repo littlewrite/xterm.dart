@@ -5,6 +5,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:xterm/src/core/buffer/buffer.dart';
+import 'package:xterm/src/utils/circular_buffer.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
@@ -16,6 +17,7 @@ import 'package:xterm/src/core/mouse/button_state.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
+import 'package:xterm/src/ui/paint_debug.dart';
 import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/terminal_size.dart';
@@ -114,19 +116,59 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   set textStyle(TerminalStyle value) {
     if (value == _painter.textStyle) return;
     _painter.textStyle = value;
+    _invalidateComposingCache();
+    _invalidateContentCache();
     markNeedsLayout();
   }
 
   set textScaler(TextScaler value) {
     if (value == _painter.textScaler) return;
     _painter.textScaler = value;
+    _invalidateComposingCache();
+    _invalidateContentCache();
     markNeedsLayout();
   }
 
   set theme(TerminalTheme value) {
     if (value == _painter.theme) return;
     _painter.theme = value;
+    _invalidateContentCache();
     markNeedsPaint();
+  }
+
+  void _invalidateComposingCache() {
+    _composingParagraph = null;
+    _composingCacheText = null;
+  }
+
+  // [调试] 上一帧 paint 走的路径：0=全画, 1=滚动复用, 2=增量。
+  // 仅用于 benchmark/测试观察，正式版可删。
+  int dbgLastPaintMode = -1;
+
+  // [调试] 上一帧 paint 实际重画的行索引集合（全画=所有可见行，
+  // 增量/scroll=dirty+新露出）。测试用，验证新内容行确实被画。
+  Set<int>? dbgLastPaintedLines;
+
+  void _invalidateContentCache() {
+    if (TerminalPaintDebug.enabled) {
+      // 打印调用方栈顶几帧，定位是谁清了缓存。
+      // 通常只关心前 3-5 帧（去掉 dart:core 和当前方法自身）。
+      final frames = StackTrace.current.toString().split('\n');
+      final callers = frames
+          .where((l) =>
+              l.contains('render.dart') &&
+              !l.contains('_invalidateContentCache'))
+          .take(3)
+          .join(' | ');
+      TerminalPaintDebug.log(
+          '    _invalidateContentCache by: ${callers.isEmpty ? "(external)" : callers}');
+    }
+    _contentPicture = null;
+    _picLineCount = -1;
+    _picFirstLine = -1;
+    _picLastLine = -1;
+    _picScrollOffset = double.nan;
+    _picSize = Size.zero;
   }
 
   set devicePixelRatio(double value) {
@@ -163,7 +205,11 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   set cursorBlinkVisible(bool value) {
     if (value == _cursorBlinkVisible) return;
     _cursorBlinkVisible = value;
-    markNeedsPaint();
+    // 主层不画光标（_paintCursor 在 TerminalView 里恒为 false，光标由独立的
+    // _RenderTerminalCursorOverlay 覆盖层绘制），所以光标闪烁不应牵连主层重画。
+    // 之前这里 markNeedsPaint() 导致光标每 ~530ms 闪烁一次就让主层全画一次，
+    // 抵消了 dirty 缓存优化。去掉它，光标闪烁只影响覆盖层。
+    // 若将来主层重新启用光标绘制（_paintCursor=true），需恢复这里的 markNeedsPaint。
   }
 
   bool _alwaysShowCursor;
@@ -206,9 +252,44 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     markNeedsPaint();
   }
 
+  /// IME 合成文本 Paragraph 的轻量缓存，避免每次 paint 都 rebuild+layout。
+  /// 键：composingText + 前景色 + 背景色 + 占位 dx + 可用宽度。
+  Paragraph? _composingParagraph;
+  String? _composingCacheText;
+  int _composingCacheFg = 0;
+  Color _composingCacheBg = const Color(0x00000000);
+  double _composingCacheDx = -1;
+  double _composingCacheWidth = -1;
+
   TerminalSize? _viewportSize;
 
   final TerminalPainter _painter;
+
+  // ---------------------------------------------------------------------------
+  // 行级 dirty + 内容 Picture 缓存
+  //
+  // Flutter 每帧给 paint 一个新的录制 canvas，"跳过某行不画"会让该行空白，
+  // 所以不能简单跳过未变行。这里缓存上一帧画好的整屏内容 [ui.Picture]，
+  // 未变行通过 drawPicture 一次重现；只有 dirty 行才重新 cell 级绘制。
+  //
+  // 收益：稀疏输入（敲字、单行刷新）场景，从每帧遍历 80×24=1920 cell 降到
+  // 一次 drawPicture + N 行重画（N 通常 1~3）。这是行级 dirty 的核心价值。
+  //
+  // 安全约束（强制全画、不增量）：
+  //  - buffer 报告 allDirty（结构变化：scroll/resize/reflow/clear）
+  //  - 视口变化（scrollOffset / size / cellSize / 可见行集变化）
+  //  - 有 selection 或 highlights（这些叠加层会跨行，增量覆盖会破坏它们）
+  //  - 首次 paint 或缓存失效
+  // 光标 / IME 合成文本不进缓存，每帧画在 Picture 之上。
+  // ---------------------------------------------------------------------------
+
+  Picture? _contentPicture;
+  double _picScrollOffset = double.nan;
+  Size _picSize = Size.zero;
+  int _picLineCount = -1;
+  // 缓存对应的可见行范围 [firstLine, lastLine]（相对索引）。
+  int _picFirstLine = -1;
+  int _picLastLine = -1;
 
   var _stickToBottom = true;
   bool _editableRectUpdateScheduled = false;
@@ -242,9 +323,20 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // 终端内容变化并不总是需要重新 layout。
     // 只有行数、活动 buffer、列/行尺寸这些“几何信息”变化时，
     // 才需要重新计算 scroll extent 和 stick-to-bottom。
-    if (_didTerminalGeometryChange()) {
+    final geoChanged = _didTerminalGeometryChange();
+    TerminalPaintDebug.log(
+        'onTerminalChange geo=$geoChanged lines=${_terminal.buffer.lines.length} '
+        'cursorAbsY=${_terminal.buffer.absoluteCursorY}');
+    if (geoChanged) {
       _syncTerminalGeometryCache();
       markNeedsLayout();
+      // 注意：必须同时 markNeedsPaint。markNeedsLayout 不保证触发 paint——
+      // 若 layout 后 size 未变且无 paint 标记，Flutter 会跳过本帧 paint 阶段,
+      // 导致"内容已写入 buffer 但画面没更新"（症状：回车/输出后要等一下或
+      // 滚动一下才显示）。早期版本靠光标闪烁定时器的 markNeedsPaint 心跳
+      // 兜底（每 ~530ms 强制重画），批 3 移除该心跳后这个隐患暴露了。
+      // 这里显式标记，不再依赖兜底。
+      markNeedsPaint();
       return;
     }
 
@@ -253,7 +345,13 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   void _onControllerUpdate() {
-    // 选择、高亮等 controller 更新只影响覆盖层绘制。
+    // 选择、高亮等 controller 更新会影响内容 Picture（选区行用不同绘制路径）。
+    // 失效缓存，下次全画。叠加层 highlights 本身每帧重画，不在缓存里。
+    TerminalPaintDebug.log(
+        '    _onControllerUpdate (invalidate cache) '
+        'selection=${_controller.selection != null} '
+        'highlights=${_controller.highlights.length}');
+    _invalidateContentCache();
     markNeedsPaint();
   }
 
@@ -286,6 +384,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   @override
   void systemFontsDidChange() {
     _painter.clearFontCache();
+    _invalidateContentCache();
     super.systemFontsDidChange();
   }
 
@@ -297,12 +396,28 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     _updateScrollOffset();
 
+    final before = _scrollOffset;
     if (_stickToBottom) {
       _offset.correctBy(_maxScrollExtent - _scrollOffset);
     }
+    TerminalPaintDebug.log(
+        '  performLayout scrollOff $before→$_scrollOffset max=$_maxScrollExtent '
+        'stick=$_stickToBottom termH=$_terminalHeight viewH=$_viewportHeight');
 
     _syncTerminalGeometryCache();
     _scheduleEditableRectUpdate();
+  }
+
+  /// 模拟"终端变化 + stick-to-bottom 跟随"。
+  /// 仅用于 benchmark/测试：真实 widget 中由 _onTerminalChange + Scrollable 驱动。
+  /// 调用此方法会像终端刚写入数据那样：标记需要 layout（重算 scroll extent）、
+  /// 应用 stick-to-bottom、标记需要 paint。
+  void simulateTerminalChangeForTest() {
+    if (_didTerminalGeometryChange()) {
+      _syncTerminalGeometryCache();
+      markNeedsLayout();
+    }
+    markNeedsPaint();
   }
 
   /// Total height of the terminal in pixels. Includes scrollback buffer.
@@ -607,6 +722,22 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
         _terminal.cursorVisibleMode;
   }
 
+  /// 返回光标视觉状态的指纹。光标覆盖层用它判断终端内容变化是否真的
+  /// 影响光标视觉，从而跳过无关变化（如其他行写入、上方滚屏）触发的
+  /// 无谓重绘。涉及光标位置、滚动、可见性、类型、焦点。
+  int get cursorVisualFingerprint {
+    return Object.hash(
+      _terminal.buffer.cursorX,
+      _terminal.buffer.absoluteCursorY,
+      _scrollOffset,
+      _terminal.cursorVisibleMode,
+      _cursorType,
+      _focusNode.hasFocus,
+      _painter.cellSize,
+      _isComposingText,
+    );
+  }
+
   double get _viewportHeight {
     return size.height - _padding.vertical;
   }
@@ -634,7 +765,23 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   @override
   void paint(PaintingContext context, Offset offset) {
     _paint(context, offset);
-    context.setWillChangeHint();
+    // 不再无条件调用 context.setWillChangeHint()。
+    //
+    // 原实现每次 paint 都标记本层 willChangeHint，告知合成器"这层下一帧
+    // 还会变，别 raster-cache 它"。结果：终端静止、app 中有其他 widget
+    // 在动（触发合成）时，合成器每帧都要重新光栅化整个终端层，浪费 GPU。
+    //
+    // 事实上：本层只在 _onTerminalChange / _onScroll / _onFocusChange /
+    // _onControllerUpdate（即"内容真的变了"）时被 markNeedsPaint。静止时
+    // Flutter 根本不会再 paint 本层，上一帧的 layer 应当被合成器按启发式
+    // 缓存复用。本层是 isRepaintBoundary，本身就是 raster cache 的候选。
+    //
+    // 光标闪烁的"频繁变"提示已由独立的 _RenderTerminalCursorOverlay 层
+    // （它自己的 paint 里按 shouldHintWillChange 条件给 hint）处理，
+    // 不需要主层配合。
+    //
+    // 如果将来发现静止帧出现光标残影/内容不刷新，说明 markNeedsPaint 路径
+    // 有遗漏，应在那里修，而不是靠这里的 hint 兜底。
   }
 
   void _paint(PaintingContext context, Offset offset) {
@@ -642,6 +789,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     final lines = _terminal.buffer.lines;
     final charHeight = _painter.cellSize.height;
+    final cellWidth = _painter.cellSize.width;
 
     final firstLineOffset = _scrollOffset - _padding.top;
     final lastLineOffset = _scrollOffset + size.height + _padding.bottom;
@@ -652,25 +800,127 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final effectFirstLine = firstLine.clamp(0, lines.length - 1);
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
     final selection = _controller.selection?.normalized;
-    final cellData = CellData.empty();
+    final hasOverlay = selection != null || _controller.highlights.isNotEmpty;
 
-    for (var i = effectFirstLine; i <= effectLastLine; i++) {
-      final lineOffset = offset.translate(
-          0, (i * charHeight + _lineOffset).truncateToDouble());
-      if (selection == null || !_selectionIntersectsLine(selection, i)) {
-        _painter.paintLine(canvas, lineOffset, lines[i]);
-        continue;
-      }
-      _paintLineWithSelection(
-        canvas,
-        lineOffset,
-        lines[i],
-        i,
-        selection,
-        cellData,
-      );
+    // 取 dirty（不清空，paint 成功后再清）。
+    final dirty = _terminal.buffer.takeDirtyLines();
+
+    // 视口变化判定。
+    final sizeChanged = _picSize != size;
+    final lineDelta = effectFirstLine - _picFirstLine;
+    final picRows = _picLastLine - _picFirstLine;
+    final curRows = effectLastLine - effectFirstLine;
+    // 纯滚动：可见行数不变、size 不变、只是整体平移 lineDelta 行。
+    // lineDelta > 0：视口下移（看更新的内容），屏幕内容上移，底部露新行。
+    // lineDelta < 0：视口上移（看历史），屏幕内容下移，顶部露新行。
+    final isPureScroll = _contentPicture != null &&
+        !sizeChanged &&
+        picRows == curRows &&
+        picRows > 0 &&
+        lineDelta != 0 &&
+        lineDelta.abs() < picRows;
+
+    final viewportChanged = _picScrollOffset != _scrollOffset ||
+        _picSize != size ||
+        _picFirstLine != effectFirstLine ||
+        _picLastLine != effectLastLine ||
+        _picLineCount != lines.length;
+
+    // 全画条件：allDirty / 无缓存 / 有叠加层 / 非纯滚动的视口变化。
+    final fullRepaint = dirty.allDirty ||
+        _contentPicture == null ||
+        hasOverlay ||
+        (!isPureScroll && viewportChanged);
+
+    if (TerminalPaintDebug.enabled && fullRepaint && !dirty.allDirty) {
+      // 排查"dirty=0 却全画"的浪费：打印触发原因。
+      TerminalPaintDebug.log(
+          '    fullRepaint reason: '
+          'noCache=${_contentPicture == null} '
+          'overlay=$hasOverlay '
+          'viewportChanged=$viewportChanged '
+          '(scrollOff=${_picScrollOffset != _scrollOffset} '
+          'size=${_picSize != size} '
+          'firstLine=${_picFirstLine != effectFirstLine} '
+          'lastLine=${_picLastLine != effectLastLine} '
+          'lineCount=${_picLineCount != lines.length})');
     }
 
+    if (fullRepaint) {
+      dbgLastPaintMode = 0;
+      _contentPicture = _recordContentPicture(
+        offset: offset,
+        lines: lines,
+        effectFirstLine: effectFirstLine,
+        effectLastLine: effectLastLine,
+        charHeight: charHeight,
+        selection: selection,
+      );
+      dbgLastPaintedLines = {
+        for (var i = effectFirstLine; i <= effectLastLine; i++) i,
+      };
+      _picScrollOffset = _scrollOffset;
+      _picSize = size;
+      _picFirstLine = effectFirstLine;
+      _picLastLine = effectLastLine;
+      _picLineCount = lines.length;
+    } else if (isPureScroll) {
+      dbgLastPaintMode = 1;
+      // 滚动复用：把旧 Picture 整体平移，只重画 dirty 行 + 新露出的行。
+      final exposed = <int>{};
+      if (lineDelta > 0) {
+        for (var i = effectLastLine - lineDelta + 1; i <= effectLastLine; i++) {
+          exposed.add(i);
+        }
+      } else if (lineDelta < 0) {
+        final n = -lineDelta;
+        for (var i = effectFirstLine; i < effectFirstLine + n; i++) {
+          exposed.add(i);
+        }
+      }
+      _contentPicture = _recordScrollPicture(
+        offset: offset,
+        lines: lines,
+        effectFirstLine: effectFirstLine,
+        effectLastLine: effectLastLine,
+        charHeight: charHeight,
+        cellWidth: cellWidth,
+        lineDelta: lineDelta,
+        dirtyLines: dirty.lines,
+      );
+      dbgLastPaintedLines = {...exposed, ...dirty.lines};
+      _picScrollOffset = _scrollOffset;
+      _picFirstLine = effectFirstLine;
+      _picLastLine = effectLastLine;
+      _picLineCount = lines.length;
+    } else {
+      dbgLastPaintMode = 2;
+      // 增量：在旧 Picture 之上覆盖重画脏行。
+      _contentPicture = _recordIncrementalPicture(
+        offset: offset,
+        lines: lines,
+        effectFirstLine: effectFirstLine,
+        effectLastLine: effectLastLine,
+        charHeight: charHeight,
+        cellWidth: cellWidth,
+        dirtyLines: dirty.lines,
+      );
+      dbgLastPaintedLines = {...dirty.lines};
+    }
+
+    TerminalPaintDebug.log(
+        '  paint mode=$dbgLastPaintMode effFirst=$effectFirstLine '
+        'effLast=$effectLastLine scrollOff=$_scrollOffset '
+        'allDirty=${dirty.allDirty} dirty=${dirty.lines.length} '
+        'painted=$dbgLastPaintedLines');
+
+    // paint 成功，清 dirty。
+    _terminal.buffer.clearDirty();
+
+    // 把整屏内容画到真实 canvas。
+    canvas.drawPicture(_contentPicture!);
+
+    // 叠加层（不进缓存，每帧画）。
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
         _terminal.buffer.absoluteCursorY <= effectLastLine) {
       if (_isComposingText) {
@@ -696,6 +946,154 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     );
   }
 
+  /// 录制整屏内容 Picture（全画路径）。
+  Picture _recordContentPicture({
+    required Offset offset,
+    required IndexAwareCircularBuffer<BufferLine> lines,
+    required int effectFirstLine,
+    required int effectLastLine,
+    required double charHeight,
+    BufferRange? selection,
+  }) {
+    final recorder = PictureRecorder();
+    final canvas = Canvas(recorder);
+    final cellData = CellData.empty();
+
+    // 必须先铺整屏背景色：paintCellBackground 对默认背景的 cell 直接 return
+    // 不画，所以缓存 Picture 必须自带背景，否则默认背景区域会是透明的。
+    // 增量路径 drawPicture 复用时，透明区域会露出底层 widget 背景，与
+    // theme.background 不一致就会产生色差。
+    final bgPaint = Paint()..color = _painter.theme.background;
+    final bgTop = (effectFirstLine * charHeight + _lineOffset).truncateToDouble();
+    final bgBottom =
+        ((effectLastLine + 1) * charHeight + _lineOffset).truncateToDouble();
+    canvas.drawRect(
+      Offset(0, bgTop) & Size(size.width, bgBottom - bgTop),
+      bgPaint,
+    );
+
+    for (var i = effectFirstLine; i <= effectLastLine; i++) {
+      final lineOffset = offset.translate(
+          0, (i * charHeight + _lineOffset).truncateToDouble());
+      if (selection == null || !_selectionIntersectsLine(selection, i)) {
+        _painter.paintLine(canvas, lineOffset, lines[i]);
+        continue;
+      }
+      _paintLineWithSelection(
+        canvas,
+        lineOffset,
+        lines[i],
+        i,
+        selection,
+        cellData,
+      );
+    }
+
+    return recorder.endRecording();
+  }
+
+  /// 录制滚动复用 Picture：把旧 Picture 整体平移 lineDelta 行，
+  /// 再用背景色覆盖并重画"新露出的行"和"dirty 行"。
+  ///
+  /// lineDelta > 0：视口下移（内容上移），底部露出 lineDelta 个新行。
+  /// lineDelta < 0：视口上移（内容下移），顶部露出 |lineDelta| 个新行。
+  Picture _recordScrollPicture({
+    required Offset offset,
+    required IndexAwareCircularBuffer<BufferLine> lines,
+    required int effectFirstLine,
+    required int effectLastLine,
+    required double charHeight,
+    required double cellWidth,
+    required int lineDelta,
+    required Set<int> dirtyLines,
+  }) {
+    final recorder = PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    // 1. 先铺整屏背景（平移后可能露出的区域 + 平移产生的空隙都要背景）。
+    final bgPaint = Paint()..color = _painter.theme.background;
+    final bgTop =
+        (effectFirstLine * charHeight + _lineOffset).truncateToDouble();
+    final bgBottom =
+        ((effectLastLine + 1) * charHeight + _lineOffset).truncateToDouble();
+    canvas.drawRect(
+      Offset(0, bgTop) & Size(size.width, bgBottom - bgTop),
+      bgPaint,
+    );
+
+    // 2. clip 到可见区域，平移后 drawPicture 旧内容。
+    canvas.save();
+    canvas.clipRect(Offset(0, bgTop) & Size(size.width, bgBottom - bgTop));
+    canvas.translate(0, -lineDelta * charHeight);
+    canvas.drawPicture(_contentPicture!);
+    canvas.restore();
+
+    // 3. 计算新露出的行（平移后没有内容的区域）。
+    final exposedLines = <int>{};
+    if (lineDelta > 0) {
+      // 内容上移，底部露出新行。
+      for (var i = effectLastLine - lineDelta + 1; i <= effectLastLine; i++) {
+        exposedLines.add(i);
+      }
+    } else if (lineDelta < 0) {
+      // 内容下移，顶部露出新行。
+      final n = -lineDelta;
+      for (var i = effectFirstLine; i < effectFirstLine + n; i++) {
+        exposedLines.add(i);
+      }
+    }
+
+    // 4. 重画"新露出的行" + "dirty 行"（去重）。
+    final linesToRedraw = {...exposedLines, ...dirtyLines};
+    for (final i in linesToRedraw) {
+      if (i < effectFirstLine || i > effectLastLine) continue;
+      final lineTop = (i * charHeight + _lineOffset).truncateToDouble();
+      // 覆盖该行背景（平移后的旧内容若落在这里也会被擦掉，确保干净）。
+      canvas.drawRect(
+        Offset(0, lineTop) & Size(size.width, charHeight),
+        bgPaint,
+      );
+      final lineOffset = offset.translate(0, lineTop);
+      _painter.paintLine(canvas, lineOffset, lines[i]);
+    }
+
+    return recorder.endRecording();
+  }
+  Picture _recordIncrementalPicture({
+    required Offset offset,
+    required IndexAwareCircularBuffer<BufferLine> lines,
+    required int effectFirstLine,
+    required int effectLastLine,
+    required double charHeight,
+    required double cellWidth,
+    required Set<int> dirtyLines,
+  }) {
+    final recorder = PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    // 1. 重现上一帧整屏内容。
+    canvas.drawPicture(_contentPicture!);
+
+    // 2. 对每个在视口内的脏行：用背景色覆盖该行区域，然后重新 paintLine。
+    final bgPaint = Paint()..color = _painter.theme.background;
+    for (final i in dirtyLines) {
+      if (i < effectFirstLine || i > effectLastLine) continue;
+      final lineTop = (i * charHeight + _lineOffset).truncateToDouble();
+      // 覆盖该行（含 padding 影响下的整宽）。
+      canvas.drawRect(
+        Offset(0, lineTop) & Size(size.width, charHeight),
+        bgPaint,
+      );
+      final lineOffset =
+          offset.translate(0, lineTop);
+      // 增量路径下 selection 强制全画（hasOverlay 时不会走到这里），
+      // 所以这里只走普通 paintLine。
+      _painter.paintLine(canvas, lineOffset, lines[i]);
+    }
+
+    return recorder.endRecording();
+  }
+
   /// Paints the text that is currently being composed in IME to [canvas] at
   /// [offset]. [offset] is usually the cursor position.
   void _paintComposingText(Canvas canvas, Offset offset) {
@@ -704,25 +1102,45 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       return;
     }
 
-    final style = _painter.textStyle.toTextStyle(
-      color: _painter.resolveForegroundColor(_terminal.cursor.foreground),
-      backgroundColor: _painter.theme.background,
-      underline: true,
-    );
+    final fg = _terminal.cursor.foreground;
+    final bg = _painter.theme.background;
+    final fgColor = _painter.resolveForegroundColor(fg);
 
-    final builder = ParagraphBuilder(style.getParagraphStyle());
-    builder.addPlaceholder(
-      offset.dx,
-      _painter.cellSize.height,
-      PlaceholderAlignment.middle,
-    );
-    builder.pushStyle(style.getTextStyle(textScaler: _painter.textScaler));
-    builder.addText(composingText);
+    // 缓存命中判断：文本、颜色、占位 dx、可用宽度都未变则复用上次 Paragraph。
+    final width = size.width;
+    if (_composingParagraph == null ||
+        _composingCacheText != composingText ||
+        _composingCacheFg != fg ||
+        _composingCacheBg != bg ||
+        _composingCacheDx != offset.dx ||
+        _composingCacheWidth != width) {
+      final style = _painter.textStyle.toTextStyle(
+        color: fgColor,
+        backgroundColor: bg,
+        underline: true,
+      );
 
-    final paragraph = builder.build();
-    paragraph.layout(ParagraphConstraints(width: size.width));
+      final builder = ParagraphBuilder(style.getParagraphStyle());
+      builder.addPlaceholder(
+        offset.dx,
+        _painter.cellSize.height,
+        PlaceholderAlignment.middle,
+      );
+      builder.pushStyle(style.getTextStyle(textScaler: _painter.textScaler));
+      builder.addText(composingText);
 
-    canvas.drawParagraph(paragraph, Offset(0, offset.dy));
+      final paragraph = builder.build();
+      paragraph.layout(ParagraphConstraints(width: width));
+
+      _composingParagraph = paragraph;
+      _composingCacheText = composingText;
+      _composingCacheFg = fg;
+      _composingCacheBg = bg;
+      _composingCacheDx = offset.dx;
+      _composingCacheWidth = width;
+    }
+
+    canvas.drawParagraph(_composingParagraph!, Offset(0, offset.dy));
   }
 
   bool _selectionIntersectsLine(BufferRange selection, int line) {

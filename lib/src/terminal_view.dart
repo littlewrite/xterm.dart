@@ -1477,7 +1477,17 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     markNeedsPaint();
   }
 
+  /// 上一次光标层 paint 时记录的光标指纹。终端内容变化时用于判断是否
+  /// 真的影响光标视觉，避免无关变化（如其他行写入、上方滚屏）导致光标
+  /// 层无谓重绘。
+  int? _lastCursorFingerprint;
+
   void _onTerminalChange() {
+    // 只有光标视觉相关状态变了才重画光标层。
+    final fp = _renderTerminal()?.cursorVisualFingerprint;
+    if (fp == _lastCursorFingerprint) {
+      return;
+    }
     markNeedsPaint();
   }
 
@@ -1489,6 +1499,8 @@ class _RenderTerminalCursorOverlay extends RenderBox {
   void paint(PaintingContext context, Offset offset) {
     final renderTerminal = _renderTerminal();
     _paint(context.canvas, offset, renderTerminal);
+    // 无论是否真的画了光标，都记录当前指纹，下次相同状态可跳过。
+    _lastCursorFingerprint = renderTerminal?.cursorVisualFingerprint;
     if (renderTerminal != null && renderTerminal.shouldHintWillChange) {
       context.setWillChangeHint();
     }

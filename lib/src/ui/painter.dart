@@ -30,6 +30,16 @@ class TerminalPainter {
   /// [_textStyle] is changed, or when the system font changes.
   final _paragraphCache = ParagraphCache(10240);
 
+  /// 复用的 Paint 对象，避免每帧每个 cell 都分配新 Paint。
+  /// Paint 是可变对象，绘制调用会立即提交到 canvas，所以在顺序绘制中
+  /// 跨帧/跨 cell 复用是安全的——只需在每次绘制前设置 color。
+  final _cellBackgroundPaint = Paint()..isAntiAlias = false;
+
+  /// 高亮用的 Paint（需要 strokeWidth = 1）。
+  final _highlightPaint = Paint()
+    ..isAntiAlias = false
+    ..strokeWidth = 1;
+
   TerminalStyle get textStyle => _textStyle;
   TerminalStyle _textStyle;
   set textStyle(TerminalStyle value) {
@@ -144,11 +154,7 @@ class TerminalPainter {
       _cellSize.height,
     );
 
-    final paint = Paint()
-      ..color = color
-      ..isAntiAlias = false
-      ..strokeWidth = 1;
-
+    final paint = _highlightPaint..color = color;
     canvas.drawRect(Rect.fromPoints(offset, endOffset), paint);
   }
 
@@ -347,9 +353,7 @@ class TerminalPainter {
       color = resolveBackgroundColor(cellData.background);
     }
 
-    final paint = Paint()
-      ..color = color
-      ..isAntiAlias = false;
+    final paint = _cellBackgroundPaint..color = color;
     final doubleWidth = cellData.content >> CellContent.widthShift == 2;
     final widthScale = doubleWidth ? 2 : 1;
     final size = Size(_cellSize.width * widthScale, _cellSize.height);

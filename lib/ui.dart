@@ -1,6 +1,7 @@
 export 'src/terminal_view.dart';
 export 'src/ui/controller.dart';
 export 'src/ui/cursor_type.dart';
+export 'src/ui/paint_debug.dart';
 export 'src/ui/pointer_input.dart';
 export 'src/ui/selection_mode.dart';
 export 'src/ui/shortcut/shortcuts.dart';
