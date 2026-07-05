@@ -1,6 +1,7 @@
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -156,6 +157,40 @@ void main() {
       );
       report('sparse-typing', us);
       expect(us, greaterThan(0.0));
+    });
+
+    test('sparse-typing with collapsed selection anchor', () {
+      // 模拟单击/拖拽起点留下的 collapsed selection。
+      // 修复前它会被误判成 overlay，导致每帧退化成全画。
+      final terminal = Terminal(maxLines: 1000);
+      terminal.write(' ' * (cols * rows));
+      RenderTerminal? benchRender;
+      final modeCounts = <int, int>{0: 0, 1: 0, 2: 0, 3: 0};
+      final us = measure(
+        setup: () {
+          final pair = makeRender(terminal);
+          benchRender = pair.$1;
+          benchRender!.selectCharacters(const CellOffset(0, 0));
+          return pair;
+        },
+        advanceInput: (frame) {
+          terminal.write(String.fromCharCode(33 + frame % 90));
+        },
+        onPainted: (render) {
+          modeCounts[render.dbgLastPaintMode] =
+              (modeCounts[render.dbgLastPaintMode] ?? 0) + 1;
+        },
+      );
+      // ignore: avoid_print
+      print('  [DEBUG] collapsed selection mode counts: '
+          'full=${modeCounts[0]} scroll=${modeCounts[1]} '
+          'incr=${modeCounts[2]} zero=${modeCounts[3]}');
+      report('sparse-typing-collapsed-selection', us);
+      expect(us, greaterThan(0.0));
+      expect(modeCounts[0]!, 0, reason: 'collapsed selection 不应让稀疏输入退化成全画');
+      expect(modeCounts[2]! + modeCounts[3]!, greaterThan(0),
+          reason: 'collapsed selection 场景应继续走增量/滚动路径');
+      expect(benchRender, isNotNull);
     });
 
     test('scroll-output (连续滚屏输出，stick-to-bottom)', () {

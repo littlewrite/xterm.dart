@@ -376,11 +376,21 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   void _onControllerUpdate() {
-    // 选择、高亮等 controller 更新会影响内容 Picture（选区行用不同绘制路径）。
-    // 失效缓存，下次全画。叠加层 highlights 本身每帧重画，不在缓存里。
+    final selection = _controller.selection?.normalized;
+    final hasSelectionOverlay = selection != null && !selection.isCollapsed;
+    final hasHighlightOverlay = _controller.highlights.isNotEmpty;
+    // 只有真正会改动主内容层像素的 controller 变化才失效缓存。
+    // collapsed selection（begin==end）不画选区，只用于交互锚点；若把它当
+    // overlay，会导致持续输出时每帧都走全画。
     TerminalPaintDebug.log('    _onControllerUpdate (invalidate cache) '
-        'selection=${_controller.selection != null} '
+        'selection=${selection != null} '
+        'collapsed=${selection?.isCollapsed ?? false} '
         'highlights=${_controller.highlights.length}');
+    if (!hasSelectionOverlay && !hasHighlightOverlay) {
+      TerminalPaintDebug.log(
+          '    _onControllerUpdate skipped (no visible overlay)');
+      return;
+    }
     _invalidateContentCache();
     markNeedsPaint();
   }
@@ -829,8 +839,12 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
     final effectFirstLine = firstLine.clamp(0, lines.length - 1);
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
-    final selection = _controller.selection?.normalized;
-    final hasOverlay = selection != null || _controller.highlights.isNotEmpty;
+    final rawSelection = _controller.selection?.normalized;
+    final hasSelectionOverlay =
+        rawSelection != null && !rawSelection.isCollapsed;
+    final hasHighlightOverlay = _controller.highlights.isNotEmpty;
+    final hasOverlay = hasSelectionOverlay || hasHighlightOverlay;
+    final selection = hasSelectionOverlay ? rawSelection : null;
 
     // 取 dirty（不清空，paint 成功后再清）。
     final dirty = _terminal.buffer.takeDirtyLines();
@@ -896,6 +910,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       TerminalPaintDebug.log('    fullRepaint reason: '
           'noCache=${_contentPicture == null} '
           'overlay=$hasOverlay '
+          '(selection=$hasSelectionOverlay '
+          'collapsed=${rawSelection?.isCollapsed ?? false} '
+          'highlights=$hasHighlightOverlay) '
           'viewportChanged=$viewportChanged '
           '(scrollOff=${_picScrollOffset != _scrollOffset} '
           'size=${_picSize != size} '
