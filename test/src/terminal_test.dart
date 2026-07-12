@@ -340,6 +340,19 @@ void main() {
       expect(line.getAttributes(0) & CellAttr.underline, isNot(0));
       expect(line.getAttributes(1) & CellAttr.underline, 0);
     });
+
+    test('resets bold and faint intensity with sgr 22', () {
+      final terminal = Terminal();
+
+      terminal.write('\x1b[1mA\x1b[2mB\x1b[22mC');
+
+      final line = terminal.buffer.lines[0];
+      expect(line.getAttributes(0) & CellAttr.bold, isNot(0));
+      expect(line.getAttributes(1) & CellAttr.bold, isNot(0));
+      expect(line.getAttributes(1) & CellAttr.faint, isNot(0));
+      expect(line.getAttributes(2) & CellAttr.bold, 0);
+      expect(line.getAttributes(2) & CellAttr.faint, 0);
+    });
   });
 
   group('Terminal.osc52', () {

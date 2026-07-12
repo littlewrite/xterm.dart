@@ -190,6 +190,7 @@ void main() {
         pointerInputs: PointerInputs.all(),
         vsync: tester,
       );
+      addTearDown(terminalView.dispose);
 
       await tester.pumpWidget(
         MaterialApp(
@@ -269,6 +270,7 @@ void main() {
         pointerInputs: PointerInputs.all(),
         vsync: tester,
       );
+      addTearDown(terminalView.dispose);
 
       await tester.pumpWidget(
         MaterialApp(
@@ -338,6 +340,45 @@ void main() {
       },
     );
 
+    testWidgets(
+      'allows local selection with PointerInputs.all when mouse mode is off',
+      (tester) async {
+        final output = <String>[];
+        final terminal = Terminal(onOutput: output.add);
+        terminal.write('hello world');
+
+        final terminalView = TerminalController(
+          pointerInputs: PointerInputs.all(),
+          vsync: tester,
+        );
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalView(
+                terminal,
+                controller: terminalView,
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        final rect = tester.getRect(find.byType(TerminalView));
+        final start = rect.topLeft + const Offset(8, 8);
+        final end = rect.topLeft + const Offset(80, 8);
+        final pointer = TestPointer(1, PointerDeviceKind.mouse);
+
+        await tester.sendEventToBinding(pointer.down(start));
+        await tester.sendEventToBinding(pointer.move(end));
+        await tester.pump();
+
+        expect(output, isEmpty);
+        expect(terminalView.selection, isNotNull);
+        expect(terminal.buffer.getText(terminalView.selection!), isNotEmpty);
+      },
+    );
+
     testWidgets('reports mouse up after drag when drag input is enabled',
         (tester) async {
       final output = <String>[];
@@ -367,8 +408,10 @@ void main() {
       );
       final cellSize = renderTerminal.cellSize;
       final rect = tester.getRect(find.byType(TerminalView));
-      final downOffset = rect.topLeft + Offset(cellSize.width / 2, cellSize.height / 2);
-      final dragOffset = rect.topLeft + Offset(cellSize.width * 1.5, cellSize.height / 2);
+      final downOffset =
+          rect.topLeft + Offset(cellSize.width / 2, cellSize.height / 2);
+      final dragOffset =
+          rect.topLeft + Offset(cellSize.width * 1.5, cellSize.height / 2);
 
       final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await gesture.addPointer(location: downOffset);
@@ -420,7 +463,8 @@ void main() {
         final dragOffset =
             rect.topLeft + Offset(cellSize.width * 1.5, cellSize.height / 2);
 
-        final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        final gesture =
+            await tester.createGesture(kind: PointerDeviceKind.mouse);
         await gesture.addPointer(location: downOffset);
         await tester.pump();
         await gesture.down(downOffset);
@@ -438,6 +482,173 @@ void main() {
         expect(output, contains('\x1B[<0;2;1m'));
       },
     );
+
+    testWidgets('Shift pressed mid-drag starts local selection',
+        (tester) async {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+      terminal.write('\x1b[?1006;1002h');
+      terminal.write('hello world');
+      final key = GlobalKey<TerminalViewState>();
+
+      final terminalView = TerminalController(
+        pointerInputs: PointerInputs.all(),
+        vsync: tester,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              key: key,
+              controller: terminalView,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final renderTerminal = key.currentState!.renderTerminal;
+      final cellSize = renderTerminal.cellSize;
+      final rect = tester.getRect(find.byType(TerminalView));
+      final downOffset =
+          rect.topLeft + Offset(cellSize.width / 2, cellSize.height / 2);
+      final appDragOffset =
+          rect.topLeft + Offset(cellSize.width * 1.5, cellSize.height / 2);
+      final localDragOffset =
+          rect.topLeft + Offset(cellSize.width * 4.5, cellSize.height / 2);
+
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: downOffset);
+      await tester.pump();
+      await gesture.down(downOffset);
+      await tester.pump();
+      await gesture.moveTo(appDragOffset);
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+      await gesture.moveTo(localDragOffset);
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(output, contains('\x1B[<32;2;1M'));
+      expect(output, contains('\x1B[<0;5;1m'));
+      expect(terminalView.selection, isNotNull);
+      expect(terminal.buffer.getText(terminalView.selection!), isNotEmpty);
+      terminalView.dispose();
+    });
+
+    testWidgets('falls back to local selection if drag handling stops mid-drag',
+        (tester) async {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+      terminal.write('\x1b[?1006;1002h');
+      terminal.write('hello world');
+      final key = GlobalKey<TerminalViewState>();
+
+      final terminalView = TerminalController(
+        pointerInputs: PointerInputs.all(),
+        vsync: tester,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              key: key,
+              controller: terminalView,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final renderTerminal = key.currentState!.renderTerminal;
+      final cellSize = renderTerminal.cellSize;
+      final rect = tester.getRect(find.byType(TerminalView));
+      final downOffset =
+          rect.topLeft + Offset(cellSize.width / 2, cellSize.height / 2);
+      final appDragOffset =
+          rect.topLeft + Offset(cellSize.width * 1.5, cellSize.height / 2);
+      final localDragOffset =
+          rect.topLeft + Offset(cellSize.width * 4.5, cellSize.height / 2);
+
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: downOffset);
+      await tester.pump();
+      await gesture.down(downOffset);
+      await tester.pump();
+      await gesture.moveTo(appDragOffset);
+      await tester.pump();
+      terminal.write('\x1b[?1002l');
+      await gesture.moveTo(localDragOffset);
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(output, contains('\x1B[<32;2;1M'));
+      expect(terminalView.selection, isNotNull);
+      expect(terminal.buffer.getText(terminalView.selection!), isNotEmpty);
+      terminalView.dispose();
+    });
+
+    testWidgets('reports mouse up when tap-only input becomes local selection',
+        (tester) async {
+      final output = <String>[];
+
+      final terminal = Terminal(onOutput: output.add);
+      terminal.write('\x1b[?1006;1002h');
+      terminal.write('hello world');
+      final key = GlobalKey<TerminalViewState>();
+
+      final terminalView = TerminalController(
+        pointerInputs: const PointerInputs({PointerInput.tap}),
+        vsync: tester,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              key: key,
+              controller: terminalView,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final renderTerminal = key.currentState!.renderTerminal;
+      final cellSize = renderTerminal.cellSize;
+      final rect = tester.getRect(find.byType(TerminalView));
+      final downOffset =
+          rect.topLeft + Offset(cellSize.width / 2, cellSize.height / 2);
+      final dragOffset =
+          rect.topLeft + Offset(cellSize.width * 1.5, cellSize.height / 2);
+
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(pointer.down(downOffset));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.sendEventToBinding(pointer.move(dragOffset));
+      await tester.pump();
+      await tester.sendEventToBinding(pointer.up());
+      await tester.pump();
+
+      expect(output, contains('\x1B[<0;1;1M'));
+      expect(output, contains('\x1B[<0;2;1m'));
+      expect(terminalView.selection, isNotNull);
+      expect(terminal.buffer.getText(terminalView.selection!), isNotEmpty);
+      terminalView.dispose();
+    });
 
     testWidgets('Shift+mouse drag prefers local selection over mouse reporting',
         (tester) async {

@@ -85,8 +85,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   PointerDeviceKind? _mousePointerKind;
   TerminalMouseButton _mouseButton = TerminalMouseButton.left;
   bool _suppressNextTapUp = false;
-  bool _mouseReportedDragMotion = false;
   bool _mouseDragWasHandledByTerminal = false;
+  bool _mouseDownWasHandledByTerminal = false;
   Timer? _autoScrollTimer;
   Offset? _pendingAutoScrollPosition;
 
@@ -222,14 +222,15 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _isMouseDeviceDown = true;
       _mousePointerKind = event.kind;
       _mouseButton = _mouseButtonFor(event.buttons);
-      _mouseReportedDragMotion = false;
       _mouseDragWasHandledByTerminal = false;
+      _mouseDownWasHandledByTerminal = false;
       _mouseSelectionBase = renderTerminal.getCellOffset(
         event.localPosition,
       );
       _mouseSelectionBaseAnchor =
           renderTerminal.createSelectionAnchor(_mouseSelectionBase!);
       _isMouseSelectionInProgress = false;
+      _resetDragHandleState();
     } else {
       // 触摸设备：检查是否点击了拖杆
       if (_shouldShowHandles) {
@@ -271,13 +272,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
           motion: true,
         );
         if (handled) {
-          _mouseReportedDragMotion = true;
           _mouseDragWasHandledByTerminal = true;
           return;
         }
-      }
-      if (_mouseDragWasHandledByTerminal && !_isMouseSelectionInProgress) {
-        return;
       }
       _handleMouseSelectionUpdate(event.localPosition);
       return;
@@ -306,11 +303,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
   void _onPointerUp(PointerUpEvent event) {
     if (_isPointerKindMouse(event.kind)) {
-      final shouldReleaseAppDrag =
-          _mouseDragWasHandledByTerminal &&
-          _mouseReportedDragMotion;
-
-      if (shouldReleaseAppDrag) {
+      if (_mouseDragWasHandledByTerminal) {
         renderTerminal.mouseEvent(
           _mouseButton,
           TerminalMouseButtonState.up,
@@ -326,9 +319,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       }
 
       if (_isMouseSelectionInProgress) {
+        if (_mouseDownWasHandledByTerminal) {
+          renderTerminal.mouseEvent(
+            _mouseButton,
+            TerminalMouseButtonState.up,
+            event.localPosition,
+          );
+        }
         _finishMouseSelection();
-      } else if (!_isDraggingHandle && !_isDragHandleReady) {
-        _resetMouseSelectionState();
       } else {
         _resetMouseSelectionState();
       }
@@ -701,7 +699,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     return TerminalMouseButton.left;
   }
 
-  void _tapDown(
+  bool _tapDown(
     GestureTapDownCallback? callback,
     TapDownDetails details,
     TerminalMouseButton button, {
@@ -720,6 +718,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     if (!handled || forceCallback) {
       callback?.call(details);
     }
+    return handled;
   }
 
   void _tapUp(
@@ -744,12 +743,13 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   bool _handleMouseSelectionUpdate(Offset localPosition) {
+    // 是否转发 drag 给应用，已在 _onPointerMove 里用 mouseEvent(handled) 判断。
+    // 走到这里说明当前未消费该拖动（mouse mode off / 不支持 motion），应允许本地选区。
+    // 若仍用 shouldSendPointerInput(drag) 短路，PointerInputs.all() 时普通 shell 将无法拖选。
     if (!_isMouseDeviceDown ||
         !_isPointerKindMouse(_mousePointerKind) ||
         _isDraggingHandle ||
-        _isDragHandleReady ||
-        (widget.terminalController.shouldSendPointerInput(PointerInput.drag) &&
-            !_shouldForceLocalMouseSelection)) {
+        _isDragHandleReady) {
       return false;
     }
 
@@ -808,8 +808,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     _stopSelectionAutoScroll();
     _isMouseDeviceDown = false;
     _isMouseSelectionInProgress = false;
-    _mouseReportedDragMotion = false;
     _mouseDragWasHandledByTerminal = false;
+    _mouseDownWasHandledByTerminal = false;
     _mouseSelectionBase = null;
     _mouseSelectionBaseAnchor = null;
     _mousePointerKind = null;
@@ -884,11 +884,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
     // 鼠标设备立即执行，触摸设备由 GestureArena 消歧后自然调用
     if (_isPointerKindMouse(details.kind) || _shouldSendTapEvent) {
-      _tapDown(
+      final handled = _tapDown(
         widget.onTapDown,
         details,
         TerminalMouseButton.left,
       );
+      if (_isPointerKindMouse(details.kind)) {
+        _mouseDownWasHandledByTerminal = handled;
+      }
     }
   }
 

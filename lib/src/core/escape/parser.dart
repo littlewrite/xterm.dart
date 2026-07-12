@@ -500,6 +500,7 @@ class EscapeParser {
           i = groupEnd + 1;
           continue;
         case 22:
+          handler.unsetCursorBold();
           handler.unsetCursorFaint();
           i = groupEnd + 1;
           continue;
