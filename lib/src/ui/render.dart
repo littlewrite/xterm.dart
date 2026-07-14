@@ -245,11 +245,25 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // 只有行数、活动 buffer、列/行尺寸这些“几何信息”变化时，
     // 才需要重新计算 scroll extent 和 stick-to-bottom。
     final geometryChanged = _didTerminalGeometryChange();
+    final buffer = _terminal.buffer;
+    final cursorAbsY = buffer.absoluteCursorY;
+    TerminalRenderDebug.logFlush(
+      lineCount: buffer.lines.length,
+      viewWidth: _terminal.viewWidth,
+      viewHeight: _terminal.viewHeight,
+      cursorX: buffer.cursorX,
+      cursorY: buffer.cursorY,
+      cursorAbsY: cursorAbsY,
+      scrollBack: buffer.scrollBack,
+      currentLineWrapped: buffer.currentLine.isWrapped,
+      previousLineWrapped:
+          cursorAbsY > 0 && buffer.lines[cursorAbsY - 1].isWrapped,
+    );
     TerminalRenderDebug.logChange(
       geometryChanged: geometryChanged,
       stickToBottom: _stickToBottom,
-      lineCount: _terminal.buffer.lines.length,
-      cursorAbsY: _terminal.buffer.absoluteCursorY,
+      lineCount: buffer.lines.length,
+      cursorAbsY: cursorAbsY,
       scrollOffset: _scrollOffset,
       maxScrollExtent: _maxScrollExtent,
     );

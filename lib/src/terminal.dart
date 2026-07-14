@@ -459,8 +459,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void carriageReturn() {
     _buffer.setCursorX(0);
-    // Soft-wrap flag must not glue this line to the next after a redraw.
-    _buffer.currentLine.isWrapped = false;
   }
 
   @override

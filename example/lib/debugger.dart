@@ -54,6 +54,9 @@ class _MyHomePageState extends State<MyHomePage> {
 
   late final Pty pty;
 
+  IOSink? diagnosticLog;
+  var diagnosticSequence = 0;
+
   late final Map<ShortcutActivator, Intent> terminalShortcuts =
       Map<ShortcutActivator, Intent>.from(defaultTerminalShortcuts)
         ..removeWhere((activator, _) =>
@@ -85,6 +88,7 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     super.initState();
+    _startDiagnosticLog();
     keyboard = VirtualKeyboard(
       LoggingInputHandler(
         defaultInputHandler,
@@ -101,8 +105,10 @@ class _MyHomePageState extends State<MyHomePage> {
 
   /// Write data to both the main terminal and the debugger
   void write(String data) {
+    _logPtyChunk('rx', data);
     terminal.write(data);
     debugger.write(data);
+    _logTerminalState();
   }
 
   Future<void> initTerminal() async {
@@ -146,8 +152,49 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void ptyWrite(String data) {
-    terminal.write(data);
-    debugger.write(data);
+    write(data);
+  }
+
+  void _startDiagnosticLog() {
+    final file = File('xterm_conpty_debug.log').absolute;
+    diagnosticLog = file.openWrite(mode: FileMode.writeOnlyAppend);
+    _logDiagnostic(
+        'session-start file=${file.path} platform=${Platform.operatingSystem}');
+  }
+
+  void _logDiagnostic(String message) {
+    final line = '${DateTime.now().toIso8601String()} '
+        '#${++diagnosticSequence} $message';
+    diagnosticLog?.writeln(line);
+    if (!message.startsWith('[xterm.render]')) {
+      debugPrint(line);
+    }
+  }
+
+  void _logPtyChunk(String direction, String data) {
+    const maxLogLength = 8192;
+    final escaped = escapeForLog(data);
+    final payload = escaped.length <= maxLogLength
+        ? escaped
+        : '${escaped.substring(0, maxLogLength)}<truncated>';
+    _logDiagnostic('pty-$direction chars=${data.length} data=$payload');
+  }
+
+  void _logTerminalState() {
+    final buffer = terminal.buffer;
+    final cursorAbsY = buffer.absoluteCursorY;
+    final currentText = escapeForLog(buffer.currentLine.getText().trimRight());
+    final previousText = cursorAbsY > 0
+        ? escapeForLog(buffer.lines[cursorAbsY - 1].getText().trimRight())
+        : '';
+    _logDiagnostic(
+      'terminal-state lines=${buffer.lines.length} scrollBack=${buffer.scrollBack} '
+      'view=[${terminal.viewWidth},${terminal.viewHeight}] '
+      'cursor=[${buffer.cursorX},${buffer.cursorY}] cursorAbsY=$cursorAbsY '
+      'wrapCurrent=${buffer.currentLine.isWrapped} '
+      'wrapPrevious=${cursorAbsY > 0 && buffer.lines[cursorAbsY - 1].isWrapped} '
+      'previous="$previousText" current="$currentText"',
+    );
   }
 
   void _startPty() {
@@ -164,13 +211,24 @@ class _MyHomePageState extends State<MyHomePage> {
     });
 
     terminal.onOutput = (data) {
+      _logPtyChunk('tx', data);
       pty.write(const Utf8Encoder().convert(data));
       debugger.write(data);
     };
 
     terminal.onResize = (w, h, pw, ph) {
+      _logDiagnostic('pty-resize view=[$w,$h] pixels=[$pw,$ph]');
       pty.resize(h, w);
     };
+  }
+
+  @override
+  void dispose() {
+    diagnosticLog?.writeln(
+      '${DateTime.now().toIso8601String()} session-end',
+    );
+    diagnosticLog?.close();
+    super.dispose();
   }
 
   @override
@@ -191,6 +249,8 @@ class _MyHomePageState extends State<MyHomePage> {
                     debuggerTerminal ?? terminal,
                     shortcuts: terminalShortcuts,
                     onKeyEvent: _handleTerminalViewKeyEvent,
+                    renderDebug: true,
+                    onDebugLog: _logDiagnostic,
                   ),
                 ),
                 SizedBox(

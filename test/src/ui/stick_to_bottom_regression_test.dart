@@ -6,7 +6,8 @@ import 'package:xterm/xterm.dart';
 /// 回归：高速连续输出时视口必须 stick 到底部，且最新行在 buffer 中完整可读。
 /// Windows 上曾出现 scroll 跟丢 + 残影叠字，看起来像输出和 prompt 混在一起。
 void main() {
-  testWidgets('rapid multi-chunk writes keep viewport at bottom', (tester) async {
+  testWidgets('rapid multi-chunk writes keep viewport at bottom',
+      (tester) async {
     final terminal = Terminal(maxLines: 2000);
     final scrollController = ScrollController();
 
@@ -93,5 +94,44 @@ void main() {
     final render = tester.allRenderObjects.whereType<RenderTerminal>().first;
     expect(render.debugNeedsPaint, isFalse);
     expect(terminal.buffer.getText(), contains('THE NEW LINE'));
+  });
+
+  testWidgets('full scrollback keeps the final prompt at the bottom',
+      (tester) async {
+    final terminal = Terminal(maxLines: 40);
+    final scrollController = ScrollController();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            height: 160,
+            child: TerminalView(
+              terminal,
+              scrollController: scrollController,
+              textStyle: const TerminalStyle(fontSize: 12),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    for (var chunk = 0; chunk < 80; chunk++) {
+      terminal.write('result-$chunk ${'x' * 32}\r\n');
+    }
+    terminal.write('PS D:\\dart\\FaTerm> ');
+    await tester.pump();
+
+    expect(terminal.buffer.lines.length, 40);
+    expect(
+      scrollController.position.pixels,
+      closeTo(scrollController.position.maxScrollExtent, 1.0),
+    );
+    expect(
+      terminal.buffer.currentLine.getText().trimRight(),
+      'PS D:\\dart\\FaTerm>',
+    );
   });
 }

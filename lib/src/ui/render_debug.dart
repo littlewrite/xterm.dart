@@ -103,12 +103,25 @@ class TerminalRenderDebug {
 
   static void logFlush({
     required int lineCount,
+    required int viewWidth,
+    required int viewHeight,
+    required int cursorX,
+    required int cursorY,
     required int cursorAbsY,
+    required int scrollBack,
+    required bool currentLineWrapped,
+    required bool previousLineWrapped,
   }) {
     if (!enabled && sink == null) {
       return;
     }
     _flushSeq++;
-    log('flush#$_flushSeq lines=$lineCount cursorAbsY=$cursorAbsY');
+    log(
+      'flush#$_flushSeq lines=$lineCount '
+      'view=[$viewWidth,$viewHeight] '
+      'cursor=[$cursorX,$cursorY] cursorAbsY=$cursorAbsY '
+      'scrollBack=$scrollBack wrapCurrent=$currentLineWrapped '
+      'wrapPrevious=$previousLineWrapped',
+    );
   }
 }

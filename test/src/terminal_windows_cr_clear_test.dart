@@ -38,6 +38,18 @@ void main() {
     expect(text, contains('Next'));
   });
 
+  test('carriage return preserves an existing soft-wrap chain', () {
+    final terminal = Terminal(platform: TerminalTargetPlatform.windows);
+    terminal.resize(10, 6, 10, 16);
+
+    terminal.write('1234567890A');
+    expect(terminal.buffer.lines[0].isWrapped, isTrue);
+
+    terminal.write('\x1b[1;1H\r');
+
+    expect(terminal.buffer.lines[0].isWrapped, isTrue);
+  });
+
   test('macOS carriage return preserves suffix after overwrite', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
@@ -83,7 +95,8 @@ void main() {
     expect(terminal.buffer.lines[3].getText().trimRight(), '4444444444');
   });
 
-  test('explicit lineFeed clears isWrapped (aligns with Windows Terminal '
+  test(
+      'explicit lineFeed clears isWrapped (aligns with Windows Terminal '
       '_DoLineFeed SetWrapForced(false))', () {
     final terminal = Terminal(platform: TerminalTargetPlatform.windows);
     terminal.resize(20, 6, 10, 16);
