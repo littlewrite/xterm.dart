@@ -330,6 +330,37 @@ void main() {
       expect(cl.length, 0);
     });
 
+    test('trimStart detaches removed items and keeps remaining indexes stable',
+        () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(10);
+      final items = List.generate(6, IndexedValue.new);
+      cl.pushAll(items);
+
+      cl.trimStart(2);
+
+      expect(items[0].attached, isFalse);
+      expect(items[1].attached, isFalse);
+      expect(items[2].attached, isTrue);
+      expect(items[2].index, 0);
+      expect(items[5].index, 3);
+    });
+
+    test('push when full detaches overwritten item in the same cyclic slot', () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(3);
+      final item0 = IndexedValue(0);
+      final item1 = IndexedValue(1);
+      final item2 = IndexedValue(2);
+      final item3 = IndexedValue(3);
+
+      cl.pushAll([item0, item1, item2]);
+      cl.push(item3);
+
+      expect(item0.attached, isFalse);
+      expect(item1.index, 0);
+      expect(item2.index, 1);
+      expect(item3.index, 2);
+    });
+
     test('can track index of items', () {
       final cl = IndexAwareCircularBuffer<IndexedValue<int>>(3);
       final item0 = IndexedValue(0);

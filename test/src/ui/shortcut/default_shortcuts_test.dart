@@ -33,6 +33,16 @@ void main() {
     expect(
       hasActivator(
         (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyV &&
+            activator.control &&
+            !activator.shift,
+      ),
+      isFalse,
+    );
+
+    expect(
+      hasActivator(
+        (activator) =>
             activator.trigger == LogicalKeyboardKey.insert && activator.control,
       ),
       isTrue,

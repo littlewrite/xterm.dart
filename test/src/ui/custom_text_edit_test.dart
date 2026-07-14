@@ -5,6 +5,116 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/src/ui/custom_text_edit.dart';
 
 void main() {
+  testWidgets('sends cached IME geometry when the input connection opens', (
+    tester,
+  ) async {
+    final focusNode = FocusNode();
+    final logs = <String>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: CustomTextEdit(
+            focusNode: focusNode,
+            onInsert: (_) {},
+            onDelete: () {},
+            onComposing: (_) {},
+            onAction: (_) {},
+            onKeyEvent: (node, event) => KeyEventResult.ignored,
+            onInputConnectionChange: (connected) {},
+            onDebugLog: logs.add,
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    final state = tester.state<CustomTextEditState>(
+      find.byType(CustomTextEdit),
+    );
+    const caretRect = Rect.fromLTWH(40, 60, 10, 20);
+    state.setEditableRect(
+      const Size(800, 600),
+      Matrix4.identity(),
+      caretRect,
+    );
+    expect(
+        logs, contains(contains('editableGeometry notSent connected=false')));
+
+    tester.testTextInput.log.clear();
+    focusNode.requestFocus();
+    await tester.pump();
+
+    final composingRectCall = tester.testTextInput.log.singleWhere(
+      (call) => call.method == 'TextInput.setMarkedTextRect',
+    );
+    expect(composingRectCall.arguments, <String, dynamic>{
+      'width': caretRect.width,
+      'height': caretRect.height,
+      'x': caretRect.left,
+      'y': caretRect.top,
+    });
+    expect(logs, contains(contains('editableGeometry sent')));
+
+    focusNode.dispose();
+  });
+
+  testWidgets('reports terminal cursor rect as the IME composing rect', (
+    tester,
+  ) async {
+    final focusNode = FocusNode();
+    final logs = <String>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: CustomTextEdit(
+            focusNode: focusNode,
+            onInsert: (_) {},
+            onDelete: () {},
+            onComposing: (_) {},
+            onAction: (_) {},
+            onKeyEvent: (node, event) => KeyEventResult.ignored,
+            onInputConnectionChange: (connected) {},
+            onDebugLog: logs.add,
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    focusNode.requestFocus();
+    await tester.pump();
+
+    tester.testTextInput.log.clear();
+
+    final state = tester.state<CustomTextEditState>(
+      find.byType(CustomTextEdit),
+    );
+    const caretRect = Rect.fromLTWH(24, 36, 8, 16);
+    state.setEditableRect(
+      const Size(640, 480),
+      Matrix4.identity(),
+      caretRect,
+    );
+
+    final composingRectCall = tester.testTextInput.log.singleWhere(
+      (call) => call.method == 'TextInput.setMarkedTextRect',
+    );
+    expect(
+      composingRectCall.arguments,
+      <String, dynamic>{
+        'width': caretRect.width,
+        'height': caretRect.height,
+        'x': caretRect.left,
+        'y': caretRect.top,
+      },
+    );
+    expect(logs, contains(contains('globalCaret=Rect.fromLTRB(24.0, 36.0')));
+
+    focusNode.dispose();
+  });
+
   testWidgets('IME delete command emits a single backspace', (tester) async {
     final focusNode = FocusNode();
     var deleteCount = 0;

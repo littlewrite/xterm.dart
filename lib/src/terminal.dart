@@ -168,7 +168,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _frameFlushScheduled = false;
   // 支持嵌套批量更新，只有最外层 write 结束后才安排刷新。
   int _updateBatchDepth = 0;
-
   /* State getters */
 
   /// Number of cells in a terminal row.
@@ -460,6 +459,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void carriageReturn() {
     _buffer.setCursorX(0);
+    // Soft-wrap flag must not glue this line to the next after a redraw.
+    _buffer.currentLine.isWrapped = false;
   }
 
   @override
@@ -491,11 +492,17 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void index() {
+    // Explicit IND breaks soft-wrap chain (aligns with Windows Terminal's
+    // _DoLineFeed which calls SetWrapForced(false) for non-auto-wrap feeds).
+    _buffer.currentLine.isWrapped = false;
     _buffer.index();
   }
 
   @override
   void nextLine() {
+    // Explicit CNL/NEL breaks soft-wrap chain (aligns with Windows Terminal's
+    // _DoLineFeed which calls SetWrapForced(false) for non-auto-wrap feeds).
+    _buffer.currentLine.isWrapped = false;
     _buffer.index();
     _buffer.setCursorX(0);
   }
@@ -529,7 +536,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     }
 
     for (var i = 0; i < count; i++) {
-      _buffer.writeChar(_precedingCodepoint);
+      writeChar(_precedingCodepoint);
     }
   }
 
@@ -1044,8 +1051,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   bool _scheduleFrameFlush() {
     try {
-      // 把本轮批量写入合并到下一帧统一通知，降低高频输出时的重建压力。
-      SchedulerBinding.instance.scheduleFrameCallback((_) {
+      final scheduler = SchedulerBinding.instance;
+      // scheduleFrameCallback 只注册回调；若当前没有 pending frame，
+      // Windows 上持续输出时可能推迟到下一次偶然事件才 flush，造成多帧
+      // 内容一次性画出或 stick-to-bottom 跟丢。无 pending frame 时主动请求。
+      if (!scheduler.hasScheduledFrame) {
+        scheduler.scheduleFrame();
+      }
+      scheduler.scheduleFrameCallback((_) {
         _flushPendingListeners();
       });
       return true;

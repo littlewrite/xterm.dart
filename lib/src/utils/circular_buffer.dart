@@ -40,12 +40,20 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
     final cyclicIndex = _getCyclicIndex(index);
     final oldChild = _array[cyclicIndex];
 
-    // Only detach the old child if it's different from the new child
-    // and hasn't already been moved to another position (which happens
-    // during scroll operations where items are shifted in sequence).
     if (oldChild != null && oldChild != child) {
-      if (oldChild.attached && oldChild.index == index) {
-        oldChild._detach();
+      // Detach the occupant of this cyclic slot when it still belongs here.
+      //
+      // push()-when-full calls _adoptChild(length, ...) so [index] is maxLength,
+      // while the oldest item reports index 0. Comparing only to [index] would
+      // leave the overwritten line attached (ghost anchors / wrong y).
+      // Matching by cyclic slot covers that case; matching by relative index
+      // keeps scrollUp/deleteLines safe when the same BufferLine is still
+      // referenced from another slot after a partial shift.
+      if (oldChild.attached) {
+        final oldIndex = oldChild.index;
+        if (oldIndex == index || _getCyclicIndex(oldIndex) == cyclicIndex) {
+          oldChild._detach();
+        }
       }
     }
 
@@ -239,8 +247,12 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
   /// instead just adjusts the start index and length.
   void trimStart(int count) {
     if (count > _length) count = _length;
+    for (var i = 0; i < count; i++) {
+      _dropChild(i);
+    }
     _startIndex += count;
     _startIndex %= _array.length;
+    _absoluteStartIndex += count;
     _length -= count;
   }
 

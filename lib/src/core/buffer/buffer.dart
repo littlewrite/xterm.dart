@@ -280,6 +280,9 @@ class Buffer {
   }
 
   void lineFeed() {
+    // Explicit LF breaks any soft-wrap chain (aligns with Windows Terminal's
+    // _DoLineFeed which calls SetWrapForced(false) for non-auto-wrap feeds).
+    currentLine.isWrapped = false;
     index();
     if (terminal.lineFeedMode) {
       setCursorX(0);
