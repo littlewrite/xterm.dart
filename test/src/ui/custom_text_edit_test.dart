@@ -9,7 +9,6 @@ void main() {
     tester,
   ) async {
     final focusNode = FocusNode();
-    final logs = <String>[];
 
     await tester.pumpWidget(
       MaterialApp(
@@ -22,7 +21,6 @@ void main() {
             onAction: (_) {},
             onKeyEvent: (node, event) => KeyEventResult.ignored,
             onInputConnectionChange: (connected) {},
-            onDebugLog: logs.add,
             child: const SizedBox.shrink(),
           ),
         ),
@@ -38,8 +36,6 @@ void main() {
       Matrix4.identity(),
       caretRect,
     );
-    expect(
-        logs, contains(contains('editableGeometry notSent connected=false')));
 
     tester.testTextInput.log.clear();
     focusNode.requestFocus();
@@ -54,7 +50,6 @@ void main() {
       'x': caretRect.left,
       'y': caretRect.top,
     });
-    expect(logs, contains(contains('editableGeometry sent')));
 
     focusNode.dispose();
   });
@@ -63,7 +58,6 @@ void main() {
     tester,
   ) async {
     final focusNode = FocusNode();
-    final logs = <String>[];
 
     await tester.pumpWidget(
       MaterialApp(
@@ -76,7 +70,6 @@ void main() {
             onAction: (_) {},
             onKeyEvent: (node, event) => KeyEventResult.ignored,
             onInputConnectionChange: (connected) {},
-            onDebugLog: logs.add,
             child: const SizedBox.shrink(),
           ),
         ),
@@ -110,7 +103,6 @@ void main() {
         'y': caretRect.top,
       },
     );
-    expect(logs, contains(contains('globalCaret=Rect.fromLTRB(24.0, 36.0')));
 
     focusNode.dispose();
   });
@@ -198,7 +190,8 @@ void main() {
     focusNode.dispose();
   });
 
-  testWidgets('commits composing text when IME collapses composition in place', (
+  testWidgets('commits composing text when IME collapses composition in place',
+      (
     tester,
   ) async {
     final focusNode = FocusNode();

@@ -25,7 +25,7 @@ class _LineBuilder {
     _length += length;
   }
 
-  /// Reuses the given [line] as the initial buffer for this builder.
+  /// Reuses [line] as the first output row of a logical line.
   void setBuffer(BufferLine line, int length) {
     _result = line;
     _length = length;
@@ -35,10 +35,8 @@ class _LineBuilder {
     anchor.reparent(_result, _length + offset);
   }
 
-  BufferLine take({required bool wrapped}) {
+  BufferLine take() {
     final result = _result;
-    result.isWrapped = wrapped;
-    // result.resize(_length);
 
     _result = BufferLine(_capacity);
     _length = 0;
@@ -70,33 +68,33 @@ class _LineReflow {
       return;
     }
 
-    // We already have some content in the buffer, so we copy the content into
-    // the builder instead of reusing the line.
     if (_lines.isNotEmpty || _builder.isNotEmpty) {
       _addPart(line, from: 0, to: trimmedLength);
       return;
     }
 
     if (newWidth >= oldWidth) {
-      // Reuse the line to avoid copying the content and object allocation.
       _builder.setBuffer(line, trimmedLength);
-    } else {
-      _lines.add(line);
+      return;
+    }
 
-      if (trimmedLength > newWidth) {
-        if (line.getWidth(newWidth - 1) == 2) {
-          _addPart(line, from: newWidth - 1, to: trimmedLength);
-        } else {
-          _addPart(line, from: newWidth, to: trimmedLength);
-        }
+    _lines.add(line);
+
+    var overflowStart = newWidth;
+    if (trimmedLength > newWidth) {
+      if (line.getWidth(newWidth - 1) == 2) {
+        overflowStart--;
       }
+      _addPart(line, from: overflowStart, to: trimmedLength);
     }
 
+    // resize() intentionally preserves hidden cells. They must be cleared
+    // after moving the overflow, otherwise selection text can expose the same
+    // suffix both on this row and on its wrapped continuation.
+    for (var i = overflowStart; i < trimmedLength; i++) {
+      line.resetCell(i);
+    }
     line.resize(newWidth);
-
-    if (line.getWidth(newWidth - 1) == 2) {
-      line.resetCell(newWidth - 1);
-    }
   }
 
   /// Adds part of [line] from [from] to [to] to the reflow operation.
@@ -137,7 +135,7 @@ class _LineReflow {
 
       // Create a new line if the buffer is filled up.
       if (lineFilled) {
-        _lines.add(_builder.take(wrapped: _lines.isNotEmpty));
+        _lines.add(_builder.take());
       }
     }
 
@@ -153,7 +151,11 @@ class _LineReflow {
   /// Finalizes the reflow operation and returns the result.
   List<BufferLine> finish() {
     if (_builder.isNotEmpty) {
-      _lines.add(_builder.take(wrapped: _lines.isNotEmpty));
+      _lines.add(_builder.take());
+    }
+
+    for (var i = 0; i < _lines.length; i++) {
+      _lines[i].isWrapped = i < _lines.length - 1;
     }
 
     return _lines;
@@ -168,22 +170,18 @@ List<BufferLine> reflow(
   final result = <BufferLine>[];
 
   for (var i = 0; i < lines.length; i++) {
-    final line = lines[i];
+    var line = lines[i];
 
     final reflow = _LineReflow(oldWidth, newWidth);
 
+    var wrapsToNextLine = line.isWrapped;
     reflow.add(line);
 
-    for (var offset = i + 1; offset < lines.length; offset++) {
-      final nextLine = lines[offset];
-
-      if (!nextLine.isWrapped) {
-        break;
-      }
-
+    while (wrapsToNextLine && i + 1 < lines.length) {
       i++;
-
-      reflow.add(nextLine);
+      line = lines[i];
+      wrapsToNextLine = line.isWrapped;
+      reflow.add(line);
     }
 
     result.addAll(reflow.finish());

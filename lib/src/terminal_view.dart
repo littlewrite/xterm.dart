@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/input/keys.dart';
@@ -20,7 +21,6 @@ import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
-import 'package:xterm/src/ui/render_debug.dart';
 import 'package:xterm/src/ui/scroll_handler.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/shortcut/actions.dart';
@@ -83,8 +83,6 @@ class TerminalView extends StatefulWidget {
     this.onCopied,
     this.onSelectAll,
     this.onPaste,
-    this.onDebugLog,
-    this.renderDebug = false,
   });
 
   /// The underlying terminal that this widget renders.
@@ -231,13 +229,6 @@ class TerminalView extends StatefulWidget {
   /// Callback to paste text from clipboard to terminal.
   final void Function()? onPaste;
 
-  /// Receives opt-in diagnostic messages for keyboard and IME processing.
-  final ValueChanged<String>? onDebugLog;
-
-  /// When true, emits scroll/paint/flush diagnostics via [onDebugLog] and
-  /// optionally `debugPrint`.
-  final bool renderDebug;
-
   @override
   State<TerminalView> createState() => TerminalViewState();
 }
@@ -256,6 +247,7 @@ class TerminalViewState extends State<TerminalView>
 
   final _searchBoxKey = GlobalKey();
 
+  bool _hasInputConnection = false;
   Timer? _cursorBlinkTimer;
   final _cursorBlinkVisible = ValueNotifier<bool>(true);
   bool _previousBlinkEnabled = false;
@@ -299,30 +291,6 @@ class TerminalViewState extends State<TerminalView>
     _initSearchBox();
     widget.terminal.onSearch = _showSearch;
     widget.terminal.onCloseSearch = _closeSearch;
-    _syncRenderDebug();
-  }
-
-  void _syncRenderDebug() {
-    if (!widget.renderDebug) {
-      if (identical(TerminalRenderDebug.sink, widget.onDebugLog) ||
-          identical(TerminalRenderDebug.sink, _forwardRenderDebugLog)) {
-        TerminalRenderDebug.sink = null;
-      }
-      TerminalRenderDebug.enabled = false;
-      return;
-    }
-    TerminalRenderDebug.enabled = true;
-    TerminalRenderDebug.resetCounters();
-    if (widget.onDebugLog != null) {
-      TerminalRenderDebug.sink = widget.onDebugLog;
-    } else if (TerminalRenderDebug.sink == null) {
-      TerminalRenderDebug.sink = _forwardRenderDebugLog;
-    }
-    TerminalRenderDebug.log('renderDebug enabled');
-  }
-
-  void _forwardRenderDebugLog(String message) {
-    debugPrint(message);
   }
 
   void _initSearchBox() {
@@ -391,21 +359,11 @@ class TerminalViewState extends State<TerminalView>
       widget.terminal.onSearch = _showSearch;
       widget.terminal.onCloseSearch = _closeSearch;
     }
-    if (oldWidget.renderDebug != widget.renderDebug ||
-        oldWidget.onDebugLog != widget.onDebugLog) {
-      _syncRenderDebug();
-    }
     super.didUpdateWidget(oldWidget);
   }
 
   @override
   void dispose() {
-    if (widget.renderDebug &&
-        identical(TerminalRenderDebug.sink, widget.onDebugLog ??
-            _forwardRenderDebugLog)) {
-      TerminalRenderDebug.sink = null;
-      TerminalRenderDebug.enabled = false;
-    }
     _focusNode.removeListener(_handleFocusChange);
     if (widget.focusNode == null) {
       _focusNode.dispose();
@@ -509,7 +467,6 @@ class TerminalViewState extends State<TerminalView>
         deleteDetection: widget.deleteDetection,
         enableSuggestions: widget.enableSuggestions,
         shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
-        onDebugLog: widget.onDebugLog,
         onInsert: _onInsert,
         onDelete: () {
           _scrollToBottom();
@@ -669,12 +626,7 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _handleFocusChange() {
-    _debugLog('focus changed hasFocus=${_focusNode.hasFocus}');
     _updateCursorBlink(resetVisible: true);
-  }
-
-  void _debugLog(String message) {
-    widget.onDebugLog?.call('[xterm.view] $message');
   }
 
   void _updateCursorBlink({
@@ -746,7 +698,6 @@ class TerminalViewState extends State<TerminalView>
     // generate hardware key events. So we need first try to send the key
     // as a hardware key event. If it fails, then we send it as a text input.
     final consumed = key == null ? false : widget.terminal.keyInput(key);
-    _debugLog('textInsert text=$text mappedKey=$key keyHandled=$consumed');
 
     if (!consumed) {
       widget.terminal.textInput(text);
@@ -757,23 +708,13 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _onComposing(String? text) {
-    _debugLog('composing text=$text');
     _composingText.value = text;
     _updateCursorBlink(resetVisible: true);
   }
 
   KeyEventResult _handleKeyEvent(FocusNode focusNode, KeyEvent event) {
-    _debugLog(
-      'keyEvent type=${event.runtimeType} logical=${event.logicalKey.keyLabel} '
-      'character=${event.character} '
-      'ctrl=${HardwareKeyboard.instance.isControlPressed} '
-      'shift=${HardwareKeyboard.instance.isShiftPressed} '
-      'alt=${HardwareKeyboard.instance.isAltPressed} '
-      'meta=${HardwareKeyboard.instance.isMetaPressed}',
-    );
     final resultOverride = widget.onKeyEvent?.call(focusNode, event);
     if (resultOverride != null && resultOverride != KeyEventResult.ignored) {
-      _debugLog('keyEvent consumedBy=onKeyEvent result=$resultOverride');
       return resultOverride;
     }
 
@@ -784,7 +725,6 @@ class TerminalViewState extends State<TerminalView>
     );
 
     if (shortcutResult != KeyEventResult.ignored) {
-      _debugLog('keyEvent consumedBy=shortcut result=$shortcutResult');
       return shortcutResult;
     }
 
@@ -798,12 +738,10 @@ class TerminalViewState extends State<TerminalView>
 
     final key = keyToTerminalKey(event.logicalKey);
     if (key == null) {
-      _debugLog('keyEvent terminalKey=null result=ignored');
       return KeyEventResult.ignored;
     }
 
     final handled = _sendTerminalKey(key, character: event.character);
-    _debugLog('keyEvent terminalKey=$key handled=$handled');
 
     if (!handled) {
       return KeyEventResult.ignored;
@@ -842,11 +780,6 @@ class TerminalViewState extends State<TerminalView>
       shift: shift,
     );
 
-    _debugLog(
-      'terminal.keyInput key=$key character=$character ctrl=$ctrl '
-      'shift=$shift alt=$alt handled=$handled',
-    );
-
     if (handled) {
       _scrollToBottom();
       _updateCursorBlink(resetVisible: true);
@@ -860,10 +793,6 @@ class TerminalViewState extends State<TerminalView>
     Matrix4 transform,
     Rect caretRect,
   ) {
-    _debugLog(
-      'forwardEditableRect size=$editableSize localCaret=$caretRect '
-      'globalCaret=${MatrixUtils.transformRect(transform, caretRect)}',
-    );
     _customTextEditKey.currentState?.setEditableRect(
       editableSize,
       transform,
@@ -872,7 +801,29 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _onInputConnectionChange(bool hasInputConnection) {
-    _debugLog('inputConnection changed connected=$hasInputConnection');
+    if (_hasInputConnection == hasInputConnection || !mounted) {
+      return;
+    }
+
+    void applyState() {
+      if (!mounted || _hasInputConnection == hasInputConnection) {
+        return;
+      }
+      setState(() {
+        _hasInputConnection = hasInputConnection;
+      });
+    }
+
+    final schedulerPhase = SchedulerBinding.instance.schedulerPhase;
+    if (schedulerPhase == SchedulerPhase.idle ||
+        schedulerPhase == SchedulerPhase.postFrameCallbacks) {
+      applyState();
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      applyState();
+    });
   }
 
   void _scrollToBottom() {
@@ -1241,7 +1192,9 @@ class TerminalViewState extends State<TerminalView>
       devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
       paintCursor: paintCursor,
       paintSelectionHandles: widget.showToolbar,
-      onEditableRect: !widget.hardwareKeyboardOnly && !widget.readOnly
+      onEditableRect: _hasInputConnection &&
+              !widget.hardwareKeyboardOnly &&
+              !widget.readOnly
           ? _onEditableRect
           : null,
       composingText: composingText,

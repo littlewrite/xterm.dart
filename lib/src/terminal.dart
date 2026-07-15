@@ -1049,14 +1049,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   bool _scheduleFrameFlush() {
     try {
-      final scheduler = SchedulerBinding.instance;
-      // scheduleFrameCallback 只注册回调；若当前没有 pending frame，
-      // Windows 上持续输出时可能推迟到下一次偶然事件才 flush，造成多帧
-      // 内容一次性画出或 stick-to-bottom 跟丢。无 pending frame 时主动请求。
-      if (!scheduler.hasScheduledFrame) {
-        scheduler.scheduleFrame();
-      }
-      scheduler.scheduleFrameCallback((_) {
+      SchedulerBinding.instance.scheduleFrameCallback((_) {
         _flushPendingListeners();
       });
       return true;

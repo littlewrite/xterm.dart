@@ -587,9 +587,16 @@ class Buffer {
         if (previousLineEnd == 0) {
           break;
         }
+        final previousCharacterStart =
+            previousLine.getCharacterStart(previousLineEnd - 1);
+        final previousCharacter =
+            previousLine.getCodePoint(previousCharacterStart);
+        if (separators.contains(previousCharacter)) {
+          break;
+        }
         lineIndex = previousLineIndex;
         line = previousLine;
-        start = line.getCharacterStart(previousLineEnd - 1);
+        start = previousCharacterStart;
         continue;
       }
       final previousIndex = line.getCharacterStart(start - 1);
@@ -616,9 +623,14 @@ class Buffer {
         if (nextLine.getTrimmedLength(viewWidth) == 0) {
           break;
         }
+        final nextCharacterStart = nextLine.getCharacterStart(0);
+        final nextCharacter = nextLine.getCodePoint(nextCharacterStart);
+        if (separators.contains(nextCharacter)) {
+          break;
+        }
         lineIndex = nextLineIndex;
         line = nextLine;
-        end = line.getCharacterEnd(0);
+        end = line.getCharacterEnd(nextCharacterStart);
         continue;
       }
       final nextIndex = line.getCharacterStart(end);

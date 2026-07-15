@@ -30,6 +30,30 @@ void main() {
       expect(lines[3], line4);
     });
 
+    test('preserves selected text after reflowing soft-wrapped lines', () {
+      final terminal = Terminal();
+      terminal.resize(120, 40);
+
+      const text =
+          '''Changes to be committed:\r\n  (use "git restore --staged <file>..." to unstage)\r\n        modified:   ../test/src/ui/terminal_view_key_repeat_test.dart\r\nChanges not staged for commit:\r\n  (use "git restore <file>..." to discard changes in working directory)\r\n        modified:   ../test/src/ui/terminal_view_key_repeat_test.dart''';
+
+      terminal.write(text);
+      terminal.resize(40, 40);
+
+      final lastLine = terminal.buffer.currentLine;
+      final selected = terminal.buffer.getText(
+        BufferRangeLine(
+          const CellOffset(0, 0),
+          CellOffset(
+            lastLine.getTrimmedLength(terminal.viewWidth),
+            terminal.buffer.absoluteCursorY,
+          ),
+        ),
+      );
+
+      expect(selected, text.replaceAll('\r', ''));
+    });
+
     test('can handle negative start', () {
       final terminal = Terminal();
 
@@ -288,6 +312,45 @@ void main() {
       expect(
         terminal.mainBuffer.getWordBoundary(CellOffset(1, 1)),
         BufferRangeLine(CellOffset(0, 1), CellOffset(3, 1)),
+      );
+    });
+
+    test('does not include a separator after a soft-wrap boundary', () {
+      final terminal = Terminal();
+      terminal.resize(5, 6);
+      terminal.write('abcde bar');
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(2, 0)),
+        BufferRangeLine(CellOffset(0, 0), CellOffset(5, 0)),
+      );
+    });
+
+    test('does not include a separator before a soft-wrap boundary', () {
+      final terminal = Terminal();
+      terminal.resize(5, 6);
+      terminal.write('abcd efgh');
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(1, 1)),
+        BufferRangeLine(CellOffset(0, 1), CellOffset(4, 1)),
+      );
+    });
+
+    test('keeps word boundaries correct after reflow', () {
+      final terminal = Terminal();
+      terminal.resize(20, 6);
+      terminal.write('abcdefghij\r\nklmnop');
+
+      terminal.resize(5, 6);
+
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(1, 1)),
+        BufferRangeLine(CellOffset(0, 0), CellOffset(5, 1)),
+      );
+      expect(
+        terminal.mainBuffer.getWordBoundary(CellOffset(1, 2)),
+        BufferRangeLine(CellOffset(0, 2), CellOffset(1, 3)),
       );
     });
   });

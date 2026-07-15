@@ -17,7 +17,6 @@ import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
 import 'package:xterm/src/ui/painter.dart';
-import 'package:xterm/src/ui/render_debug.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/terminal_size.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
@@ -245,33 +244,9 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     // 只有行数、活动 buffer、列/行尺寸这些“几何信息”变化时，
     // 才需要重新计算 scroll extent 和 stick-to-bottom。
     final geometryChanged = _didTerminalGeometryChange();
-    final buffer = _terminal.buffer;
-    final cursorAbsY = buffer.absoluteCursorY;
-    TerminalRenderDebug.logFlush(
-      lineCount: buffer.lines.length,
-      viewWidth: _terminal.viewWidth,
-      viewHeight: _terminal.viewHeight,
-      cursorX: buffer.cursorX,
-      cursorY: buffer.cursorY,
-      cursorAbsY: cursorAbsY,
-      scrollBack: buffer.scrollBack,
-      currentLineWrapped: buffer.currentLine.isWrapped,
-      previousLineWrapped:
-          cursorAbsY > 0 && buffer.lines[cursorAbsY - 1].isWrapped,
-    );
-    TerminalRenderDebug.logChange(
-      geometryChanged: geometryChanged,
-      stickToBottom: _stickToBottom,
-      lineCount: buffer.lines.length,
-      cursorAbsY: cursorAbsY,
-      scrollOffset: _scrollOffset,
-      maxScrollExtent: _maxScrollExtent,
-    );
     if (geometryChanged) {
       _syncTerminalGeometryCache();
       markNeedsLayout();
-      // markNeedsLayout 在 size 未变时不保证会走 paint；高速输出场景下
-      // 若本帧漏画，Windows 上容易残留上一帧字形，看起来像输出和 prompt 混行。
       markNeedsPaint();
       _scheduleEditableRectUpdate();
       return;
@@ -670,9 +645,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   @override
   void paint(PaintingContext context, Offset offset) {
     _paint(context, offset);
-    // 主内容层不要无条件 setWillChangeHint。
-    // 光标闪烁已由独立 overlay 按需 hint；主层每帧 hint 会让 Windows
-    // 合成器更难稳定保留/清理 raster，高速滚动时容易出现旧字形残影叠字。
   }
 
   void _paint(PaintingContext context, Offset offset) {
@@ -691,26 +663,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
     final selection = _controller.selection?.normalized;
     final cellData = CellData.empty();
-
-    TerminalRenderDebug.logPaint(
-      stickToBottom: _stickToBottom,
-      firstLine: effectFirstLine,
-      lastLine: effectLastLine,
-      cursorAbsY: _terminal.buffer.absoluteCursorY,
-      scrollOffset: _scrollOffset,
-      maxScrollExtent: _maxScrollExtent,
-      force: false,
-    );
-
-    // 先铺满不透明背景。默认 cell 背景会跳过绘制；Windows 上若 raster
-    // 未干净替换，短行/空 cell 处会透出上一帧的旧字符，看起来像输出和
-    // prompt 混在一起。强制 alpha=1，避免主题色半透明时清不掉旧字形。
-    canvas.save();
-    canvas.clipRect(offset & size);
-    final backgroundPaint = Paint()
-      ..color = _painter.theme.background.withOpacity(1.0)
-      ..isAntiAlias = false;
-    canvas.drawRect(offset & size, backgroundPaint);
 
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
       final lineOffset = offset.translate(
@@ -752,7 +704,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       effectFirstLine,
       effectLastLine,
     );
-    canvas.restore();
   }
 
   /// Paints the text that is currently being composed in IME to [canvas] at

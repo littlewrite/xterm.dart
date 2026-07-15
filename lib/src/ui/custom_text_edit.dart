@@ -41,9 +41,6 @@ class CustomTextEdit extends StatefulWidget {
   /// Overrides the keyboard shortcuts handled before [onKeyEvent].
   final Map<ShortcutActivator, Intent>? shortcuts;
 
-  /// Receives opt-in diagnostic messages for IME and keyboard input.
-  final ValueChanged<String>? onDebugLog;
-
   /// Optional hook for IME-specific private commands.
   ///
   /// When the platform sends a private command via
@@ -96,7 +93,6 @@ class CustomTextEdit extends StatefulWidget {
     this.deleteDetection = false,
     this.enableSuggestions = true,
     this.shortcuts,
-    this.onDebugLog,
     this.onPrivateCommand,
     this.toolbarBuilder,
     this.hasSelection,
@@ -252,22 +248,15 @@ class CustomTextEditState extends State<CustomTextEdit>
           actions: <Type, Action<Intent>>{
             CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
               onInvoke: (intent) {
-                _debugLog('shortcut copy cause=${intent.cause}');
                 copySelection(SelectionChangedCause.keyboard);
                 return null;
               },
             ),
             PasteTextIntent: CallbackAction<PasteTextIntent>(
-              onInvoke: (intent) {
-                _debugLog('shortcut paste cause=${intent.cause}');
-                return pasteText(intent.cause);
-              },
+              onInvoke: (intent) => pasteText(intent.cause),
             ),
             SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
-              onInvoke: (intent) {
-                _debugLog('shortcut selectAll cause=${intent.cause}');
-                return selectAll(intent.cause);
-              },
+              onInvoke: (intent) => selectAll(intent.cause),
             ),
           },
           child: Focus(
@@ -282,10 +271,6 @@ class CustomTextEditState extends State<CustomTextEdit>
   }
 
   bool get hasInputConnection => _connection != null && _connection!.attached;
-
-  void _debugLog(String message) {
-    widget.onDebugLog?.call('[xterm.input] $message');
-  }
 
   void requestKeyboard() {
     if (widget.focusNode.hasFocus) {
@@ -354,12 +339,6 @@ class CustomTextEditState extends State<CustomTextEdit>
     _editableSize = editableSize;
     _editableTransform = transform.clone();
     _caretRect = caretRect;
-    final globalCaretRect = MatrixUtils.transformRect(transform, caretRect);
-    _debugLog(
-      'editableRect connected=$hasInputConnection size=$editableSize '
-      'localCaret=$caretRect globalCaret=$globalCaretRect '
-      'transform=${transform.storage}',
-    );
     _syncEditableGeometry();
   }
 
@@ -367,18 +346,15 @@ class CustomTextEditState extends State<CustomTextEdit>
     final editableSize = _editableSize;
     final transform = _editableTransform;
     if (!hasInputConnection || editableSize == null || transform == null) {
-      _debugLog('editableGeometry notSent connected=$hasInputConnection');
       return;
     }
 
     _connection?.setEditableSizeAndTransform(editableSize, transform);
     _connection?.setComposingRect(_caretRect);
     _connection?.setCaretRect(_caretRect);
-    _debugLog('editableGeometry sent composingRect=$_caretRect');
   }
 
   void _onFocusChange() {
-    _debugLog('focus changed hasFocus=${widget.focusNode.hasFocus}');
     _openOrCloseInputConnectionIfNeeded();
     if (!widget.focusNode.hasFocus && _menuController.isShown) {
       _menuController.remove();
@@ -386,15 +362,6 @@ class CustomTextEditState extends State<CustomTextEdit>
   }
 
   KeyEventResult _onKeyEvent(FocusNode focusNode, KeyEvent event) {
-    _debugLog(
-      'rawKey type=${event.runtimeType} logical=${event.logicalKey.keyLabel} '
-      'physical=${event.physicalKey.usbHidUsage} character=${event.character} '
-      'ctrl=${HardwareKeyboard.instance.isControlPressed} '
-      'shift=${HardwareKeyboard.instance.isShiftPressed} '
-      'alt=${HardwareKeyboard.instance.isAltPressed} '
-      'meta=${HardwareKeyboard.instance.isMetaPressed} '
-      'composing=${_currentEditingState.composing}',
-    );
     // Handle both KeyDownEvent and KeyRepeatEvent for key repeat functionality
     // Only process when not composing text
     if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
@@ -426,7 +393,6 @@ class CustomTextEditState extends State<CustomTextEdit>
       return;
     }
     if (hasInputConnection) {
-      _debugLog('inputConnection reuse');
       _connection!.show();
       widget.onInputConnectionChange(true);
       _connection!.setEditingState(_currentEditingState);
@@ -453,13 +419,11 @@ class CustomTextEditState extends State<CustomTextEdit>
     _connection!.show();
     _connection!.setEditingState(_currentEditingState);
     _syncEditableGeometry();
-    _debugLog('inputConnection opened viewId=${config.viewId}');
     widget.onInputConnectionChange(true);
   }
 
   void _closeInputConnectionIfNeeded() {
     if (hasInputConnection) {
-      _debugLog('inputConnection closing');
       _connection!.close();
       _connection = null;
       widget.onInputConnectionChange(false);
@@ -505,10 +469,6 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   @override
   void updateEditingValue(TextEditingValue value) {
-    _debugLog(
-      'editingValue textLength=${value.text.length} '
-      'selection=${value.selection} composing=${value.composing}',
-    );
     value = _normalizeEditingValue(value);
     if (_currentEditingState == value) {
       return;

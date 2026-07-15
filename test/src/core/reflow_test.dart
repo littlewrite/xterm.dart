@@ -10,15 +10,15 @@ void main() {
 
     expect(terminal.buffer.lines[0].toString(), '1234567890');
     expect(terminal.buffer.lines[1].toString(), 'abcdefg');
-    expect(terminal.buffer.lines[0].isWrapped, isFalse);
-    expect(terminal.buffer.lines[1].isWrapped, isTrue);
+    expect(terminal.buffer.lines[0].isWrapped, isTrue);
+    expect(terminal.buffer.lines[1].isWrapped, isFalse);
 
     terminal.resize(13, 10);
 
     expect(terminal.buffer.lines[0].toString(), '1234567890abc');
     expect(terminal.buffer.lines[1].toString(), 'defg');
-    expect(terminal.buffer.lines[0].isWrapped, isFalse);
-    expect(terminal.buffer.lines[1].isWrapped, isTrue);
+    expect(terminal.buffer.lines[0].isWrapped, isTrue);
+    expect(terminal.buffer.lines[1].isWrapped, isFalse);
 
     terminal.resize(20, 10);
 
@@ -37,10 +37,10 @@ void main() {
     expect(terminal.buffer.lines[2].toString(), 'abcde');
     expect(terminal.buffer.lines[3].toString(), 'fg');
 
-    expect(terminal.buffer.lines[0].isWrapped, isFalse);
+    expect(terminal.buffer.lines[0].isWrapped, isTrue);
     expect(terminal.buffer.lines[1].isWrapped, isTrue);
     expect(terminal.buffer.lines[2].isWrapped, isTrue);
-    expect(terminal.buffer.lines[3].isWrapped, isTrue);
+    expect(terminal.buffer.lines[3].isWrapped, isFalse);
 
     terminal.resize(6, 10);
 
@@ -48,9 +48,9 @@ void main() {
     expect(terminal.buffer.lines[1].toString(), '7890ab');
     expect(terminal.buffer.lines[2].toString(), 'cdefg');
 
-    expect(terminal.buffer.lines[0].isWrapped, isFalse);
+    expect(terminal.buffer.lines[0].isWrapped, isTrue);
     expect(terminal.buffer.lines[1].isWrapped, isTrue);
-    expect(terminal.buffer.lines[2].isWrapped, isTrue);
+    expect(terminal.buffer.lines[2].isWrapped, isFalse);
   });
 
   test('reflow() can reflow wide characters', () {

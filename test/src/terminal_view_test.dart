@@ -859,6 +859,58 @@ void main() {
       controller.dispose();
     });
 
+    testWidgets('double click stops at a separator after a soft wrap', (
+      tester,
+    ) async {
+      final terminal = Terminal()..resize(5, 6);
+      final controller = TerminalController(vsync: tester);
+      final key = GlobalKey<TerminalViewState>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalView(
+              terminal,
+              key: key,
+              controller: controller,
+              autoResize: false,
+            ),
+          ),
+        ),
+      );
+
+      terminal.write('abcde bar');
+      await tester.pump();
+
+      final render = key.currentState!.renderTerminal;
+      final gestureState =
+          tester.state(find.byType(TerminalGestureHandler)) as dynamic;
+      final localPosition = render.getOffset(const CellOffset(2, 0)) +
+          Offset(render.cellSize.width / 2, render.cellSize.height / 2);
+      final globalPosition =
+          tester.getTopLeft(find.byType(TerminalView)) + localPosition;
+
+      gestureState.onDoubleTapDown(
+        TapDownDetails(
+          globalPosition: globalPosition,
+          localPosition: localPosition,
+          kind: PointerDeviceKind.mouse,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        controller.selection,
+        BufferRangeLine(
+          CellOffset(0, 0),
+          CellOffset(5, 0),
+        ),
+      );
+      expect(terminal.buffer.getText(controller.selection!), equals('abcde'));
+
+      controller.dispose();
+    });
+
     testWidgets('shows toolbar for touch long press selection', (tester) async {
       final terminal = Terminal();
       final key = GlobalKey<TerminalViewState>();
