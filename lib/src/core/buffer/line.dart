@@ -29,6 +29,11 @@ class BufferLine with IndexedItem {
 
   Uint32List get data => _data;
 
+  int _revision = 0;
+
+  /// Increases whenever the visual contents of this line change.
+  int get revision => _revision;
+
   var isWrapped = false;
 
   int get length => _length;
@@ -103,27 +108,45 @@ class BufferLine with IndexedItem {
   CellData createCellData(int index) {
     final cellData = CellData.empty();
     final offset = index * _cellSize;
-    _data[offset + _cellForeground] = cellData.foreground;
-    _data[offset + _cellBackground] = cellData.background;
-    _data[offset + _cellAttributes] = cellData.flags;
-    _data[offset + _cellContent] = cellData.content;
+    if (_data[offset + _cellForeground] != cellData.foreground ||
+        _data[offset + _cellBackground] != cellData.background ||
+        _data[offset + _cellAttributes] != cellData.flags ||
+        _data[offset + _cellContent] != cellData.content) {
+      _data[offset + _cellForeground] = cellData.foreground;
+      _data[offset + _cellBackground] = cellData.background;
+      _data[offset + _cellAttributes] = cellData.flags;
+      _data[offset + _cellContent] = cellData.content;
+      _markDirty();
+    }
     return cellData;
   }
 
   void setForeground(int index, int value) {
-    _data[index * _cellSize + _cellForeground] = value;
+    final offset = index * _cellSize + _cellForeground;
+    if (_data[offset] == value) return;
+    _data[offset] = value;
+    _markDirty();
   }
 
   void setBackground(int index, int value) {
-    _data[index * _cellSize + _cellBackground] = value;
+    final offset = index * _cellSize + _cellBackground;
+    if (_data[offset] == value) return;
+    _data[offset] = value;
+    _markDirty();
   }
 
   void setAttributes(int index, int value) {
-    _data[index * _cellSize + _cellAttributes] = value;
+    final offset = index * _cellSize + _cellAttributes;
+    if (_data[offset] == value) return;
+    _data[offset] = value;
+    _markDirty();
   }
 
   void setContent(int index, int value) {
-    _data[index * _cellSize + _cellContent] = value;
+    final offset = index * _cellSize + _cellContent;
+    if (_data[offset] == value) return;
+    _data[offset] = value;
+    _markDirty();
   }
 
   void setCodePoint(int index, int char) {
@@ -133,34 +156,63 @@ class BufferLine with IndexedItem {
 
   void setCell(int index, int char, int witdh, CursorStyle style) {
     final offset = index * _cellSize;
+    final content = char | (witdh << CellContent.widthShift);
+    if (_data[offset + _cellForeground] == style.foreground &&
+        _data[offset + _cellBackground] == style.background &&
+        _data[offset + _cellAttributes] == style.attrs &&
+        _data[offset + _cellContent] == content) {
+      return;
+    }
     _data[offset + _cellForeground] = style.foreground;
     _data[offset + _cellBackground] = style.background;
     _data[offset + _cellAttributes] = style.attrs;
-    _data[offset + _cellContent] = char | (witdh << CellContent.widthShift);
+    _data[offset + _cellContent] = content;
+    _markDirty();
   }
 
   void setCellData(int index, CellData cellData) {
     final offset = index * _cellSize;
+    if (_data[offset + _cellForeground] == cellData.foreground &&
+        _data[offset + _cellBackground] == cellData.background &&
+        _data[offset + _cellAttributes] == cellData.flags &&
+        _data[offset + _cellContent] == cellData.content) {
+      return;
+    }
     _data[offset + _cellForeground] = cellData.foreground;
     _data[offset + _cellBackground] = cellData.background;
     _data[offset + _cellAttributes] = cellData.flags;
     _data[offset + _cellContent] = cellData.content;
+    _markDirty();
   }
 
   void eraseCell(int index, CursorStyle style) {
     final offset = index * _cellSize;
+    if (_data[offset + _cellForeground] == style.foreground &&
+        _data[offset + _cellBackground] == style.background &&
+        _data[offset + _cellAttributes] == style.attrs &&
+        _data[offset + _cellContent] == 0) {
+      return;
+    }
     _data[offset + _cellForeground] = style.foreground;
     _data[offset + _cellBackground] = style.background;
     _data[offset + _cellAttributes] = style.attrs;
     _data[offset + _cellContent] = 0;
+    _markDirty();
   }
 
   void resetCell(int index) {
     final offset = index * _cellSize;
+    if (_data[offset + _cellForeground] == 0 &&
+        _data[offset + _cellBackground] == 0 &&
+        _data[offset + _cellAttributes] == 0 &&
+        _data[offset + _cellContent] == 0) {
+      return;
+    }
     _data[offset + _cellForeground] = 0;
     _data[offset + _cellBackground] = 0;
     _data[offset + _cellAttributes] = 0;
     _data[offset + _cellContent] = 0;
+    _markDirty();
   }
 
   /// Erase cells whose index satisfies [start] <= index < [end]. Erased cells
@@ -197,6 +249,7 @@ class BufferLine with IndexedItem {
       for (var i = moveStart; i < moveEnd; i++) {
         _data[i] = _data[i + moveOffset];
       }
+      _markDirty();
     }
 
     for (var i = _length - count; i < _length; i++) {
@@ -235,6 +288,7 @@ class BufferLine with IndexedItem {
       for (var i = moveEnd - 1; i >= moveStart; i--) {
         _data[i + moveOffset] = _data[i];
       }
+      _markDirty();
     }
 
     final end = min(start + count, _length);
@@ -278,6 +332,7 @@ class BufferLine with IndexedItem {
     }
 
     _length = length;
+    _markDirty();
 
     for (var i = 0; i < _anchors.length; i++) {
       final anchor = _anchors[i];
@@ -329,9 +384,22 @@ class BufferLine with IndexedItem {
     var srcOffset = srcCol * _cellSize;
     var dstOffset = dstCol * _cellSize;
 
+    var changed = false;
     for (var i = 0; i < len * _cellSize; i++) {
-      _data[dstOffset++] = src._data[srcOffset++];
+      final value = src._data[srcOffset++];
+      if (_data[dstOffset] != value) {
+        _data[dstOffset] = value;
+        changed = true;
+      }
+      dstOffset++;
     }
+    if (changed) {
+      _markDirty();
+    }
+  }
+
+  void _markDirty() {
+    _revision++;
   }
 
   static int _calcCapacity(int length) {

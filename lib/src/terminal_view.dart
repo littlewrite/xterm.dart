@@ -487,7 +487,7 @@ class TerminalViewState extends State<TerminalView>
         onInputConnectionChange: _onInputConnectionChange,
         readOnly: widget.readOnly,
         toolbarBuilder: widget.toolbarBuilder,
-        hasSelection: () => _controller.selection != null,
+        hasSelection: () => _controller.selection?.isCollapsed == false,
         getSelectedText: () => renderTerminal.selectedText ?? '',
         onCopied: widget.onCopied,
         onSelectAll: widget.onSelectAll ?? () => renderTerminal.selectAll(),

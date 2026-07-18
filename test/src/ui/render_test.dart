@@ -4,6 +4,8 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/buffer/line.dart';
+import 'package:xterm/src/core/buffer/range_block.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/terminal.dart';
@@ -61,6 +63,20 @@ void main() {
     focusNode.dispose();
   });
 
+  test('RenderTerminal keeps block selection columns on middle rows', () {
+    final selection = BufferRangeBlock(
+      const CellOffset(5, 5),
+      const CellOffset(20, 10),
+    ).normalized;
+
+    expect(RenderTerminal.selectedStartColumn(selection, 5), 5);
+    expect(RenderTerminal.selectedStartColumn(selection, 7), 5);
+    expect(RenderTerminal.selectedStartColumn(selection, 10), 5);
+    expect(RenderTerminal.selectedEndColumn(selection, 5, 80), 20);
+    expect(RenderTerminal.selectedEndColumn(selection, 7, 80), 20);
+    expect(RenderTerminal.selectedEndColumn(selection, 10, 80), 20);
+  });
+
   test('TerminalPainter uses selection colors for selected cells', () {
     final terminal = Terminal();
     terminal.write('A');
@@ -78,6 +94,28 @@ void main() {
       TerminalThemes.defaultTheme.foreground,
     );
     expect(painter.effectiveBackgroundColor(cellData), isNull);
+  });
+
+  test('TerminalPainter reuses unchanged line pictures', () {
+    final painter = TerminalPainter(
+      theme: TerminalThemes.defaultTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+    final line = BufferLine(8)..setCodePoint(0, 65);
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    painter.paintLine(canvas, Offset.zero, line);
+    painter.paintLine(canvas, Offset.zero, line);
+
+    expect(painter.linePictureBuildCount, 1);
+
+    line.setCodePoint(0, 66);
+    painter.paintLine(canvas, Offset.zero, line);
+
+    expect(painter.linePictureBuildCount, 2);
+    recorder.endRecording().dispose();
   });
 
   test('TerminalPainter uses geometry-based custom glyph painting', () {
@@ -323,6 +361,43 @@ void main() {
     expect(render.shouldShowCursor, isTrue);
     expect(render.shouldPaintCursor(cursorBlinkVisible: false), isTrue);
     expect(render.shouldPaintCursor(cursorBlinkVisible: true), isTrue);
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal freezes the IME cursor while composing', () {
+    final terminal = Terminal();
+    const vsync = TestVSync();
+    final controller = TerminalController(vsync: vsync);
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    terminal.write('\x1b[2;3H');
+    render.composingText = 'pin';
+    final composingOffset = render.editableCursorOffset;
+
+    terminal.write('\x1b[8;12H');
+
+    expect(render.cursorOffset, isNot(composingOffset));
+    expect(render.editableCursorOffset, composingOffset);
+
+    render.composingText = null;
+    expect(render.editableCursorOffset, render.cursorOffset);
 
     focusNode.dispose();
     controller.dispose();

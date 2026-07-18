@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
+import 'package:xterm/src/ui/shortcut/actions.dart';
 
 /// Builds customized context menu entries for the text selection toolbar.
 ///
@@ -114,6 +115,9 @@ class CustomTextEditState extends State<CustomTextEdit>
   final ClipboardStatusNotifier _clipboardStatus = ClipboardStatusNotifier();
   TextSelectionToolbarAnchors? _toolbarAnchors;
   Rect _caretRect = Rect.zero;
+
+  @visibleForTesting
+  Rect get caretRect => _caretRect;
   Size? _editableSize;
   Matrix4? _editableTransform;
   TextEditingController? _controller;
@@ -246,8 +250,9 @@ class CustomTextEditState extends State<CustomTextEdit>
         shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
         child: Actions(
           actions: <Type, Action<Intent>>{
-            CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
-              onInvoke: (intent) {
+            CopySelectionTextIntent: CopyTerminalSelectionAction(
+              isSelectionAvailable: () => copyEnabled,
+              onCopy: (intent) {
                 copySelection(SelectionChangedCause.keyboard);
                 return null;
               },
@@ -338,7 +343,9 @@ class CustomTextEditState extends State<CustomTextEdit>
   void setEditableRect(Size editableSize, Matrix4 transform, Rect caretRect) {
     _editableSize = editableSize;
     _editableTransform = transform.clone();
-    _caretRect = caretRect;
+    if (_currentEditingState.composing.isCollapsed || _caretRect == Rect.zero) {
+      _caretRect = caretRect;
+    }
     _syncEditableGeometry();
   }
 

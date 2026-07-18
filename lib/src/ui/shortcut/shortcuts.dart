@@ -8,8 +8,9 @@ Map<ShortcutActivator, Intent> get defaultTerminalShortcuts {
     case TargetPlatform.fuchsia:
       return _defaultShortcuts;
     case TargetPlatform.linux:
-    case TargetPlatform.windows:
       return _defaultDesktopShortcuts;
+    case TargetPlatform.windows:
+      return _defaultWindowsShortcuts;
     case TargetPlatform.iOS:
     case TargetPlatform.macOS:
       return _defaultAppleShortcuts;
@@ -42,16 +43,29 @@ final Map<ShortcutActivator, Intent> _defaultDesktopShortcuts = {
       CopySelectionTextIntent.copy,
   SingleActivator(LogicalKeyboardKey.keyV, control: true, shift: true):
       const PasteTextIntent(SelectionChangedCause.keyboard),
-  SingleActivator(LogicalKeyboardKey.keyA, control: true):
+  SingleActivator(LogicalKeyboardKey.keyA, control: true, shift: true):
       const SelectAllTextIntent(SelectionChangedCause.keyboard),
-  SingleActivator(LogicalKeyboardKey.keyX, control: true):
-      CopySelectionTextIntent.cut(SelectionChangedCause.keyboard),
   SingleActivator(LogicalKeyboardKey.insert, control: true):
       CopySelectionTextIntent.copy,
   SingleActivator(LogicalKeyboardKey.insert, shift: true):
       const PasteTextIntent(SelectionChangedCause.keyboard),
-  SingleActivator(LogicalKeyboardKey.delete, shift: true):
-      CopySelectionTextIntent.cut(SelectionChangedCause.keyboard),
+};
+
+final Map<ShortcutActivator, Intent> _defaultWindowsShortcuts = {
+  SingleActivator(LogicalKeyboardKey.keyC, control: true):
+      CopySelectionTextIntent.copy,
+  SingleActivator(LogicalKeyboardKey.keyC, control: true, shift: true):
+      CopySelectionTextIntent.copy,
+  SingleActivator(LogicalKeyboardKey.keyV, control: true):
+      const PasteTextIntent(SelectionChangedCause.keyboard),
+  SingleActivator(LogicalKeyboardKey.keyV, control: true, shift: true):
+      const PasteTextIntent(SelectionChangedCause.keyboard),
+  SingleActivator(LogicalKeyboardKey.keyA, control: true, shift: true):
+      const SelectAllTextIntent(SelectionChangedCause.keyboard),
+  SingleActivator(LogicalKeyboardKey.insert, control: true):
+      CopySelectionTextIntent.copy,
+  SingleActivator(LogicalKeyboardKey.insert, shift: true):
+      const PasteTextIntent(SelectionChangedCause.keyboard),
 };
 
 final Map<ShortcutActivator, Intent> _defaultAppleShortcuts = {

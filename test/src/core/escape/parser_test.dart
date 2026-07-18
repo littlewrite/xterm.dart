@@ -32,6 +32,16 @@ void main() {
       verify(handler.setAppKeypadMode(false));
     });
 
+    test('dispatches LF, VT, and FF through line feed mode handling', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+
+      parser.write('\n\v\f');
+
+      verify(handler.lineFeed()).called(3);
+      verifyNever(handler.endLine());
+    });
+
     test('designates G2 charset via ESC *', () {
       final handler = MockEscapeHandler();
       final parser = EscapeParser(handler);
@@ -113,6 +123,28 @@ void main() {
       final parser = EscapeParser(handler);
 
       expect(() => parser.write('\x1b[48m'), returnsNormally);
+      verifyNever(handler.setBackgroundColorRgb(any, any, any));
+      verifyNever(handler.setBackgroundColor256(any));
+    });
+
+    test('does not reinterpret an unknown foreground color mode as SGR', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+
+      parser.write('\x1b[38;4;128;128;128m');
+
+      verifyNever(handler.setCursorUnderline());
+      verifyNever(handler.setForegroundColorRgb(any, any, any));
+      verifyNever(handler.setForegroundColor256(any));
+    });
+
+    test('does not reinterpret an unknown background color mode as SGR', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+
+      parser.write('\x1b[48;4;128;128;128m');
+
+      verifyNever(handler.setCursorUnderline());
       verifyNever(handler.setBackgroundColorRgb(any, any, any));
       verifyNever(handler.setBackgroundColor256(any));
     });

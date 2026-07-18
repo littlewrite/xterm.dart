@@ -100,7 +100,22 @@ void main() {
 
       terminal.keyInput(TerminalKey.keyA, character: 'a', alt: true);
 
-      expect(output, ['\x1bA']);
+      expect(output, ['\x1ba']);
+    });
+
+    test('preserves alt letter case', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.keyInput(TerminalKey.keyV, character: 'v', alt: true);
+      terminal.keyInput(
+        TerminalKey.keyV,
+        character: 'V',
+        alt: true,
+        shift: true,
+      );
+
+      expect(output, ['\x1bv', '\x1bV']);
     });
 
     test('keeps arrow keys on the keytab path', () {

@@ -205,7 +205,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     widget.terminalController.removeListener(_handleControllerSelectionChanged);
     _detachScrollController(_attachedScrollController);
     _trackedPointers.clear();
-    _stopSelectionAutoScroll();
+    _resetMouseSelectionState();
     super.dispose();
   }
 
@@ -811,6 +811,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     _mouseDragWasHandledByTerminal = false;
     _mouseDownWasHandledByTerminal = false;
     _mouseSelectionBase = null;
+    _mouseSelectionBaseAnchor?.dispose();
     _mouseSelectionBaseAnchor = null;
     _mousePointerKind = null;
   }

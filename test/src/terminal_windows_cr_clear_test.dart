@@ -38,6 +38,26 @@ void main() {
     expect(text, contains('Next'));
   });
 
+  test('LF preserves the cursor column while line feed mode is reset', () {
+    final terminal = Terminal(platform: TerminalTargetPlatform.windows);
+    terminal.resize(20, 6, 10, 16);
+
+    terminal.write('abc\n');
+
+    expect(terminal.buffer.cursorX, 3);
+    expect(terminal.buffer.cursorY, 1);
+  });
+
+  test('LF returns to column zero while line feed mode is set', () {
+    final terminal = Terminal(platform: TerminalTargetPlatform.windows);
+    terminal.resize(20, 6, 10, 16);
+
+    terminal.write('\x1b[20habc\n');
+
+    expect(terminal.buffer.cursorX, 0);
+    expect(terminal.buffer.cursorY, 1);
+  });
+
   test('carriage return preserves an existing soft-wrap chain', () {
     final terminal = Terminal(platform: TerminalTargetPlatform.windows);
     terminal.resize(10, 6, 10, 16);

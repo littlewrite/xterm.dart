@@ -8,6 +8,7 @@ import 'package:xterm/src/core/buffer/buffer.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
+import 'package:xterm/src/core/buffer/range_block.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
 import 'package:xterm/src/core/cell.dart';
@@ -202,8 +203,16 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   String? _composingText;
   set composingText(String? value) {
     if (value == _composingText) return;
+    final wasComposing = _isComposingText;
+    final willCompose = value != null && value.isNotEmpty;
+    if (!wasComposing && willCompose) {
+      _composingCursorOffset = cursorOffset;
+    } else if (wasComposing && !willCompose) {
+      _composingCursorOffset = null;
+    }
     _composingText = value;
     markNeedsPaint();
+    _scheduleEditableRectUpdate();
   }
 
   TerminalSize? _viewportSize;
@@ -212,6 +221,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   var _stickToBottom = true;
   bool _editableRectUpdateScheduled = false;
+  Offset? _composingCursorOffset;
   int _lastKnownLineCount = 0;
   int _lastKnownViewWidth = 0;
   int _lastKnownViewHeight = 0;
@@ -510,7 +520,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   void _notifyEditableRect() {
-    final caretRect = cursorOffset & _painter.cellSize;
+    final caretRect = editableCursorOffset & _painter.cellSize;
     final transform = getTransformTo(null);
 
     _onEditableRect?.call(size, transform, caretRect);
@@ -638,6 +648,13 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     );
   }
 
+  /// Cursor position used by the platform text input connection.
+  ///
+  /// It remains stable while IME composition is active because full-screen
+  /// terminal applications may move their rendering cursor independently of
+  /// the user's input position.
+  Offset get editableCursorOffset => _composingCursorOffset ?? cursorOffset;
+
   Size get cellSize {
     return _painter.cellSize;
   }
@@ -684,7 +701,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
         _terminal.buffer.absoluteCursorY <= effectLastLine) {
       if (_isComposingText) {
-        _paintComposingText(canvas, offset + cursorOffset);
+        _paintComposingText(canvas, offset + editableCursorOffset);
       }
 
       if (_paintCursor &&
@@ -750,8 +767,12 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     CellData cellData,
   ) {
     final cellWidth = _painter.cellSize.width;
-    final startColumn = _selectedStartColumn(selection, lineIndex);
-    final endColumn = _selectedEndColumn(selection, lineIndex);
+    final startColumn = selectedStartColumn(selection, lineIndex);
+    final endColumn = selectedEndColumn(
+      selection,
+      lineIndex,
+      _terminal.viewWidth,
+    );
 
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
@@ -772,18 +793,30 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     }
   }
 
-  int _selectedStartColumn(BufferRange selection, int lineIndex) {
+  @visibleForTesting
+  static int selectedStartColumn(BufferRange selection, int lineIndex) {
+    if (selection is BufferRangeBlock) {
+      return selection.begin.x;
+    }
     if (lineIndex == selection.begin.y) {
       return selection.begin.x;
     }
     return 0;
   }
 
-  int _selectedEndColumn(BufferRange selection, int lineIndex) {
+  @visibleForTesting
+  static int selectedEndColumn(
+    BufferRange selection,
+    int lineIndex,
+    int viewWidth,
+  ) {
+    if (selection is BufferRangeBlock) {
+      return selection.end.x;
+    }
     if (lineIndex == selection.end.y) {
       return selection.end.x;
     }
-    return _terminal.viewWidth;
+    return viewWidth;
   }
 
   void _paintHighlights(

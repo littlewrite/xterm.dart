@@ -107,6 +107,59 @@ void main() {
     focusNode.dispose();
   });
 
+  testWidgets('keeps the IME rect stable while composing', (tester) async {
+    final focusNode = FocusNode();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: CustomTextEdit(
+            focusNode: focusNode,
+            onInsert: (_) {},
+            onDelete: () {},
+            onComposing: (_) {},
+            onAction: (_) {},
+            onKeyEvent: (node, event) => KeyEventResult.ignored,
+            onInputConnectionChange: (connected) {},
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    focusNode.requestFocus();
+    await tester.pump();
+
+    final state = tester.state<CustomTextEditState>(
+      find.byType(CustomTextEdit),
+    );
+    const initialRect = Rect.fromLTWH(24, 36, 8, 16);
+    state.setEditableRect(
+      const Size(640, 480),
+      Matrix4.identity(),
+      initialRect,
+    );
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'pin',
+        selection: TextSelection.collapsed(offset: 3),
+        composing: TextRange(start: 0, end: 3),
+      ),
+    );
+    await tester.pump();
+
+    state.setEditableRect(
+      const Size(640, 480),
+      Matrix4.identity(),
+      const Rect.fromLTWH(160, 180, 8, 16),
+    );
+
+    expect(state.caretRect, initialRect);
+
+    focusNode.dispose();
+  });
+
   testWidgets('IME delete command emits a single backspace', (tester) async {
     final focusNode = FocusNode();
     var deleteCount = 0;

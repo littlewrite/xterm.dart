@@ -353,7 +353,7 @@ class AltInputHandler implements TerminalInputHandler {
 
   @override
   String? call(TerminalKeyboardEvent event) {
-    if (!event.alt || event.ctrl || event.shift) {
+    if (!event.alt || event.ctrl) {
       return null;
     }
 
@@ -361,11 +361,20 @@ class AltInputHandler implements TerminalInputHandler {
       return null;
     }
 
+    final character = event.character;
+    if (character != null &&
+        character.runes.length == 1 &&
+        character.runes.first >= 0x20 &&
+        character.runes.first != 0x7f) {
+      return '\x1b$character';
+    }
+
     final key = event.key;
 
     if (key.index >= TerminalKey.keyA.index &&
         key.index <= TerminalKey.keyZ.index) {
-      final charCode = key.index - TerminalKey.keyA.index + 65;
+      final base = event.shift ? Ascii.A : Ascii.a;
+      final charCode = key.index - TerminalKey.keyA.index + base;
       final input = [0x1b, charCode];
       return String.fromCharCodes(input);
     }

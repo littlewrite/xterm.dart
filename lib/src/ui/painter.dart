@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/painting.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
@@ -29,6 +31,13 @@ class TerminalPainter {
   /// cell no longer produces the same visual output. For example, when
   /// [_textStyle] is changed, or when the system font changes.
   final _paragraphCache = ParagraphCache(10240);
+  final _linePictureCache = <BufferLine, _CachedLinePicture>{};
+  int _linePictureBuildCount = 0;
+
+  static const _maximumLinePictureCacheSize = 512;
+
+  @visibleForTesting
+  int get linePictureBuildCount => _linePictureBuildCount;
 
   TerminalStyle get textStyle => _textStyle;
   TerminalStyle _textStyle;
@@ -37,6 +46,7 @@ class TerminalPainter {
     _textStyle = value;
     _cellSize = _measureCharSize();
     _paragraphCache.clear();
+    _clearLinePictureCache();
   }
 
   TextScaler get textScaler => _textScaler;
@@ -46,6 +56,7 @@ class TerminalPainter {
     _textScaler = value;
     _cellSize = _measureCharSize();
     _paragraphCache.clear();
+    _clearLinePictureCache();
   }
 
   TerminalTheme get theme => _theme;
@@ -55,6 +66,7 @@ class TerminalPainter {
     _theme = value;
     _colorPalette = PaletteBuilder(value).build();
     _paragraphCache.clear();
+    _clearLinePictureCache();
   }
 
   double get devicePixelRatio => _devicePixelRatio;
@@ -62,6 +74,7 @@ class TerminalPainter {
   set devicePixelRatio(double value) {
     if (value == _devicePixelRatio) return;
     _devicePixelRatio = value;
+    _clearLinePictureCache();
   }
 
   Size _measureCharSize() {
@@ -77,6 +90,7 @@ class TerminalPainter {
     CharMetricsCache.instance.clear();
     _cellSize = _measureCharSize();
     _paragraphCache.clear();
+    _clearLinePictureCache();
   }
 
   /// Paints the cursor based on the current cursor type.
@@ -155,7 +169,69 @@ class TerminalPainter {
   /// Paints [line] to [canvas] at [offset]. The x offset of [offset] is usually
   /// 0, and the y offset is the top of the line.
   void paintLine(Canvas canvas, Offset offset, BufferLine line) {
-    _paintLineCells(canvas, offset, line);
+    final originPhase = _devicePixelPhase(offset);
+    final cached = _linePictureCache.remove(line);
+    if (cached != null &&
+        cached.revision == line.revision &&
+        cached.originPhase == originPhase) {
+      _linePictureCache[line] = cached;
+      canvas.save();
+      canvas.translate(
+        offset.dx - originPhase.dx,
+        offset.dy - originPhase.dy,
+      );
+      canvas.drawPicture(cached.picture);
+      canvas.restore();
+      return;
+    }
+
+    cached?.picture.dispose();
+
+    final recorder = ui.PictureRecorder();
+    final recordingCanvas = Canvas(recorder);
+    _paintLineCells(recordingCanvas, originPhase, line);
+    final picture = recorder.endRecording();
+    _linePictureBuildCount++;
+
+    _linePictureCache[line] = _CachedLinePicture(
+      line.revision,
+      originPhase,
+      picture,
+    );
+    _evictLinePictureIfNeeded();
+
+    canvas.save();
+    canvas.translate(
+      offset.dx - originPhase.dx,
+      offset.dy - originPhase.dy,
+    );
+    canvas.drawPicture(picture);
+    canvas.restore();
+  }
+
+  Offset _devicePixelPhase(Offset offset) {
+    if (_devicePixelRatio <= 0) return Offset.zero;
+
+    double phase(double value) {
+      final deviceValue = value * _devicePixelRatio;
+      return (deviceValue - deviceValue.floor()) / _devicePixelRatio;
+    }
+
+    return Offset(phase(offset.dx), phase(offset.dy));
+  }
+
+  void _evictLinePictureIfNeeded() {
+    while (_linePictureCache.length > _maximumLinePictureCacheSize) {
+      final oldestLine = _linePictureCache.keys.first;
+      _linePictureCache.remove(oldestLine)?.picture.dispose();
+    }
+  }
+
+  void _clearLinePictureCache() {
+    for (final cached in _linePictureCache.values) {
+      cached.picture.dispose();
+    }
+    _linePictureCache.clear();
   }
 
   void paintLineBackgrounds(Canvas canvas, Offset offset, BufferLine line) {
@@ -393,4 +469,12 @@ class TerminalPainter {
         return Color(colorValue | 0xFF000000);
     }
   }
+}
+
+class _CachedLinePicture {
+  const _CachedLinePicture(this.revision, this.originPhase, this.picture);
+
+  final int revision;
+  final Offset originPhase;
+  final ui.Picture picture;
 }

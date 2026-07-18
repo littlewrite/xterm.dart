@@ -4,6 +4,22 @@ import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
 
+class CopyTerminalSelectionAction extends Action<CopySelectionTextIntent> {
+  CopyTerminalSelectionAction({
+    required this.isSelectionAvailable,
+    required this.onCopy,
+  });
+
+  final bool Function() isSelectionAvailable;
+  final Object? Function(CopySelectionTextIntent intent) onCopy;
+
+  @override
+  bool isEnabled(CopySelectionTextIntent intent) => isSelectionAvailable();
+
+  @override
+  Object? invoke(CopySelectionTextIntent intent) => onCopy(intent);
+}
+
 class TerminalActions extends StatelessWidget {
   const TerminalActions({
     super.key,
@@ -42,8 +58,10 @@ class TerminalActions extends StatelessWidget {
             return null;
           },
         ),
-        CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
-          onInvoke: (intent) async {
+        CopySelectionTextIntent: CopyTerminalSelectionAction(
+          isSelectionAvailable: () =>
+              controller.selection?.isCollapsed == false,
+          onCopy: (intent) async {
             final selection = controller.selection;
 
             if (selection == null) {

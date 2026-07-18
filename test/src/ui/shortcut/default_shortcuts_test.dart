@@ -11,7 +11,7 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
-  test('windows shortcuts expose common clipboard aliases', () {
+  test('windows shortcuts follow Windows Terminal clipboard bindings', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
 
     final shortcuts = defaultTerminalShortcuts;
@@ -19,6 +19,16 @@ void main() {
     bool hasActivator(bool Function(SingleActivator) predicate) {
       return shortcuts.keys.whereType<SingleActivator>().any(predicate);
     }
+
+    expect(
+      hasActivator(
+        (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyC &&
+            activator.control &&
+            !activator.shift,
+      ),
+      isTrue,
+    );
 
     expect(
       hasActivator(
@@ -36,6 +46,34 @@ void main() {
             activator.trigger == LogicalKeyboardKey.keyV &&
             activator.control &&
             !activator.shift,
+      ),
+      isTrue,
+    );
+
+    expect(
+      hasActivator(
+        (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyA &&
+            activator.control &&
+            activator.shift,
+      ),
+      isTrue,
+    );
+
+    expect(
+      hasActivator(
+        (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyA &&
+            activator.control &&
+            !activator.shift,
+      ),
+      isFalse,
+    );
+
+    expect(
+      hasActivator(
+        (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyX && activator.control,
       ),
       isFalse,
     );
@@ -55,13 +93,43 @@ void main() {
       ),
       isTrue,
     );
+  });
+
+  test('linux shortcuts preserve terminal control keys', () {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+
+    final shortcuts = defaultTerminalShortcuts;
+
+    bool hasActivator(bool Function(SingleActivator) predicate) {
+      return shortcuts.keys.whereType<SingleActivator>().any(predicate);
+    }
 
     expect(
       hasActivator(
         (activator) =>
-            activator.trigger == LogicalKeyboardKey.delete && activator.shift,
+            activator.trigger == LogicalKeyboardKey.keyC &&
+            activator.control &&
+            activator.shift,
       ),
       isTrue,
+    );
+    expect(
+      hasActivator(
+        (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyC &&
+            activator.control &&
+            !activator.shift,
+      ),
+      isFalse,
+    );
+    expect(
+      hasActivator(
+        (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyA &&
+            activator.control &&
+            !activator.shift,
+      ),
+      isFalse,
     );
   });
 
@@ -87,8 +155,7 @@ void main() {
     expect(
       hasActivator(
         (activator) =>
-            activator.trigger == LogicalKeyboardKey.keyV &&
-            activator.control,
+            activator.trigger == LogicalKeyboardKey.keyV && activator.control,
       ),
       isFalse,
     );
