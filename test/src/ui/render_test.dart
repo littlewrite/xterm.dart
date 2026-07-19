@@ -118,6 +118,27 @@ void main() {
     recorder.endRecording().dispose();
   });
 
+  test('TerminalPainter reuses line pictures across fractional DPR phases', () {
+    final painter = TerminalPainter(
+      theme: TerminalThemes.defaultTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      devicePixelRatio: 1.25,
+    );
+    final line = BufferLine(8)..setCodePoint(0, 65);
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    for (var pass = 0; pass < 2; pass++) {
+      for (var y = 0; y < 5; y++) {
+        painter.paintLine(canvas, Offset(0, y.toDouble()), line);
+      }
+    }
+
+    expect(painter.linePictureBuildCount, 4);
+    recorder.endRecording().dispose();
+  });
+
   test('TerminalPainter uses geometry-based custom glyph painting', () {
     final painter = TerminalPainter(
       theme: TerminalThemes.defaultTheme,
@@ -401,6 +422,39 @@ void main() {
 
     focusNode.dispose();
     controller.dispose();
+  });
+
+  test('RenderTerminal resolves Linux IME anchor after ASCII composition', () {
+    final offset = RenderTerminal.resolveComposingEndOffset(
+      startOffset: const Offset(20, 40),
+      text: 'pin',
+      viewWidth: 80,
+      cellSize: const Size(10, 20),
+    );
+
+    expect(offset, const Offset(50, 40));
+  });
+
+  test('RenderTerminal wraps Linux IME anchor at the terminal width', () {
+    final offset = RenderTerminal.resolveComposingEndOffset(
+      startOffset: const Offset(70, 40),
+      text: 'pinyin',
+      viewWidth: 10,
+      cellSize: const Size(10, 20),
+    );
+
+    expect(offset, const Offset(30, 60));
+  });
+
+  test('RenderTerminal counts wide runes in the Linux IME anchor', () {
+    final offset = RenderTerminal.resolveComposingEndOffset(
+      startOffset: const Offset(20, 40),
+      text: '中文',
+      viewWidth: 80,
+      cellSize: const Size(10, 20),
+    );
+
+    expect(offset, const Offset(60, 40));
   });
 
   test('RenderTerminal hides cursor when terminal visibility mode is disabled',

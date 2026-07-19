@@ -343,7 +343,10 @@ class CustomTextEditState extends State<CustomTextEdit>
   void setEditableRect(Size editableSize, Matrix4 transform, Rect caretRect) {
     _editableSize = editableSize;
     _editableTransform = transform.clone();
-    if (_currentEditingState.composing.isCollapsed || _caretRect == Rect.zero) {
+    if (defaultTargetPlatform == TargetPlatform.linux ||
+        defaultTargetPlatform == TargetPlatform.windows ||
+        _currentEditingState.composing.isCollapsed ||
+        _caretRect == Rect.zero) {
       _caretRect = caretRect;
     }
     _syncEditableGeometry();

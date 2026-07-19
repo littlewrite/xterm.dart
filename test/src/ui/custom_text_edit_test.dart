@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -107,7 +108,11 @@ void main() {
     focusNode.dispose();
   });
 
-  testWidgets('keeps the IME rect stable while composing', (tester) async {
+  testWidgets('keeps the IME rect stable while composing on macOS', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
     final focusNode = FocusNode();
 
     await tester.pumpWidget(
@@ -157,8 +162,79 @@ void main() {
 
     expect(state.caretRect, initialRect);
 
+    debugDefaultTargetPlatformOverride = null;
     focusNode.dispose();
   });
+
+  for (final platform in [TargetPlatform.linux, TargetPlatform.windows]) {
+    testWidgets('updates the IME rect while composing on ${platform.name}', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = platform;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              onInsert: (_) {},
+              onDelete: () {},
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (node, event) => KeyEventResult.ignored,
+              onInputConnectionChange: (connected) {},
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+      state.setEditableRect(
+        const Size(640, 480),
+        Matrix4.identity(),
+        const Rect.fromLTWH(24, 36, 8, 16),
+      );
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: 'pin',
+          selection: TextSelection.collapsed(offset: 3),
+          composing: TextRange(start: 0, end: 3),
+        ),
+      );
+      await tester.pump();
+
+      tester.testTextInput.log.clear();
+      const updatedRect = Rect.fromLTWH(48, 36, 0, 16);
+      state.setEditableRect(
+        const Size(640, 480),
+        Matrix4.identity(),
+        updatedRect,
+      );
+
+      expect(state.caretRect, updatedRect);
+      final composingRectCall = tester.testTextInput.log.singleWhere(
+        (call) => call.method == 'TextInput.setMarkedTextRect',
+      );
+      expect(composingRectCall.arguments, <String, dynamic>{
+        'width': updatedRect.width,
+        'height': updatedRect.height,
+        'x': updatedRect.left,
+        'y': updatedRect.top,
+      });
+
+      debugDefaultTargetPlatformOverride = null;
+      focusNode.dispose();
+    });
+  }
 
   testWidgets('IME delete command emits a single backspace', (tester) async {
     final focusNode = FocusNode();

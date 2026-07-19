@@ -31,10 +31,12 @@ class TerminalPainter {
   /// cell no longer produces the same visual output. For example, when
   /// [_textStyle] is changed, or when the system font changes.
   final _paragraphCache = ParagraphCache(10240);
-  final _linePictureCache = <BufferLine, _CachedLinePicture>{};
+  final _linePictureCache = <BufferLine, _CachedLinePictures>{};
   int _linePictureBuildCount = 0;
+  int _linePictureCacheEntryCount = 0;
 
   static const _maximumLinePictureCacheSize = 512;
+  static const _maximumLinePicturePhases = 8;
 
   @visibleForTesting
   int get linePictureBuildCount => _linePictureBuildCount;
@@ -170,22 +172,26 @@ class TerminalPainter {
   /// 0, and the y offset is the top of the line.
   void paintLine(Canvas canvas, Offset offset, BufferLine line) {
     final originPhase = _devicePixelPhase(offset);
-    final cached = _linePictureCache.remove(line);
-    if (cached != null &&
-        cached.revision == line.revision &&
-        cached.originPhase == originPhase) {
+    var cached = _linePictureCache.remove(line);
+    if (cached != null && cached.revision != line.revision) {
+      _linePictureCacheEntryCount -= cached.pictures.length;
+      cached.dispose();
+      cached = null;
+    }
+
+    final cachedPicture = cached?.pictures.remove(originPhase);
+    if (cachedPicture != null) {
+      cached!.pictures[originPhase] = cachedPicture;
       _linePictureCache[line] = cached;
       canvas.save();
       canvas.translate(
         offset.dx - originPhase.dx,
         offset.dy - originPhase.dy,
       );
-      canvas.drawPicture(cached.picture);
+      canvas.drawPicture(cachedPicture);
       canvas.restore();
       return;
     }
-
-    cached?.picture.dispose();
 
     final recorder = ui.PictureRecorder();
     final recordingCanvas = Canvas(recorder);
@@ -193,11 +199,15 @@ class TerminalPainter {
     final picture = recorder.endRecording();
     _linePictureBuildCount++;
 
-    _linePictureCache[line] = _CachedLinePicture(
-      line.revision,
-      originPhase,
-      picture,
-    );
+    cached ??= _CachedLinePictures(line.revision);
+    cached.pictures[originPhase] = picture;
+    _linePictureCacheEntryCount++;
+    while (cached.pictures.length > _maximumLinePicturePhases) {
+      final oldestPhase = cached.pictures.keys.first;
+      cached.pictures.remove(oldestPhase)?.dispose();
+      _linePictureCacheEntryCount--;
+    }
+    _linePictureCache[line] = cached;
     _evictLinePictureIfNeeded();
 
     canvas.save();
@@ -221,17 +231,24 @@ class TerminalPainter {
   }
 
   void _evictLinePictureIfNeeded() {
-    while (_linePictureCache.length > _maximumLinePictureCacheSize) {
+    while (_linePictureCacheEntryCount > _maximumLinePictureCacheSize) {
       final oldestLine = _linePictureCache.keys.first;
-      _linePictureCache.remove(oldestLine)?.picture.dispose();
+      final cached = _linePictureCache[oldestLine]!;
+      final oldestPhase = cached.pictures.keys.first;
+      cached.pictures.remove(oldestPhase)?.dispose();
+      _linePictureCacheEntryCount--;
+      if (cached.pictures.isEmpty) {
+        _linePictureCache.remove(oldestLine);
+      }
     }
   }
 
   void _clearLinePictureCache() {
     for (final cached in _linePictureCache.values) {
-      cached.picture.dispose();
+      cached.dispose();
     }
     _linePictureCache.clear();
+    _linePictureCacheEntryCount = 0;
   }
 
   void paintLineBackgrounds(Canvas canvas, Offset offset, BufferLine line) {
@@ -471,10 +488,16 @@ class TerminalPainter {
   }
 }
 
-class _CachedLinePicture {
-  const _CachedLinePicture(this.revision, this.originPhase, this.picture);
+class _CachedLinePictures {
+  _CachedLinePictures(this.revision);
 
   final int revision;
-  final Offset originPhase;
-  final ui.Picture picture;
+  final pictures = <Offset, ui.Picture>{};
+
+  void dispose() {
+    for (final picture in pictures.values) {
+      picture.dispose();
+    }
+    pictures.clear();
+  }
 }

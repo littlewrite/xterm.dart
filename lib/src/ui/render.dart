@@ -1,6 +1,7 @@
 import 'dart:math' show max;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
@@ -22,6 +23,7 @@ import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/terminal_size.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
+import 'package:xterm/src/utils/unicode_v11.dart';
 
 typedef EditableRectCallback = void Function(
     Size editableSize, Matrix4 transform, Rect caretRect);
@@ -520,10 +522,58 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   void _notifyEditableRect() {
-    final caretRect = editableCursorOffset & _painter.cellSize;
+    final caretRect = _resolveImeCaretRect();
     final transform = getTransformTo(null);
 
     _onEditableRect?.call(size, transform, caretRect);
+  }
+
+  Rect _resolveImeCaretRect() {
+    final composingText = _composingText;
+    final tracksComposingEnd = defaultTargetPlatform == TargetPlatform.linux ||
+        defaultTargetPlatform == TargetPlatform.windows;
+    if (!tracksComposingEnd || composingText == null || composingText.isEmpty) {
+      return editableCursorOffset & _painter.cellSize;
+    }
+
+    final endOffset = resolveComposingEndOffset(
+      startOffset: editableCursorOffset,
+      text: composingText,
+      viewWidth: _terminal.viewWidth,
+      cellSize: _painter.cellSize,
+    );
+    return Rect.fromLTWH(
+      endOffset.dx,
+      endOffset.dy,
+      0,
+      _painter.cellSize.height,
+    );
+  }
+
+  @visibleForTesting
+  static Offset resolveComposingEndOffset({
+    required Offset startOffset,
+    required String text,
+    required int viewWidth,
+    required Size cellSize,
+  }) {
+    if (viewWidth <= 0 || cellSize.width <= 0 || cellSize.height <= 0) {
+      return startOffset;
+    }
+
+    final startColumn = (startOffset.dx / cellSize.width).round();
+    var cellCount = 0;
+    for (final rune in text.runes) {
+      cellCount += max(0, unicodeV11.wcwidth(rune));
+    }
+
+    final absoluteColumn = startColumn + cellCount;
+    final wrappedRows = absoluteColumn ~/ viewWidth;
+    final endColumn = absoluteColumn % viewWidth;
+    return Offset(
+      endColumn * cellSize.width,
+      startOffset.dy + wrappedRows * cellSize.height,
+    );
   }
 
   void _scheduleEditableRectUpdate() {
