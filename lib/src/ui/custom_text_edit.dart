@@ -509,9 +509,10 @@ class CustomTextEditState extends State<CustomTextEdit>
     final composingJustCommitted = !oldValue.composing.isCollapsed &&
         _currentEditingState.composing.isCollapsed;
 
-    // If we were composing and now we are not, notify with null.
+    // Finalize the committed text before notifying listeners that composition
+    // ended. A listener may reset the platform IME connection, which must not
+    // re-enter this client while it still contains the committed value.
     if (composingJustCommitted) {
-      widget.onComposing(null);
       final committedText = _extractCommittedText(_currentEditingState.text);
 
       if (committedText.isNotEmpty) {
@@ -520,6 +521,7 @@ class CustomTextEditState extends State<CustomTextEdit>
       _currentEditingState = _initEditingState.copyWith();
       _connection?.setEditingState(_currentEditingState);
       _showCaretOnScreen();
+      widget.onComposing(null);
       return;
     }
 

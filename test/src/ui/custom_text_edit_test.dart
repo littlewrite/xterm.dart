@@ -326,15 +326,22 @@ void main() {
     final focusNode = FocusNode();
     final inserted = <String>[];
     final composing = <String?>[];
+    final events = <String>[];
 
     await tester.pumpWidget(
       MaterialApp(
         home: Material(
           child: CustomTextEdit(
             focusNode: focusNode,
-            onInsert: inserted.add,
+            onInsert: (text) {
+              inserted.add(text);
+              events.add('insert:$text');
+            },
             onDelete: () {},
-            onComposing: composing.add,
+            onComposing: (text) {
+              composing.add(text);
+              events.add('composing:$text');
+            },
             onAction: (_) {},
             onKeyEvent: (node, event) => KeyEventResult.ignored,
             onInputConnectionChange: (connected) {},
@@ -368,6 +375,7 @@ void main() {
 
     expect(inserted, ['你好']);
     expect(composing, ['你好', null]);
+    expect(events, ['composing:你好', 'insert:你好', 'composing:null']);
 
     focusNode.dispose();
   });
