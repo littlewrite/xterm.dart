@@ -205,13 +205,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   String? _composingText;
   set composingText(String? value) {
     if (value == _composingText) return;
-    final wasComposing = _isComposingText;
-    final willCompose = value != null && value.isNotEmpty;
-    if (!wasComposing && willCompose) {
-      _composingCursorOffset = cursorOffset;
-    } else if (wasComposing && !willCompose) {
-      _composingCursorOffset = null;
-    }
     _composingText = value;
     markNeedsPaint();
     _scheduleEditableRectUpdate();
@@ -223,7 +216,6 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   var _stickToBottom = true;
   bool _editableRectUpdateScheduled = false;
-  Offset? _composingCursorOffset;
   int _lastKnownLineCount = 0;
   int _lastKnownViewWidth = 0;
   int _lastKnownViewHeight = 0;
@@ -699,11 +691,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   }
 
   /// Cursor position used by the platform text input connection.
-  ///
-  /// It remains stable while IME composition is active because full-screen
-  /// terminal applications may move their rendering cursor independently of
-  /// the user's input position.
-  Offset get editableCursorOffset => _composingCursorOffset ?? cursorOffset;
+  Offset get editableCursorOffset => cursorOffset;
 
   Size get cellSize {
     return _painter.cellSize;

@@ -387,7 +387,7 @@ void main() {
     controller.dispose();
   });
 
-  test('RenderTerminal freezes the IME cursor while composing', () {
+  test('RenderTerminal tracks the terminal cursor while composing', () {
     final terminal = Terminal();
     const vsync = TestVSync();
     final controller = TerminalController(vsync: vsync);
@@ -410,14 +410,11 @@ void main() {
 
     terminal.write('\x1b[2;3H');
     render.composingText = 'pin';
-    final composingOffset = render.editableCursorOffset;
+    final initialOffset = render.editableCursorOffset;
 
     terminal.write('\x1b[8;12H');
 
-    expect(render.cursorOffset, isNot(composingOffset));
-    expect(render.editableCursorOffset, composingOffset);
-
-    render.composingText = null;
+    expect(render.cursorOffset, isNot(initialOffset));
     expect(render.editableCursorOffset, render.cursorOffset);
 
     focusNode.dispose();
