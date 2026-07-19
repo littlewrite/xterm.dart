@@ -83,6 +83,7 @@ class TerminalView extends StatefulWidget {
     this.onCopied,
     this.onSelectAll,
     this.onPaste,
+    this.onImeComposingChanged,
   });
 
   /// The underlying terminal that this widget renders.
@@ -229,6 +230,9 @@ class TerminalView extends StatefulWidget {
   /// Callback to paste text from clipboard to terminal.
   final void Function()? onPaste;
 
+  /// Called when the platform IME enters or leaves text composition.
+  final ValueChanged<bool>? onImeComposingChanged;
+
   @override
   State<TerminalView> createState() => TerminalViewState();
 }
@@ -254,6 +258,7 @@ class TerminalViewState extends State<TerminalView>
   bool _lastTerminalCursorBlinkMode = false;
 
   final _composingText = ValueNotifier<String?>(null);
+  bool _imeComposing = false;
 
   late TerminalController _controller;
 
@@ -708,6 +713,11 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _onComposing(String? text) {
+    final isComposing = text != null && text.isNotEmpty;
+    if (_imeComposing != isComposing) {
+      _imeComposing = isComposing;
+      widget.onImeComposingChanged?.call(isComposing);
+    }
     _composingText.value = text;
     _updateCursorBlink(resetVisible: true);
   }

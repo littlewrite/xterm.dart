@@ -1091,6 +1091,41 @@ void main() {
   });
 
   group('TerminalView.inputHandler', () {
+    testWidgets('reports IME composition state transitions', (tester) async {
+      final composingStates = <bool>[];
+      final terminal = Terminal();
+
+      await tester.pumpWidget(MaterialApp(
+        home: TerminalView(
+          terminal,
+          autofocus: true,
+          onImeComposingChanged: composingStates.add,
+        ),
+      ));
+
+      await tester.tap(find.byType(TerminalView));
+      await tester.pump(const Duration(milliseconds: 50));
+
+      binding.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: 'pin',
+          selection: TextSelection.collapsed(offset: 3),
+          composing: TextRange(start: 0, end: 3),
+        ),
+      );
+      await tester.pump();
+
+      binding.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '拼',
+          selection: TextSelection.collapsed(offset: 1),
+        ),
+      );
+      await tester.pump();
+
+      expect(composingStates, [true, false]);
+    });
+
     testWidgets('works', (tester) async {
       final terminalOutput = <String>[];
       final terminal = Terminal(onOutput: terminalOutput.add);
