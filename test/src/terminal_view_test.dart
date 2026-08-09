@@ -19,6 +19,18 @@ import 'terminal_view_test.mocks.dart';
 void main() {
   final binding = TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('resolves a composing rect at the end of wrapped preedit text', () {
+    expect(
+      RenderTerminal.resolveComposingEndOffset(
+        startOffset: const Offset(80, 0),
+        text: 'abc',
+        viewWidth: 10,
+        cellSize: const Size(10, 20),
+      ),
+      const Offset(10, 20),
+    );
+  });
+
   testWidgets(
     'htop golden test',
     (tester) async {

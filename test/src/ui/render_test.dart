@@ -421,6 +421,164 @@ void main() {
     controller.dispose();
   });
 
+  test('RenderTerminal isolates composing text in a repaint boundary', () {
+    final terminal = Terminal();
+    const vsync = TestVSync();
+    final controller = TerminalController(vsync: vsync);
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    expect(render.firstChild, isNotNull);
+    expect(render.firstChild!.isRepaintBoundary, isTrue);
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal scopes the composing layer to the preedit rows', () {
+    final terminal = Terminal();
+    const vsync = TestVSync();
+    final controller = TerminalController(vsync: vsync);
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    render.layout(BoxConstraints.tight(const Size(800, 400)));
+    render.composingText = 'pinyin';
+
+    final paintBounds = render.firstChild!.paintBounds;
+    expect(paintBounds.height, lessThan(render.size.height));
+    expect(paintBounds.width, lessThan(render.size.width));
+    expect(paintBounds.height, greaterThanOrEqualTo(render.cellSize.height));
+    expect(paintBounds.height, lessThanOrEqualTo(render.cellSize.height + 2));
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal uses an explicit cursor background for composing text',
+      () {
+    final terminal = Terminal();
+    const vsync = TestVSync();
+    final controller = TerminalController(vsync: vsync);
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    terminal.write('\x1b[48;2;18;52;86m');
+
+    expect(render.composingBackdropColor, const Color(0xFF123456));
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal keeps the default composing background transparent', () {
+    final terminal = Terminal();
+    const vsync = TestVSync();
+    final controller = TerminalController(vsync: vsync);
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    expect(render.composingBackdropColor, isNull);
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal aligns the composing backdrop to terminal cells', () {
+    expect(
+      RenderTerminal.resolveComposingBackdropRects(
+        startOffset: const Offset(20, 40),
+        text: '中文',
+        viewWidth: 10,
+        cellSize: const Size(10, 20),
+      ),
+      const [Rect.fromLTWH(20, 40, 40, 20)],
+    );
+  });
+
+  test('RenderTerminal wraps the composing backdrop at terminal width', () {
+    expect(
+      RenderTerminal.resolveComposingBackdropRects(
+        startOffset: const Offset(80, 0),
+        text: 'abc',
+        viewWidth: 10,
+        cellSize: const Size(10, 20),
+      ),
+      const [
+        Rect.fromLTWH(80, 0, 20, 20),
+        Rect.fromLTWH(0, 20, 10, 20),
+      ],
+    );
+  });
+
+  test('RenderTerminal wraps composing paragraphs at the terminal grid width',
+      () {
+    expect(
+      RenderTerminal.resolveComposingParagraphWidth(
+        viewWidth: 10,
+        cellSize: const Size(7.5, 14),
+        fallbackWidth: 80,
+      ),
+      75,
+    );
+  });
+
   test('RenderTerminal resolves Linux IME anchor after ASCII composition', () {
     final offset = RenderTerminal.resolveComposingEndOffset(
       startOffset: const Offset(20, 40),

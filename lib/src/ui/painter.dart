@@ -403,14 +403,12 @@ class TerminalPainter {
     return (color: color, glyph: glyph);
   }
 
-  @visibleForTesting
   Color effectiveForegroundColor(CellData cellData) {
     return cellData.flags & CellFlags.inverse == 0
         ? resolveForegroundColor(cellData.foreground)
         : resolveBackgroundColor(cellData.background);
   }
 
-  @visibleForTesting
   Color? effectiveBackgroundColor(CellData cellData) {
     final colorType = cellData.background & CellColor.typeMask;
 

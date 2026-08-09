@@ -123,6 +123,9 @@ class CustomTextEditState extends State<CustomTextEdit>
   TextEditingController? _controller;
   VoidCallback? _controllerListener;
   DateTime? _skipImeDeleteUntil;
+  Size? _lastSentEditableSize;
+  Matrix4? _lastSentEditableTransform;
+  Rect? _lastSentCaretRect;
 
   @override
   void initState() {
@@ -136,8 +139,8 @@ class CustomTextEditState extends State<CustomTextEdit>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (widget.focusNode.hasFocus) {
-      _openOrCloseInputConnectionIfNeeded();
+    if (widget.focusNode.hasFocus && !hasInputConnection) {
+      _openInputConnection();
     }
   }
 
@@ -343,12 +346,7 @@ class CustomTextEditState extends State<CustomTextEdit>
   void setEditableRect(Size editableSize, Matrix4 transform, Rect caretRect) {
     _editableSize = editableSize;
     _editableTransform = transform.clone();
-    if (defaultTargetPlatform == TargetPlatform.linux ||
-        defaultTargetPlatform == TargetPlatform.windows ||
-        _currentEditingState.composing.isCollapsed ||
-        _caretRect == Rect.zero) {
-      _caretRect = caretRect;
-    }
+    _caretRect = caretRect;
     _syncEditableGeometry();
   }
 
@@ -359,9 +357,37 @@ class CustomTextEditState extends State<CustomTextEdit>
       return;
     }
 
-    _connection?.setEditableSizeAndTransform(editableSize, transform);
-    _connection?.setComposingRect(_caretRect);
-    _connection?.setCaretRect(_caretRect);
+    final editableGeometryChanged = _lastSentEditableSize != editableSize ||
+        !_matrixEquals(_lastSentEditableTransform, transform);
+    final caretRectChanged = _lastSentCaretRect != _caretRect;
+    if (editableGeometryChanged) {
+      _connection?.setEditableSizeAndTransform(editableSize, transform);
+      _lastSentEditableSize = editableSize;
+      _lastSentEditableTransform = transform.clone();
+    }
+    if (caretRectChanged) {
+      // xterm 使用同一个 rect 定位 composing 与 caret；值不变时跳过两次
+      // 平台通道调用，避免 IME 布局/滚动回调产生无效同步。
+      _connection?.setComposingRect(_caretRect);
+      _connection?.setCaretRect(_caretRect);
+      _lastSentCaretRect = _caretRect;
+    }
+  }
+
+  bool _matrixEquals(Matrix4? left, Matrix4 right) {
+    if (left == null) return false;
+    final leftStorage = left.storage;
+    final rightStorage = right.storage;
+    for (var index = 0; index < leftStorage.length; index++) {
+      if (leftStorage[index] != rightStorage[index]) return false;
+    }
+    return true;
+  }
+
+  void _resetEditableGeometryCache() {
+    _lastSentEditableSize = null;
+    _lastSentEditableTransform = null;
+    _lastSentCaretRect = null;
   }
 
   void _onFocusChange() {
@@ -404,9 +430,6 @@ class CustomTextEditState extends State<CustomTextEdit>
     }
     if (hasInputConnection) {
       _connection!.show();
-      widget.onInputConnectionChange(true);
-      _connection!.setEditingState(_currentEditingState);
-      _syncEditableGeometry();
       return;
     }
     final config = TextInputConfiguration(
@@ -426,6 +449,7 @@ class CustomTextEditState extends State<CustomTextEdit>
       _connection = null;
       return;
     }
+    _resetEditableGeometryCache();
     _connection!.show();
     _connection!.setEditingState(_currentEditingState);
     _syncEditableGeometry();
@@ -436,6 +460,7 @@ class CustomTextEditState extends State<CustomTextEdit>
     if (hasInputConnection) {
       _connection!.close();
       _connection = null;
+      _resetEditableGeometryCache();
       widget.onInputConnectionChange(false);
     }
   }
@@ -621,6 +646,7 @@ class CustomTextEditState extends State<CustomTextEdit>
     if (_connection != null) {
       _connection = null;
     }
+    _resetEditableGeometryCache();
     widget.onInputConnectionChange(false);
   }
 

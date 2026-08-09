@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -108,11 +107,7 @@ void main() {
     focusNode.dispose();
   });
 
-  testWidgets('keeps the IME rect stable while composing on macOS', (
-    tester,
-  ) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
-    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+  testWidgets('does not resend unchanged IME geometry', (tester) async {
     final focusNode = FocusNode();
 
     await tester.pumpWidget(
@@ -138,11 +133,48 @@ void main() {
     final state = tester.state<CustomTextEditState>(
       find.byType(CustomTextEdit),
     );
-    const initialRect = Rect.fromLTWH(24, 36, 8, 16);
+    const editableSize = Size(640, 480);
+    const caretRect = Rect.fromLTWH(24, 36, 8, 16);
+    state.setEditableRect(editableSize, Matrix4.identity(), caretRect);
+
+    tester.testTextInput.log.clear();
+    state.setEditableRect(editableSize, Matrix4.identity(), caretRect);
+
+    expect(tester.testTextInput.log, isEmpty);
+
+    focusNode.dispose();
+  });
+
+  testWidgets('updates the IME rect while composing', (tester) async {
+    final focusNode = FocusNode();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: CustomTextEdit(
+            focusNode: focusNode,
+            onInsert: (_) {},
+            onDelete: () {},
+            onComposing: (_) {},
+            onAction: (_) {},
+            onKeyEvent: (node, event) => KeyEventResult.ignored,
+            onInputConnectionChange: (connected) {},
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    focusNode.requestFocus();
+    await tester.pump();
+
+    final state = tester.state<CustomTextEditState>(
+      find.byType(CustomTextEdit),
+    );
     state.setEditableRect(
       const Size(640, 480),
       Matrix4.identity(),
-      initialRect,
+      const Rect.fromLTWH(24, 36, 8, 16),
     );
 
     tester.testTextInput.updateEditingValue(
@@ -154,87 +186,27 @@ void main() {
     );
     await tester.pump();
 
+    tester.testTextInput.log.clear();
+    const updatedRect = Rect.fromLTWH(48, 36, 0, 16);
     state.setEditableRect(
       const Size(640, 480),
       Matrix4.identity(),
-      const Rect.fromLTWH(160, 180, 8, 16),
+      updatedRect,
     );
 
-    expect(state.caretRect, initialRect);
+    expect(state.caretRect, updatedRect);
+    final composingRectCall = tester.testTextInput.log.singleWhere(
+      (call) => call.method == 'TextInput.setMarkedTextRect',
+    );
+    expect(composingRectCall.arguments, <String, dynamic>{
+      'width': updatedRect.width,
+      'height': updatedRect.height,
+      'x': updatedRect.left,
+      'y': updatedRect.top,
+    });
 
-    debugDefaultTargetPlatformOverride = null;
     focusNode.dispose();
   });
-
-  for (final platform in [TargetPlatform.linux, TargetPlatform.windows]) {
-    testWidgets('updates the IME rect while composing on ${platform.name}', (
-      tester,
-    ) async {
-      debugDefaultTargetPlatformOverride = platform;
-      addTearDown(() => debugDefaultTargetPlatformOverride = null);
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Material(
-            child: CustomTextEdit(
-              focusNode: focusNode,
-              onInsert: (_) {},
-              onDelete: () {},
-              onComposing: (_) {},
-              onAction: (_) {},
-              onKeyEvent: (node, event) => KeyEventResult.ignored,
-              onInputConnectionChange: (connected) {},
-              child: const SizedBox.shrink(),
-            ),
-          ),
-        ),
-      );
-
-      focusNode.requestFocus();
-      await tester.pump();
-
-      final state = tester.state<CustomTextEditState>(
-        find.byType(CustomTextEdit),
-      );
-      state.setEditableRect(
-        const Size(640, 480),
-        Matrix4.identity(),
-        const Rect.fromLTWH(24, 36, 8, 16),
-      );
-
-      tester.testTextInput.updateEditingValue(
-        const TextEditingValue(
-          text: 'pin',
-          selection: TextSelection.collapsed(offset: 3),
-          composing: TextRange(start: 0, end: 3),
-        ),
-      );
-      await tester.pump();
-
-      tester.testTextInput.log.clear();
-      const updatedRect = Rect.fromLTWH(48, 36, 0, 16);
-      state.setEditableRect(
-        const Size(640, 480),
-        Matrix4.identity(),
-        updatedRect,
-      );
-
-      expect(state.caretRect, updatedRect);
-      final composingRectCall = tester.testTextInput.log.singleWhere(
-        (call) => call.method == 'TextInput.setMarkedTextRect',
-      );
-      expect(composingRectCall.arguments, <String, dynamic>{
-        'width': updatedRect.width,
-        'height': updatedRect.height,
-        'x': updatedRect.left,
-        'y': updatedRect.top,
-      });
-
-      debugDefaultTargetPlatformOverride = null;
-      focusNode.dispose();
-    });
-  }
 
   testWidgets('IME delete command emits a single backspace', (tester) async {
     final focusNode = FocusNode();
@@ -269,6 +241,93 @@ void main() {
 
     expect(deleteCount, 1);
 
+    focusNode.dispose();
+  });
+
+  testWidgets('does not reopen input connection on inherited rebuild', (
+    tester,
+  ) async {
+    final focusNode = FocusNode();
+
+    Widget buildEditor(MediaQueryData mediaQuery) {
+      return MediaQuery(
+        data: mediaQuery,
+        child: MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              onInsert: (_) {},
+              onDelete: () {},
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (node, event) => KeyEventResult.ignored,
+              onInputConnectionChange: (connected) {},
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(buildEditor(const MediaQueryData()));
+    focusNode.requestFocus();
+    await tester.pump();
+
+    tester.testTextInput.log.clear();
+    await tester.pumpWidget(
+      buildEditor(const MediaQueryData(textScaler: TextScaler.linear(1.1))),
+    );
+    await tester.pump();
+
+    expect(
+      tester.testTextInput.log.where((call) => call.method == 'TextInput.show'),
+      isEmpty,
+    );
+    expect(
+      tester.testTextInput.log.where(
+        (call) => call.method == 'TextInput.setEditingState',
+      ),
+      isEmpty,
+    );
+
+    focusNode.dispose();
+  });
+
+  testWidgets('shows an existing input connection on request', (tester) async {
+    final focusNode = FocusNode();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: CustomTextEdit(
+            focusNode: focusNode,
+            onInsert: (_) {},
+            onDelete: () {},
+            onComposing: (_) {},
+            onAction: (_) {},
+            onKeyEvent: (node, event) => KeyEventResult.ignored,
+            onInputConnectionChange: (connected) {},
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    focusNode.requestFocus();
+    await tester.pump();
+    final state = tester.state<CustomTextEditState>(
+      find.byType(CustomTextEdit),
+    );
+
+    tester.testTextInput.log.clear();
+    state.requestKeyboard();
+
+    expect(
+      tester.testTextInput.log.map((call) => call.method),
+      ['TextInput.show'],
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
     focusNode.dispose();
   });
 

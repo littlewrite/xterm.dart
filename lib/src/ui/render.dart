@@ -1,7 +1,6 @@
-import 'dart:math' show max;
+import 'dart:math' show max, min;
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
@@ -28,7 +27,11 @@ import 'package:xterm/src/utils/unicode_v11.dart';
 typedef EditableRectCallback = void Function(
     Size editableSize, Matrix4 transform, Rect caretRect);
 
-class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
+class RenderTerminal extends RenderBox
+    with
+        ContainerRenderObjectMixin<RenderBox, _TerminalParentData>,
+        RenderBoxContainerDefaultsMixin<RenderBox, _TerminalParentData>,
+        RelayoutWhenSystemFontsChangeMixin {
   RenderTerminal({
     required Terminal terminal,
     required TerminalController controller,
@@ -69,7 +72,18 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
           textScaler: textScaler,
           devicePixelRatio: devicePixelRatio,
         ) {
+    _composingLayer = _RenderComposingLayer(this);
+    add(_composingLayer);
     _syncTerminalGeometryCache();
+  }
+
+  late final _RenderComposingLayer _composingLayer;
+
+  @override
+  void setupParentData(RenderBox child) {
+    if (child.parentData is! _TerminalParentData) {
+      child.parentData = _TerminalParentData();
+    }
   }
 
   Terminal _terminal;
@@ -80,6 +94,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (attached) _terminal.addListener(_onTerminalChange);
     _resizeTerminalIfNeeded();
     markNeedsLayout();
+    _markComposingLayerNeedsPaint();
   }
 
   TerminalController _controller;
@@ -89,6 +104,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     _controller = controller;
     if (attached) _controller.addListener(_onControllerUpdate);
     markNeedsLayout();
+    _markComposingLayerNeedsPaint();
   }
 
   ViewportOffset _offset;
@@ -98,6 +114,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     _offset = value;
     if (attached) _offset.addListener(_onScroll);
     markNeedsLayout();
+    _markComposingLayerNeedsPaint();
   }
 
   EdgeInsets _padding;
@@ -105,6 +122,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (value == _padding) return;
     _padding = value;
     markNeedsLayout();
+    _markComposingLayerNeedsPaint();
   }
 
   bool _autoResize;
@@ -112,30 +130,35 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (value == _autoResize) return;
     _autoResize = value;
     markNeedsLayout();
+    _markComposingLayerNeedsPaint();
   }
 
   set textStyle(TerminalStyle value) {
     if (value == _painter.textStyle) return;
     _painter.textStyle = value;
     markNeedsLayout();
+    _markComposingLayerNeedsPaint();
   }
 
   set textScaler(TextScaler value) {
     if (value == _painter.textScaler) return;
     _painter.textScaler = value;
     markNeedsLayout();
+    _markComposingLayerNeedsPaint();
   }
 
   set theme(TerminalTheme value) {
     if (value == _painter.theme) return;
     _painter.theme = value;
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
   }
 
   set devicePixelRatio(double value) {
     if (value == _painter.devicePixelRatio) return;
     _painter.devicePixelRatio = value;
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
   }
 
   FocusNode _focusNode;
@@ -146,6 +169,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     _focusNode = value;
     if (attached) _focusNode.addListener(_onFocusChange);
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
   }
 
   TerminalCursorType _cursorType;
@@ -153,6 +177,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (value == _cursorType) return;
     _cursorType = value;
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
   }
 
   bool _cursorBlinkEnabled;
@@ -160,6 +185,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (value == _cursorBlinkEnabled) return;
     _cursorBlinkEnabled = value;
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
   }
 
   bool _cursorBlinkVisible;
@@ -167,6 +193,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (value == _cursorBlinkVisible) return;
     _cursorBlinkVisible = value;
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
   }
 
   bool _alwaysShowCursor;
@@ -174,6 +201,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (value == _alwaysShowCursor) return;
     _alwaysShowCursor = value;
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
   }
 
   bool _paintCursor;
@@ -181,6 +209,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     if (value == _paintCursor) return;
     _paintCursor = value;
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
   }
 
   bool _paintSelectionHandles;
@@ -205,8 +234,14 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   String? _composingText;
   set composingText(String? value) {
     if (value == _composingText) return;
+    final wasComposing = _isComposingText;
     _composingText = value;
-    markNeedsPaint();
+    _composingLayer.markNeedsPaint();
+    if (wasComposing != _isComposingText) {
+      // The base terminal only needs repainting when the composition overlay
+      // appears or disappears, so that it can hide or restore its cursor.
+      markNeedsPaint();
+    }
     _scheduleEditableRectUpdate();
   }
 
@@ -235,11 +270,13 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     _stickToBottom = _scrollOffset >= _maxScrollExtent - 0.5;
     // 滚动只改变视口看到的内容，不改变终端几何信息。
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
     _scheduleEditableRectUpdate();
   }
 
   void _onFocusChange() {
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
     _scheduleEditableRectUpdate();
   }
 
@@ -252,11 +289,13 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       _syncTerminalGeometryCache();
       markNeedsLayout();
       markNeedsPaint();
+      _markComposingLayerNeedsPaint();
       _scheduleEditableRectUpdate();
       return;
     }
 
     markNeedsPaint();
+    _markComposingLayerNeedsPaint();
     _scheduleEditableRectUpdate();
   }
 
@@ -294,12 +333,16 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   @override
   void systemFontsDidChange() {
     _painter.clearFontCache();
+    _markComposingLayerNeedsPaint();
     super.systemFontsDidChange();
   }
 
   @override
   void performLayout() {
     size = constraints.biggest;
+    _composingLayer.layout(BoxConstraints.tight(size));
+    final parentData = _composingLayer.parentData! as _TerminalParentData;
+    parentData.offset = Offset.zero;
 
     _updateViewportSize();
 
@@ -522,9 +565,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   Rect _resolveImeCaretRect() {
     final composingText = _composingText;
-    final tracksComposingEnd = defaultTargetPlatform == TargetPlatform.linux ||
-        defaultTargetPlatform == TargetPlatform.windows;
-    if (!tracksComposingEnd || composingText == null || composingText.isEmpty) {
+    if (composingText == null || composingText.isEmpty) {
       return editableCursorOffset & _painter.cellSize;
     }
 
@@ -554,10 +595,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     }
 
     final startColumn = (startOffset.dx / cellSize.width).round();
-    var cellCount = 0;
-    for (final rune in text.runes) {
-      cellCount += max(0, unicodeV11.wcwidth(rune));
-    }
+    final cellCount = _composingCellCount(text);
 
     final absoluteColumn = startColumn + cellCount;
     final wrappedRows = absoluteColumn ~/ viewWidth;
@@ -566,6 +604,65 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       endColumn * cellSize.width,
       startOffset.dy + wrappedRows * cellSize.height,
     );
+  }
+
+  @visibleForTesting
+  static List<Rect> resolveComposingBackdropRects({
+    required Offset startOffset,
+    required String text,
+    required int viewWidth,
+    required Size cellSize,
+  }) {
+    if (viewWidth <= 0 || cellSize.width <= 0 || cellSize.height <= 0) {
+      return const [];
+    }
+
+    var remainingCells = _composingCellCount(text);
+    if (remainingCells == 0) {
+      return const [];
+    }
+
+    var column = (startOffset.dx / cellSize.width).round();
+    column = column.clamp(0, viewWidth - 1).toInt();
+    var rowOffset = startOffset.dy;
+    final rects = <Rect>[];
+
+    while (remainingCells > 0) {
+      final widthInCells = min(remainingCells, viewWidth - column);
+      rects.add(
+        Rect.fromLTWH(
+          column * cellSize.width,
+          rowOffset,
+          widthInCells * cellSize.width,
+          cellSize.height,
+        ),
+      );
+      remainingCells -= widthInCells;
+      column = 0;
+      rowOffset += cellSize.height;
+    }
+
+    return rects;
+  }
+
+  @visibleForTesting
+  static double resolveComposingParagraphWidth({
+    required int viewWidth,
+    required Size cellSize,
+    required double fallbackWidth,
+  }) {
+    if (viewWidth <= 0 || cellSize.width <= 0) {
+      return fallbackWidth;
+    }
+    return viewWidth * cellSize.width;
+  }
+
+  static int _composingCellCount(String text) {
+    var cellCount = 0;
+    for (final rune in text.runes) {
+      cellCount += max(0, unicodeV11.wcwidth(rune));
+    }
+    return cellCount;
   }
 
   void _scheduleEditableRectUpdate() {
@@ -630,6 +727,31 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
 
   bool get _isComposingText {
     return _composingText != null && _composingText!.isNotEmpty;
+  }
+
+  void _markComposingLayerNeedsPaint() {
+    if (_isComposingText) {
+      _composingLayer.markNeedsPaint();
+    }
+  }
+
+  CellData get _composingCellStyle {
+    final cursor = _terminal.cursor;
+    return CellData(
+      foreground: cursor.foreground,
+      background: cursor.background,
+      flags: cursor.attrs,
+      content: 0,
+    );
+  }
+
+  @visibleForTesting
+  Color? get composingBackdropColor {
+    return _painter.effectiveBackgroundColor(_composingCellStyle);
+  }
+
+  Color get _composingForegroundColor {
+    return _painter.effectiveForegroundColor(_composingCellStyle);
   }
 
   bool get _shouldShowCursor {
@@ -700,6 +822,7 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
   @override
   void paint(PaintingContext context, Offset offset) {
     _paint(context, offset);
+    context.paintChild(_composingLayer, offset);
   }
 
   void _paint(PaintingContext context, Offset offset) {
@@ -736,21 +859,16 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       );
     }
 
-    if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
-        _terminal.buffer.absoluteCursorY <= effectLastLine) {
-      if (_isComposingText) {
-        _paintComposingText(canvas, offset + editableCursorOffset);
-      }
-
-      if (_paintCursor &&
-          shouldPaintCursor(cursorBlinkVisible: _cursorBlinkVisible)) {
-        _painter.paintCursor(
-          canvas,
-          offset + cursorOffset,
-          cursorType: _cursorType,
-          hasFocus: _focusNode.hasFocus,
-        );
-      }
+    if (_isCursorVisibleInViewport &&
+        !_isComposingText &&
+        _paintCursor &&
+        shouldPaintCursor(cursorBlinkVisible: _cursorBlinkVisible)) {
+      _painter.paintCursor(
+        canvas,
+        offset + cursorOffset,
+        cursorType: _cursorType,
+        hasFocus: _focusNode.hasFocus,
+      );
     }
 
     _paintHighlights(
@@ -769,9 +887,23 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
       return;
     }
 
+    final backdropColor = composingBackdropColor;
+    if (backdropColor != null) {
+      final backdropPaint = Paint()
+        ..color = backdropColor
+        ..isAntiAlias = false;
+      for (final rect in resolveComposingBackdropRects(
+        startOffset: offset,
+        text: composingText,
+        viewWidth: _terminal.viewWidth,
+        cellSize: _painter.cellSize,
+      )) {
+        canvas.drawRect(rect, backdropPaint);
+      }
+    }
+
     final style = _painter.textStyle.toTextStyle(
-      color: _painter.resolveForegroundColor(_terminal.cursor.foreground),
-      backgroundColor: _painter.theme.background,
+      color: _composingForegroundColor,
       underline: true,
     );
 
@@ -785,9 +917,74 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     builder.addText(composingText);
 
     final paragraph = builder.build();
-    paragraph.layout(ParagraphConstraints(width: size.width));
+    final paragraphWidth = resolveComposingParagraphWidth(
+      viewWidth: _terminal.viewWidth,
+      cellSize: _painter.cellSize,
+      fallbackWidth: size.width,
+    );
+    paragraph.layout(ParagraphConstraints(width: paragraphWidth));
 
     canvas.drawParagraph(paragraph, Offset(0, offset.dy));
+  }
+
+  void _paintComposingOverlay(Canvas canvas, Offset offset) {
+    if (!_isCursorVisibleInViewport) {
+      return;
+    }
+
+    _paintComposingText(canvas, offset + editableCursorOffset);
+
+    if (_paintCursor &&
+        shouldPaintCursor(cursorBlinkVisible: _cursorBlinkVisible)) {
+      _painter.paintCursor(
+        canvas,
+        offset + cursorOffset,
+        cursorType: _cursorType,
+        hasFocus: _focusNode.hasFocus,
+      );
+    }
+  }
+
+  Rect get _composingPaintBounds {
+    final composingText = _composingText;
+    if (composingText == null ||
+        composingText.isEmpty ||
+        !_isCursorVisibleInViewport) {
+      return Rect.zero;
+    }
+
+    final rects = resolveComposingBackdropRects(
+      startOffset: editableCursorOffset,
+      text: composingText,
+      viewWidth: _terminal.viewWidth,
+      cellSize: _painter.cellSize,
+    );
+    if (rects.isEmpty) {
+      return Rect.zero;
+    }
+
+    var bounds = rects.first;
+    for (final rect in rects.skip(1)) {
+      bounds = bounds.expandToInclude(rect);
+    }
+
+    return bounds.inflate(1).intersect(Offset.zero & size);
+  }
+
+  bool get _isCursorVisibleInViewport {
+    final lines = _terminal.buffer.lines;
+    if (lines.length == 0) {
+      return false;
+    }
+
+    final charHeight = _painter.cellSize.height;
+    final firstLine = (_scrollOffset - _padding.top) ~/ charHeight;
+    final lastLine =
+        (_scrollOffset + size.height + _padding.bottom) ~/ charHeight;
+    final firstVisibleLine = firstLine.clamp(0, lines.length - 1);
+    final lastVisibleLine = lastLine.clamp(0, lines.length - 1);
+    final cursorLine = _terminal.buffer.absoluteCursorY;
+    return cursorLine >= firstVisibleLine && cursorLine <= lastVisibleLine;
   }
 
   bool _selectionIntersectsLine(BufferRange selection, int line) {
@@ -951,5 +1148,33 @@ class RenderTerminal extends RenderBox with RelayoutWhenSystemFontsChangeMixin {
     _lastKnownViewWidth = _terminal.viewWidth;
     _lastKnownViewHeight = _terminal.viewHeight;
     _lastKnownBuffer = _terminal.buffer;
+  }
+}
+
+class _TerminalParentData extends ContainerBoxParentData<RenderBox> {}
+
+class _RenderComposingLayer extends RenderBox {
+  _RenderComposingLayer(this._terminal);
+
+  final RenderTerminal _terminal;
+
+  @override
+  bool get isRepaintBoundary => true;
+
+  @override
+  Rect get paintBounds => _terminal._composingPaintBounds;
+
+  @override
+  void performLayout() {
+    size = constraints.biggest;
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    if (!_terminal._isComposingText) {
+      return;
+    }
+
+    _terminal._paintComposingOverlay(context.canvas, offset);
   }
 }
