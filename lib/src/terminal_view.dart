@@ -196,7 +196,10 @@ class TerminalView extends StatefulWidget {
 
   /// Number of terminal wheel reports to send per physical line of wheel delta.
   ///
-  /// Values below 1 slow down wheel reporting for terminal applications.
+  /// Values between zero and one slow down wheel reporting for terminal
+  /// applications. Values less than or equal to zero disable mouse wheel
+  /// reports; alternate-buffer scrolling falls back to simulated arrow keys
+  /// when [simulateScroll] is enabled.
   final double wheelScrollLinesPerEvent;
 
   /// Controls how Shift+Enter is reported to the terminal application.
@@ -273,6 +276,9 @@ class TerminalViewState extends State<TerminalView>
   bool _isDragging = false;
   bool _selectionToolbarRequested = false;
   Offset? _activePanZoomLocalPosition;
+  double _accumulatedHorizontalWheelSteps = 0;
+  double _accumulatedVerticalWheelSteps = 0;
+  late bool _wasUsingAltBuffer;
 
   RenderTerminal get renderTerminal =>
       _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
@@ -291,6 +297,7 @@ class TerminalViewState extends State<TerminalView>
     );
     super.initState();
     _lastTerminalCursorBlinkMode = widget.terminal.cursorBlinkMode;
+    _wasUsingAltBuffer = widget.terminal.isUsingAltBuffer;
     widget.terminal.addListener(_handleTerminalChange);
     _updateCursorBlink(scheduleSetState: false);
     _initSearchBox();
@@ -343,6 +350,10 @@ class TerminalViewState extends State<TerminalView>
     if (oldWidget.textStyle.fontSize != widget.textStyle.fontSize) {
       textSizeNoti.value = widget.textStyle.fontSize;
     }
+    if (oldWidget.wheelScrollLinesPerEvent != widget.wheelScrollLinesPerEvent ||
+        oldWidget.invertWheelScroll != widget.invertWheelScroll) {
+      _resetWheelStepAccumulators();
+    }
     if (oldWidget.cursorBlink != widget.cursorBlink ||
         oldWidget.cursorBlinkMode != widget.cursorBlinkMode ||
         oldWidget.cursorBlinkInterval != widget.cursorBlinkInterval ||
@@ -354,6 +365,8 @@ class TerminalViewState extends State<TerminalView>
       oldWidget.terminal.onSearch = null;
       oldWidget.terminal.onCloseSearch = null;
       _lastTerminalCursorBlinkMode = widget.terminal.cursorBlinkMode;
+      _wasUsingAltBuffer = widget.terminal.isUsingAltBuffer;
+      _resetWheelStepAccumulators();
       widget.terminal.addListener(_handleTerminalChange);
     }
     if (oldWidget.terminal != widget.terminal ||
@@ -455,8 +468,6 @@ class TerminalViewState extends State<TerminalView>
     child = TerminalScrollGestureHandler(
       terminal: widget.terminal,
       simulateScroll: widget.simulateScroll,
-      invertWheelScroll: widget.invertWheelScroll,
-      wheelScrollLinesPerEvent: widget.wheelScrollLinesPerEvent,
       getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
       getLineHeight: () => renderTerminal.lineHeight,
       child: child,
@@ -622,6 +633,12 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _handleTerminalChange() {
+    final isUsingAltBuffer = widget.terminal.isUsingAltBuffer;
+    if (isUsingAltBuffer != _wasUsingAltBuffer) {
+      _wasUsingAltBuffer = isUsingAltBuffer;
+      _resetWheelStepAccumulators();
+    }
+
     final terminalBlinkMode = widget.terminal.cursorBlinkMode;
     if (terminalBlinkMode == _lastTerminalCursorBlinkMode) {
       return;
@@ -857,24 +874,11 @@ class TerminalViewState extends State<TerminalView>
     if (!_controller.shouldSendPointerInput(PointerInput.scroll)) {
       return true;
     }
-    return !widget.terminal.mouseMode.reportScroll;
+    return !widget.terminal.mouseMode.reportScroll ||
+        widget.wheelScrollLinesPerEvent <= 0;
   }
 
-  bool _shouldHandlePointerScroll(PointerScrollEvent event) {
-    if (widget.readOnly) {
-      return false;
-    }
-    if (widget.terminal.isUsingAltBuffer) {
-      // Alt-buffer wheel gestures are handled by TerminalScrollGestureHandler.
-      return false;
-    }
-    if (!_controller.shouldSendPointerInput(PointerInput.scroll)) {
-      return false;
-    }
-    return widget.terminal.mouseMode.reportScroll;
-  }
-
-  bool get _shouldHandleTrackpadPanZoom {
+  bool get _shouldHandleTerminalWheelInput {
     if (widget.readOnly) {
       return false;
     }
@@ -882,20 +886,27 @@ class TerminalViewState extends State<TerminalView>
       return false;
     }
     if (widget.terminal.isUsingAltBuffer) {
-      // Pan-zoom updates do not flow through the alternate-buffer scroll wrapper,
-      // so TerminalView handles them directly in this mode.
+      // Mouse wheels are PointerScrollEvents. On macOS they must be claimed
+      // here; otherwise InfiniteScrollView eats them and TUI apps (Claude
+      // Code, vim, Codex) never see a wheel report. Trackpad pan-zoom already
+      // takes this path.
       return widget.terminal.mouseMode.reportScroll ||
           widget.simulateScroll ||
           widget.terminal.altBufferMouseScrollMode;
     }
-    return widget.terminal.mouseMode.reportScroll;
+    return widget.terminal.mouseMode.reportScroll &&
+        widget.wheelScrollLinesPerEvent > 0;
+  }
+
+  bool get _shouldHandleTrackpadPanZoom {
+    return _shouldHandleTerminalWheelInput;
   }
 
   void _handlePointerSignal(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) {
       return;
     }
-    if (!_shouldHandlePointerScroll(event)) {
+    if (!_shouldHandleTerminalWheelInput) {
       return;
     }
     GestureBinding.instance.pointerSignalResolver.register(
@@ -908,6 +919,7 @@ class TerminalViewState extends State<TerminalView>
     if (!_shouldHandleTrackpadPanZoom) {
       return;
     }
+    _resetWheelStepAccumulators();
     _activePanZoomLocalPosition = event.localPosition;
   }
 
@@ -924,6 +936,7 @@ class TerminalViewState extends State<TerminalView>
 
   void _handlePointerPanZoomEnd(PointerPanZoomEndEvent event) {
     _activePanZoomLocalPosition = null;
+    _resetWheelStepAccumulators();
   }
 
   void _handleResolvedPointerSignal(PointerSignalEvent event) {
@@ -960,21 +973,6 @@ class TerminalViewState extends State<TerminalView>
 
     final horizontal = delta.dx;
     final vertical = widget.invertWheelScroll ? -delta.dy : delta.dy;
-    final useHorizontal = horizontal.abs() > vertical.abs();
-
-    if (useHorizontal && horizontal != 0) {
-      _sendWheelEvents(
-        renderObject,
-        localPosition,
-        horizontal > 0
-            ? TerminalMouseButton.wheelRight
-            : TerminalMouseButton.wheelLeft,
-        horizontal.abs(),
-        renderObject.cellSize.width,
-      );
-      return;
-    }
-
     if (vertical != 0) {
       _sendWheelEvents(
         renderObject,
@@ -984,6 +982,18 @@ class TerminalViewState extends State<TerminalView>
             : TerminalMouseButton.wheelUp,
         vertical.abs(),
         renderObject.lineHeight,
+      );
+    }
+
+    if (horizontal != 0) {
+      _sendWheelEvents(
+        renderObject,
+        localPosition,
+        horizontal > 0
+            ? TerminalMouseButton.wheelRight
+            : TerminalMouseButton.wheelLeft,
+        horizontal.abs(),
+        renderObject.cellSize.width,
       );
     }
   }
@@ -996,29 +1006,132 @@ class TerminalViewState extends State<TerminalView>
     double extent,
   ) {
     final stepExtent = extent <= 0 ? 1.0 : extent;
-    final speed = widget.wheelScrollLinesPerEvent <= 0
-        ? 1.0
-        : widget.wheelScrollLinesPerEvent;
-    final steps = math.min(
-      _kMaxWheelEventsPerFrame,
-      math.max(1, (delta / stepExtent * speed).ceil()),
-    );
+    final speed = widget.wheelScrollLinesPerEvent;
+    if (speed <= 0) {
+      _sendAltBufferFallbackEvents(
+        button,
+        _wheelStepsForFullSpeed(
+          delta: delta,
+          extent: stepExtent,
+          speed: 1,
+          isPositiveDirection: true,
+        ).abs(),
+      );
+      return;
+    }
+
+    final isHorizontal = button == TerminalMouseButton.wheelLeft ||
+        button == TerminalMouseButton.wheelRight;
+    final isPositiveDirection = button == TerminalMouseButton.wheelDown ||
+        button == TerminalMouseButton.wheelRight;
+    final dispatchedSteps = speed >= 1
+        ? _wheelStepsForFullSpeed(
+            delta: delta,
+            extent: stepExtent,
+            speed: speed,
+            isPositiveDirection: isPositiveDirection,
+          )
+        : _takeAccumulatedWheelSteps(
+            delta: delta,
+            extent: stepExtent,
+            speed: speed,
+            isHorizontal: isHorizontal,
+            isPositiveDirection: isPositiveDirection,
+          );
+    if (dispatchedSteps == 0) return;
+
+    final steps = dispatchedSteps.abs();
+
+    final dispatchedButton = isHorizontal
+        ? (dispatchedSteps.isNegative
+            ? TerminalMouseButton.wheelLeft
+            : TerminalMouseButton.wheelRight)
+        : (dispatchedSteps.isNegative
+            ? TerminalMouseButton.wheelUp
+            : TerminalMouseButton.wheelDown);
     bool anyHandled = false;
     for (var i = 0; i < steps; i++) {
       if (renderObject.mouseEvent(
-        button,
+        dispatchedButton,
         TerminalMouseButtonState.down,
         localPosition,
       )) {
         anyHandled = true;
       }
     }
-    if (!anyHandled &&
-        (widget.simulateScroll || widget.terminal.altBufferMouseScrollMode) &&
-        widget.terminal.isUsingAltBuffer) {
-      for (var i = 0; i < steps; i++) {
-        _sendAltBufferFallbackKey(button);
-      }
+    if (!anyHandled) {
+      _sendAltBufferFallbackEvents(dispatchedButton, steps);
+    }
+  }
+
+  int _wheelStepsForFullSpeed({
+    required double delta,
+    required double extent,
+    required double speed,
+    required bool isPositiveDirection,
+  }) {
+    final steps = math.min(
+      _kMaxWheelEventsPerFrame,
+      math.max(1, (delta / extent * speed).ceil()),
+    );
+    return isPositiveDirection ? steps : -steps;
+  }
+
+  int _takeAccumulatedWheelSteps({
+    required double delta,
+    required double extent,
+    required double speed,
+    required bool isHorizontal,
+    required bool isPositiveDirection,
+  }) {
+    final signedSteps = (isPositiveDirection ? delta : -delta) / extent * speed;
+    final accumulatedSteps = _wheelStepAccumulator(isHorizontal) + signedSteps;
+    final requestedSteps = accumulatedSteps.truncate();
+    if (requestedSteps == 0) {
+      _setWheelStepAccumulator(isHorizontal, accumulatedSteps);
+      return 0;
+    }
+
+    final steps = math.min(
+      _kMaxWheelEventsPerFrame,
+      requestedSteps.abs(),
+    );
+    final dispatchedSteps = requestedSteps.isNegative ? -steps : steps;
+    _setWheelStepAccumulator(
+      isHorizontal,
+      requestedSteps.abs() > _kMaxWheelEventsPerFrame
+          ? accumulatedSteps - requestedSteps
+          : accumulatedSteps - dispatchedSteps,
+    );
+    return dispatchedSteps;
+  }
+
+  double _wheelStepAccumulator(bool isHorizontal) {
+    return isHorizontal
+        ? _accumulatedHorizontalWheelSteps
+        : _accumulatedVerticalWheelSteps;
+  }
+
+  void _setWheelStepAccumulator(bool isHorizontal, double value) {
+    if (isHorizontal) {
+      _accumulatedHorizontalWheelSteps = value;
+    } else {
+      _accumulatedVerticalWheelSteps = value;
+    }
+  }
+
+  void _resetWheelStepAccumulators() {
+    _accumulatedHorizontalWheelSteps = 0;
+    _accumulatedVerticalWheelSteps = 0;
+  }
+
+  void _sendAltBufferFallbackEvents(TerminalMouseButton button, int steps) {
+    if (!widget.terminal.isUsingAltBuffer ||
+        !(widget.simulateScroll || widget.terminal.altBufferMouseScrollMode)) {
+      return;
+    }
+    for (var index = 0; index < steps; index++) {
+      _sendAltBufferFallbackKey(button);
     }
   }
 

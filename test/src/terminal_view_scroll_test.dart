@@ -98,6 +98,81 @@ void main() {
       ),
     );
 
+    for (var index = 0; index < 2; index++) {
+      await tester.sendEventToBinding(
+        const PointerScrollEvent(
+          position: Offset(8, 8),
+          scrollDelta: Offset(0, 40),
+        ),
+      );
+    }
+    await tester.pump();
+
+    expect(output, hasLength(1));
+    expect(output.first, '\x1B[<65;1;1M');
+  });
+
+  testWidgets('accumulates low-speed wheel scroll reports', (tester) async {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add);
+
+    terminal.write('\x1b[?1006;1000h');
+
+    final controller = TerminalController(
+      pointerInputs: PointerInputs.all(),
+      vsync: tester,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalView(
+            terminal,
+            controller: controller,
+            textStyle: const TerminalStyle(fontSize: 20),
+            wheelScrollLinesPerEvent: 0.05,
+          ),
+        ),
+      ),
+    );
+
+    for (var index = 0; index < 30; index++) {
+      await tester.sendEventToBinding(
+        const PointerScrollEvent(
+          position: Offset(8, 8),
+          scrollDelta: Offset(0, 20),
+        ),
+      );
+    }
+    await tester.pump();
+
+    expect(output, hasLength(1));
+    expect(output.single, '\x1B[<65;1;1M');
+  });
+
+  testWidgets('can disable terminal wheel scroll reports', (tester) async {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add);
+
+    terminal.write('\x1b[?1006;1000h');
+
+    final controller = TerminalController(
+      pointerInputs: PointerInputs.all(),
+      vsync: tester,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalView(
+            terminal,
+            controller: controller,
+            wheelScrollLinesPerEvent: 0,
+          ),
+        ),
+      ),
+    );
+
     await tester.sendEventToBinding(
       const PointerScrollEvent(
         position: Offset(8, 8),
@@ -106,8 +181,39 @@ void main() {
     );
     await tester.pump();
 
-    expect(output, hasLength(1));
-    expect(output.first, '\x1B[<65;1;1M');
+    expect(output, isEmpty);
+  });
+
+  testWidgets(
+      'simulates alternate buffer scroll when wheel reports are disabled',
+      (tester) async {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add);
+
+    terminal.write('\x1b[?1049h');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: TerminalView(
+            terminal,
+            wheelScrollLinesPerEvent: 0,
+          ),
+        ),
+      ),
+    );
+
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: Offset(8, 8),
+        scrollDelta: Offset(0, 20),
+      ),
+    );
+    await tester.pump();
+
+    expect(output, contains('\x1B[B'));
   });
 
   testWidgets('alternate buffer scroll uses local pointer coordinates',
@@ -142,11 +248,13 @@ void main() {
     expect(output.single, '\x1B[<65;1;1M');
   });
 
-  testWidgets('main buffer wheel scrolls viewport without mouse reporting',
+  testWidgets('main buffer wheel scrolls viewport when reports are disabled',
       (tester) async {
     final output = <String>[];
     final terminal = Terminal(onOutput: output.add);
     final scrollController = ScrollController();
+
+    terminal.write('\x1b[?1006;1000h');
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
@@ -164,6 +272,7 @@ void main() {
               controller: controller,
               scrollController: scrollController,
               textStyle: const TerminalStyle(fontSize: 12),
+              wheelScrollLinesPerEvent: 0,
             ),
           ),
         ),
@@ -189,12 +298,17 @@ void main() {
     expect(scrollController.position.pixels, lessThan(initialOffset));
   });
 
-  testWidgets('alternate buffer accumulates partial scroll deltas',
+  testWidgets('alternate buffer mouse wheel reports like trackpad',
       (tester) async {
     final output = <String>[];
     final terminal = Terminal(onOutput: output.add);
 
     terminal.write('\x1b[?1006;1000h\x1b[?1049h');
+
+    final controller = TerminalController(
+      pointerInputs: PointerInputs.all(),
+      vsync: tester,
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -203,6 +317,7 @@ void main() {
           height: 200,
           child: TerminalView(
             terminal,
+            controller: controller,
             textStyle: const TerminalStyle(fontSize: 20),
           ),
         ),
@@ -217,8 +332,71 @@ void main() {
     );
     await tester.pump();
 
-    expect(output, isEmpty);
+    expect(output, isNotEmpty);
+    expect(output.first, '\x1B[<65;1;1M');
+  });
 
+  testWidgets('alternate buffer reports both axes of diagonal wheel scroll',
+      (tester) async {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add);
+
+    terminal.write('\x1b[?1006;1000h\x1b[?1049h');
+
+    final controller = TerminalController(
+      pointerInputs: PointerInputs.all(),
+      vsync: tester,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: TerminalView(terminal, controller: controller),
+        ),
+      ),
+    );
+
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: Offset(8, 8),
+        scrollDelta: Offset(30, 20),
+      ),
+    );
+    await tester.pump();
+
+    expect(output, contains('\x1B[<65;1;1M'));
+    expect(output, contains('\x1B[<67;1;1M'));
+  });
+
+  testWidgets('clears fractional wheel steps when wheel direction changes',
+      (tester) async {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add);
+
+    terminal.write('\x1b[?1006;1000h');
+
+    final controller = TerminalController(
+      pointerInputs: PointerInputs.all(),
+      vsync: tester,
+    );
+
+    Widget buildTerminal({required bool invertWheelScroll}) {
+      return MaterialApp(
+        home: Scaffold(
+          body: TerminalView(
+            terminal,
+            controller: controller,
+            invertWheelScroll: invertWheelScroll,
+            textStyle: const TerminalStyle(fontSize: 20),
+            wheelScrollLinesPerEvent: 0.5,
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(buildTerminal(invertWheelScroll: false));
     await tester.sendEventToBinding(
       const PointerScrollEvent(
         position: Offset(8, 8),
@@ -226,9 +404,90 @@ void main() {
       ),
     );
     await tester.pump();
+    expect(output, isEmpty);
 
-    expect(output, isNotEmpty);
-    expect(output.last, '\x1B[<65;1;1M');
+    await tester.pumpWidget(buildTerminal(invertWheelScroll: true));
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: Offset(8, 8),
+        scrollDelta: Offset(0, -40),
+      ),
+    );
+    await tester.pump();
+
+    expect(output, isEmpty);
+  });
+
+  testWidgets('does not queue capped fractional wheel reports', (tester) async {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add);
+
+    terminal.write('\x1b[?1006;1000h');
+
+    final controller = TerminalController(
+      pointerInputs: PointerInputs.all(),
+      vsync: tester,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalView(
+            terminal,
+            controller: controller,
+            textStyle: const TerminalStyle(fontSize: 20),
+            wheelScrollLinesPerEvent: 0.5,
+          ),
+        ),
+      ),
+    );
+
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: Offset(8, 8),
+        scrollDelta: Offset(0, 8080),
+      ),
+    );
+    await tester.pump();
+    expect(output, hasLength(50));
+
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: Offset(8, 8),
+        scrollDelta: Offset(0, 1),
+      ),
+    );
+    await tester.pump();
+
+    expect(output, hasLength(50));
+  });
+
+  testWidgets('alternate buffer mouse wheel falls back to arrow keys',
+      (tester) async {
+    final output = <String>[];
+    final terminal = Terminal(onOutput: output.add);
+
+    terminal.write('\x1b[?1049h');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: TerminalView(terminal),
+        ),
+      ),
+    );
+
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: Offset(8, 8),
+        scrollDelta: Offset(0, 20),
+      ),
+    );
+    await tester.pump();
+
+    expect(output.join(), contains('\x1B[B'));
   });
 
   testWidgets('alternate buffer selection auto-scroll reports wheel events',
@@ -288,6 +547,7 @@ void main() {
               child: TerminalView(
                 terminal,
                 textStyle: const TerminalStyle(fontSize: 12),
+                wheelScrollLinesPerEvent: 0,
               ),
             ),
           ),
