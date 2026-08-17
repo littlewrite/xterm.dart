@@ -1,4 +1,4 @@
-import 'dart:math' show max, min;
+import 'dart:math' show max;
 import 'dart:ui';
 
 import 'package:flutter/scheduler.dart';
@@ -74,6 +74,7 @@ class RenderTerminal extends RenderBox
         ) {
     _composingLayer = _RenderComposingLayer(this);
     add(_composingLayer);
+    _syncCompositionAnchor();
     _syncTerminalGeometryCache();
   }
 
@@ -91,6 +92,10 @@ class RenderTerminal extends RenderBox
     if (_terminal == terminal) return;
     if (attached) _terminal.removeListener(_onTerminalChange);
     _terminal = terminal;
+    _compositionAnchor?.dispose();
+    _compositionAnchor = null;
+    _compositionAnchorBuffer = null;
+    _syncCompositionAnchor();
     if (attached) _terminal.addListener(_onTerminalChange);
     _resizeTerminalIfNeeded();
     markNeedsLayout();
@@ -104,7 +109,6 @@ class RenderTerminal extends RenderBox
     _controller = controller;
     if (attached) _controller.addListener(_onControllerUpdate);
     markNeedsLayout();
-    _markComposingLayerNeedsPaint();
   }
 
   ViewportOffset _offset;
@@ -169,7 +173,6 @@ class RenderTerminal extends RenderBox
     _focusNode = value;
     if (attached) _focusNode.addListener(_onFocusChange);
     markNeedsPaint();
-    _markComposingLayerNeedsPaint();
   }
 
   TerminalCursorType _cursorType;
@@ -177,7 +180,6 @@ class RenderTerminal extends RenderBox
     if (value == _cursorType) return;
     _cursorType = value;
     markNeedsPaint();
-    _markComposingLayerNeedsPaint();
   }
 
   bool _cursorBlinkEnabled;
@@ -185,7 +187,6 @@ class RenderTerminal extends RenderBox
     if (value == _cursorBlinkEnabled) return;
     _cursorBlinkEnabled = value;
     markNeedsPaint();
-    _markComposingLayerNeedsPaint();
   }
 
   bool _cursorBlinkVisible;
@@ -193,7 +194,6 @@ class RenderTerminal extends RenderBox
     if (value == _cursorBlinkVisible) return;
     _cursorBlinkVisible = value;
     markNeedsPaint();
-    _markComposingLayerNeedsPaint();
   }
 
   bool _alwaysShowCursor;
@@ -201,7 +201,6 @@ class RenderTerminal extends RenderBox
     if (value == _alwaysShowCursor) return;
     _alwaysShowCursor = value;
     markNeedsPaint();
-    _markComposingLayerNeedsPaint();
   }
 
   bool _paintCursor;
@@ -209,7 +208,6 @@ class RenderTerminal extends RenderBox
     if (value == _paintCursor) return;
     _paintCursor = value;
     markNeedsPaint();
-    _markComposingLayerNeedsPaint();
   }
 
   bool _paintSelectionHandles;
@@ -232,17 +230,47 @@ class RenderTerminal extends RenderBox
   bool _shouldReportEditableRect;
 
   String? _composingText;
+  CellAnchor? _compositionAnchor;
+  Buffer? _compositionAnchorBuffer;
+
   set composingText(String? value) {
     if (value == _composingText) return;
     final wasComposing = _isComposingText;
     _composingText = value;
-    _composingLayer.markNeedsPaint();
+    _syncCompositionAnchor();
     if (wasComposing != _isComposingText) {
-      // The base terminal only needs repainting when the composition overlay
-      // appears or disappears, so that it can hide or restore its cursor.
       markNeedsPaint();
     }
+    // The layer must also repaint when composition ends so its retained
+    // raster is cleared before the committed terminal text is painted.
+    if (wasComposing || _isComposingText) {
+      _composingLayer.markNeedsPaint();
+    }
     _scheduleEditableRectUpdate();
+  }
+
+  bool get isComposing => _isComposingText;
+
+  void _syncCompositionAnchor() {
+    if (!_isComposingText) {
+      _compositionAnchor?.dispose();
+      _compositionAnchor = null;
+      _compositionAnchorBuffer = null;
+      return;
+    }
+    if (_compositionAnchor == null ||
+        !_compositionAnchor!.attached ||
+        !identical(_compositionAnchorBuffer, _terminal.buffer)) {
+      _compositionAnchor?.dispose();
+      _compositionAnchor = _terminal.buffer.createAnchorFromCursor();
+      _compositionAnchorBuffer = _terminal.buffer;
+    }
+  }
+
+  void _markComposingLayerNeedsPaint() {
+    if (_isComposingText) {
+      _composingLayer.markNeedsPaint();
+    }
   }
 
   TerminalSize? _viewportSize;
@@ -276,7 +304,6 @@ class RenderTerminal extends RenderBox
 
   void _onFocusChange() {
     markNeedsPaint();
-    _markComposingLayerNeedsPaint();
     _scheduleEditableRectUpdate();
   }
 
@@ -288,15 +315,26 @@ class RenderTerminal extends RenderBox
     if (geometryChanged) {
       _syncTerminalGeometryCache();
       markNeedsLayout();
-      markNeedsPaint();
-      _markComposingLayerNeedsPaint();
-      _scheduleEditableRectUpdate();
-      return;
     }
-
+    final previousAnchor = _compositionAnchor?.attached == true
+        ? _compositionAnchor!.offset
+        : null;
+    final previousAnchorBuffer = _compositionAnchorBuffer;
+    _syncCompositionAnchor();
+    final compositionAnchorChanged =
+        previousAnchorBuffer != _compositionAnchorBuffer ||
+            previousAnchor !=
+                (_compositionAnchor?.attached == true
+                    ? _compositionAnchor!.offset
+                    : null);
     markNeedsPaint();
-    _markComposingLayerNeedsPaint();
-    _scheduleEditableRectUpdate();
+    if (geometryChanged || compositionAnchorChanged) {
+      _markComposingLayerNeedsPaint();
+    }
+    // 组字期间 PTY 光标乱跳不应推动 IME 候选框。滚动/尺寸变化仍要同步。
+    if (!_isComposingText || geometryChanged) {
+      _scheduleEditableRectUpdate();
+    }
   }
 
   void _onControllerUpdate() {
@@ -323,6 +361,12 @@ class RenderTerminal extends RenderBox
     _terminal.removeListener(_onTerminalChange);
     _controller.removeListener(_onControllerUpdate);
     _focusNode.removeListener(_onFocusChange);
+  }
+
+  @override
+  void dispose() {
+    _compositionAnchor?.dispose();
+    super.dispose();
   }
 
   @override
@@ -564,20 +608,13 @@ class RenderTerminal extends RenderBox
   }
 
   Rect _resolveImeCaretRect() {
-    final composingText = _composingText;
-    if (composingText == null || composingText.isEmpty) {
-      return editableCursorOffset & _painter.cellSize;
+    if (!_isComposingText) {
+      return cursorOffset & _painter.cellSize;
     }
 
-    final endOffset = resolveComposingEndOffset(
-      startOffset: editableCursorOffset,
-      text: composingText,
-      viewWidth: _terminal.viewWidth,
-      cellSize: _painter.cellSize,
-    );
     return Rect.fromLTWH(
-      endOffset.dx,
-      endOffset.dy,
+      editableCursorOffset.dx,
+      editableCursorOffset.dy,
       0,
       _painter.cellSize.height,
     );
@@ -594,14 +631,25 @@ class RenderTerminal extends RenderBox
       return startOffset;
     }
 
-    final startColumn = (startOffset.dx / cellSize.width).round();
-    final cellCount = _composingCellCount(text);
-
-    final absoluteColumn = startColumn + cellCount;
-    final wrappedRows = absoluteColumn ~/ viewWidth;
-    final endColumn = absoluteColumn % viewWidth;
+    var column = (startOffset.dx / cellSize.width).round();
+    var wrappedRows = 0;
+    for (final rune in text.runes) {
+      final width = max(0, unicodeV11.wcwidth(rune));
+      if (width == 0) {
+        continue;
+      }
+      if (width > viewWidth - column) {
+        wrappedRows++;
+        column = 0;
+      }
+      column += width;
+      if (column == viewWidth) {
+        wrappedRows++;
+        column = 0;
+      }
+    }
     return Offset(
-      endColumn * cellSize.width,
+      column * cellSize.width,
       startOffset.dy + wrappedRows * cellSize.height,
     );
   }
@@ -617,30 +665,53 @@ class RenderTerminal extends RenderBox
       return const [];
     }
 
-    var remainingCells = _composingCellCount(text);
-    if (remainingCells == 0) {
-      return const [];
-    }
-
     var column = (startOffset.dx / cellSize.width).round();
     column = column.clamp(0, viewWidth - 1).toInt();
     var rowOffset = startOffset.dy;
     final rects = <Rect>[];
 
-    while (remainingCells > 0) {
-      final widthInCells = min(remainingCells, viewWidth - column);
-      rects.add(
-        Rect.fromLTWH(
-          column * cellSize.width,
-          rowOffset,
-          widthInCells * cellSize.width,
-          cellSize.height,
-        ),
-      );
-      remainingCells -= widthInCells;
-      column = 0;
-      rowOffset += cellSize.height;
+    Rect? pending;
+    void flushPending() {
+      if (pending != null) {
+        rects.add(pending!);
+        pending = null;
+      }
     }
+
+    for (final rune in text.runes) {
+      final width = max(0, unicodeV11.wcwidth(rune));
+      if (width == 0) {
+        continue;
+      }
+      if (width > viewWidth - column) {
+        flushPending();
+        column = 0;
+        rowOffset += cellSize.height;
+      }
+
+      final rect = Rect.fromLTWH(
+        column * cellSize.width,
+        rowOffset,
+        width * cellSize.width,
+        cellSize.height,
+      );
+      if (pending != null &&
+          pending!.top == rect.top &&
+          pending!.right == rect.left) {
+        pending = pending!.expandToInclude(rect);
+      } else {
+        flushPending();
+        pending = rect;
+      }
+
+      column += width;
+      if (column == viewWidth) {
+        flushPending();
+        column = 0;
+        rowOffset += cellSize.height;
+      }
+    }
+    flushPending();
 
     return rects;
   }
@@ -655,14 +726,6 @@ class RenderTerminal extends RenderBox
       return fallbackWidth;
     }
     return viewWidth * cellSize.width;
-  }
-
-  static int _composingCellCount(String text) {
-    var cellCount = 0;
-    for (final rune in text.runes) {
-      cellCount += max(0, unicodeV11.wcwidth(rune));
-    }
-    return cellCount;
   }
 
   void _scheduleEditableRectUpdate() {
@@ -729,12 +792,6 @@ class RenderTerminal extends RenderBox
     return _composingText != null && _composingText!.isNotEmpty;
   }
 
-  void _markComposingLayerNeedsPaint() {
-    if (_isComposingText) {
-      _composingLayer.markNeedsPaint();
-    }
-  }
-
   CellData get _composingCellStyle {
     final cursor = _terminal.cursor;
     return CellData(
@@ -771,17 +828,12 @@ class RenderTerminal extends RenderBox
   }
 
   bool get isCursorInViewport {
-    final lines = _terminal.lines;
-    if (lines.length == 0) {
+    if (!hasSize) {
       return false;
     }
-    final firstLine = _scrollOffset ~/ _painter.cellSize.height;
-    final lastLine = (_scrollOffset + size.height - _padding.vertical) ~/
-        _painter.cellSize.height;
-    final effectFirstLine = firstLine.clamp(0, lines.length - 1);
-    final effectLastLine = lastLine.clamp(0, lines.length - 1);
-    return _terminal.buffer.absoluteCursorY >= effectFirstLine &&
-        _terminal.buffer.absoluteCursorY <= effectLastLine;
+    final y = editableCursorOffset.dy;
+    final cellHeight = _painter.cellSize.height;
+    return y + cellHeight > 0 && y < size.height;
   }
 
   bool get shouldHintWillChange {
@@ -812,11 +864,46 @@ class RenderTerminal extends RenderBox
     );
   }
 
-  /// Cursor position used by the platform text input connection.
-  Offset get editableCursorOffset => cursorOffset;
+  Offset get compositionAnchorOffset {
+    _syncCompositionAnchor();
+    final anchor = _compositionAnchor;
+    if (anchor == null || !anchor.attached) {
+      return cursorOffset;
+    }
+    return Offset(
+      anchor.x * _painter.cellSize.width,
+      anchor.y * _painter.cellSize.height + _lineOffset,
+    );
+  }
+
+  /// IME caret: live PTY cursor, or the end of frozen preedit during composition.
+  Offset get editableCursorOffset {
+    final composingText = _composingText;
+    if (composingText == null || composingText.isEmpty) {
+      return cursorOffset;
+    }
+    return resolveComposingEndOffset(
+      startOffset: compositionAnchorOffset,
+      text: composingText,
+      viewWidth: _terminal.viewWidth,
+      cellSize: _painter.cellSize,
+    );
+  }
 
   Size get cellSize {
     return _painter.cellSize;
+  }
+
+  bool get isCompositionInViewport {
+    if (!hasSize || !_isComposingText) {
+      return false;
+    }
+    return resolveComposingBackdropRects(
+      startOffset: compositionAnchorOffset,
+      text: _composingText!,
+      viewWidth: _terminal.viewWidth,
+      cellSize: _painter.cellSize,
+    ).any((rect) => rect.overlaps(Offset.zero & size));
   }
 
   @override
@@ -859,8 +946,8 @@ class RenderTerminal extends RenderBox
       );
     }
 
-    if (_isCursorVisibleInViewport &&
-        !_isComposingText &&
+    if (!_isComposingText &&
+        isCursorInViewport &&
         _paintCursor &&
         shouldPaintCursor(cursorBlinkVisible: _cursorBlinkVisible)) {
       _painter.paintCursor(
@@ -880,7 +967,7 @@ class RenderTerminal extends RenderBox
   }
 
   /// Paints the text that is currently being composed in IME to [canvas] at
-  /// [offset]. [offset] is usually the cursor position.
+  /// [offset]. [offset] is the frozen composition start, not the live PTY cursor.
   void _paintComposingText(Canvas canvas, Offset offset) {
     final composingText = _composingText;
     if (composingText == null) {
@@ -925,66 +1012,6 @@ class RenderTerminal extends RenderBox
     paragraph.layout(ParagraphConstraints(width: paragraphWidth));
 
     canvas.drawParagraph(paragraph, Offset(0, offset.dy));
-  }
-
-  void _paintComposingOverlay(Canvas canvas, Offset offset) {
-    if (!_isCursorVisibleInViewport) {
-      return;
-    }
-
-    _paintComposingText(canvas, offset + editableCursorOffset);
-
-    if (_paintCursor &&
-        shouldPaintCursor(cursorBlinkVisible: _cursorBlinkVisible)) {
-      _painter.paintCursor(
-        canvas,
-        offset + cursorOffset,
-        cursorType: _cursorType,
-        hasFocus: _focusNode.hasFocus,
-      );
-    }
-  }
-
-  Rect get _composingPaintBounds {
-    final composingText = _composingText;
-    if (composingText == null ||
-        composingText.isEmpty ||
-        !_isCursorVisibleInViewport) {
-      return Rect.zero;
-    }
-
-    final rects = resolveComposingBackdropRects(
-      startOffset: editableCursorOffset,
-      text: composingText,
-      viewWidth: _terminal.viewWidth,
-      cellSize: _painter.cellSize,
-    );
-    if (rects.isEmpty) {
-      return Rect.zero;
-    }
-
-    var bounds = rects.first;
-    for (final rect in rects.skip(1)) {
-      bounds = bounds.expandToInclude(rect);
-    }
-
-    return bounds.inflate(1).intersect(Offset.zero & size);
-  }
-
-  bool get _isCursorVisibleInViewport {
-    final lines = _terminal.buffer.lines;
-    if (lines.length == 0) {
-      return false;
-    }
-
-    final charHeight = _painter.cellSize.height;
-    final firstLine = (_scrollOffset - _padding.top) ~/ charHeight;
-    final lastLine =
-        (_scrollOffset + size.height + _padding.bottom) ~/ charHeight;
-    final firstVisibleLine = firstLine.clamp(0, lines.length - 1);
-    final lastVisibleLine = lastLine.clamp(0, lines.length - 1);
-    final cursorLine = _terminal.buffer.absoluteCursorY;
-    return cursorLine >= firstVisibleLine && cursorLine <= lastVisibleLine;
   }
 
   bool _selectionIntersectsLine(BufferRange selection, int line) {
@@ -1162,7 +1189,22 @@ class _RenderComposingLayer extends RenderBox {
   bool get isRepaintBoundary => true;
 
   @override
-  Rect get paintBounds => _terminal._composingPaintBounds;
+  Rect get paintBounds {
+    if (!_terminal.isComposing || !_terminal.isCompositionInViewport) {
+      return Rect.zero;
+    }
+    final rects = RenderTerminal.resolveComposingBackdropRects(
+      startOffset: _terminal.compositionAnchorOffset,
+      text: _terminal._composingText!,
+      viewWidth: _terminal._terminal.viewWidth,
+      cellSize: _terminal.cellSize,
+    );
+    var bounds = rects.first;
+    for (final rect in rects.skip(1)) {
+      bounds = bounds.expandToInclude(rect);
+    }
+    return bounds.inflate(1).intersect(Offset.zero & _terminal.size);
+  }
 
   @override
   void performLayout() {
@@ -1171,10 +1213,11 @@ class _RenderComposingLayer extends RenderBox {
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    if (!_terminal._isComposingText) {
-      return;
+    if (_terminal.isComposing && _terminal.isCompositionInViewport) {
+      _terminal._paintComposingText(
+        context.canvas,
+        offset + _terminal.compositionAnchorOffset,
+      );
     }
-
-    _terminal._paintComposingOverlay(context.canvas, offset);
   }
 }

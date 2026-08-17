@@ -303,6 +303,7 @@ class TerminalViewState extends State<TerminalView>
     _initSearchBox();
     widget.terminal.onSearch = _showSearch;
     widget.terminal.onCloseSearch = _closeSearch;
+    _composingText.addListener(_syncComposingTextToRender);
   }
 
   void _initSearchBox() {
@@ -396,6 +397,7 @@ class TerminalViewState extends State<TerminalView>
     textSizeNoti.dispose();
     _cursorBlinkTimer?.cancel();
     _cursorBlinkVisible.dispose();
+    _composingText.removeListener(_syncComposingTextToRender);
     _composingText.dispose();
     widget.terminal.removeListener(_handleTerminalChange);
     widget.terminal.onSearch = null;
@@ -423,36 +425,31 @@ class TerminalViewState extends State<TerminalView>
             return ValueListenableBuilder(
               valueListenable: textSizeNoti,
               builder: (context1, textSize, child1) {
-                return ValueListenableBuilder(
-                  valueListenable: _composingText,
-                  builder: (context3, composingText, child3) {
-                    final viewport = _buildViewport(
-                      context,
-                      offset,
-                      textSize,
-                      composingText,
-                      cursorBlinkVisible: _cursorBlinkVisible.value,
-                      paintCursor: false,
-                    );
+                final viewport = _buildViewport(
+                  context,
+                  offset,
+                  textSize,
+                  cursorBlinkVisible: _cursorBlinkVisible.value,
+                  paintCursor: false,
+                );
 
-                    return Stack(
-                      children: [
-                        viewport,
-                        Positioned.fill(
-                          child: _TerminalCursorOverlay(
-                            renderTerminal: () => _viewportKey.currentContext
-                                ?.findRenderObject() as RenderTerminal?,
-                            terminal: widget.terminal,
-                            focusNode: _focusNode,
-                            offset: offset,
-                            theme: widget.theme,
-                            cursorType: widget.cursorType,
-                            cursorBlinkVisibleListenable: _cursorBlinkVisible,
-                          ),
-                        ),
-                      ],
-                    );
-                  },
+                return Stack(
+                  children: [
+                    viewport,
+                    Positioned.fill(
+                      child: _TerminalCursorOverlay(
+                        renderTerminal: () => _viewportKey.currentContext
+                            ?.findRenderObject() as RenderTerminal?,
+                        terminal: widget.terminal,
+                        focusNode: _focusNode,
+                        offset: offset,
+                        theme: widget.theme,
+                        cursorType: widget.cursorType,
+                        cursorBlinkVisibleListenable: _cursorBlinkVisible,
+                        composingTextListenable: _composingText,
+                      ),
+                    ),
+                  ],
                 );
               },
             );
@@ -737,6 +734,17 @@ class TerminalViewState extends State<TerminalView>
     }
     _composingText.value = text;
     _updateCursorBlink(resetVisible: true);
+  }
+
+  void _syncComposingTextToRender() {
+    final context = _viewportKey.currentContext;
+    if (context == null) {
+      return;
+    }
+    final render = context.findRenderObject();
+    if (render is RenderTerminal) {
+      render.composingText = _composingText.value;
+    }
   }
 
   KeyEventResult _handleKeyEvent(FocusNode focusNode, KeyEvent event) {
@@ -1292,8 +1300,7 @@ class TerminalViewState extends State<TerminalView>
   Widget _buildViewport(
     BuildContext context,
     ViewportOffset offset,
-    double textSize,
-    String? composingText, {
+    double textSize, {
     required bool cursorBlinkVisible,
     required bool paintCursor,
   }) {
@@ -1320,7 +1327,6 @@ class TerminalViewState extends State<TerminalView>
               !widget.readOnly
           ? _onEditableRect
           : null,
-      composingText: composingText,
     );
 
     return viewport;
@@ -1347,7 +1353,6 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.paintCursor,
     required this.paintSelectionHandles,
     this.onEditableRect,
-    this.composingText,
   });
 
   final Terminal terminal;
@@ -1384,8 +1389,6 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final EditableRectCallback? onEditableRect;
 
-  final String? composingText;
-
   @override
   RenderTerminal createRenderObject(BuildContext context) {
     return RenderTerminal(
@@ -1406,7 +1409,6 @@ class _TerminalView extends LeafRenderObjectWidget {
       paintCursor: paintCursor,
       paintSelectionHandles: paintSelectionHandles,
       onEditableRect: onEditableRect,
-      composingText: composingText,
     );
   }
 
@@ -1429,8 +1431,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..devicePixelRatio = devicePixelRatio
       ..paintCursor = paintCursor
       ..paintSelectionHandles = paintSelectionHandles
-      ..onEditableRect = onEditableRect
-      ..composingText = composingText;
+      ..onEditableRect = onEditableRect;
   }
 }
 
@@ -1443,6 +1444,7 @@ class _TerminalCursorOverlay extends LeafRenderObjectWidget {
     required this.theme,
     required this.cursorType,
     required this.cursorBlinkVisibleListenable,
+    required this.composingTextListenable,
   });
 
   final RenderTerminal? Function() renderTerminal;
@@ -1459,6 +1461,8 @@ class _TerminalCursorOverlay extends LeafRenderObjectWidget {
 
   final ValueListenable<bool> cursorBlinkVisibleListenable;
 
+  final ValueListenable<String?> composingTextListenable;
+
   @override
   RenderObject createRenderObject(BuildContext context) {
     return _RenderTerminalCursorOverlay(
@@ -1469,6 +1473,7 @@ class _TerminalCursorOverlay extends LeafRenderObjectWidget {
       theme: theme,
       cursorType: cursorType,
       cursorBlinkVisibleListenable: cursorBlinkVisibleListenable,
+      composingTextListenable: composingTextListenable,
     );
   }
 
@@ -1484,7 +1489,8 @@ class _TerminalCursorOverlay extends LeafRenderObjectWidget {
       ..offset = offset
       ..theme = theme
       ..cursorType = cursorType
-      ..cursorBlinkVisibleListenable = cursorBlinkVisibleListenable;
+      ..cursorBlinkVisibleListenable = cursorBlinkVisibleListenable
+      ..composingTextListenable = composingTextListenable;
   }
 }
 
@@ -1497,13 +1503,15 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     required TerminalTheme theme,
     required TerminalCursorType cursorType,
     required ValueListenable<bool> cursorBlinkVisibleListenable,
+    required ValueListenable<String?> composingTextListenable,
   })  : _renderTerminal = renderTerminal,
         _terminal = terminal,
         _focusNode = focusNode,
         _offset = offset,
         _theme = theme,
         _cursorType = cursorType,
-        _cursorBlinkVisibleListenable = cursorBlinkVisibleListenable;
+        _cursorBlinkVisibleListenable = cursorBlinkVisibleListenable,
+        _composingTextListenable = composingTextListenable;
 
   RenderTerminal? Function() _renderTerminal;
   set renderTerminal(RenderTerminal? Function() value) {
@@ -1566,6 +1574,20 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     markNeedsPaint();
   }
 
+  ValueListenable<String?> _composingTextListenable;
+  Offset? _lastEditableCursorOffset;
+  set composingTextListenable(ValueListenable<String?> value) {
+    if (identical(value, _composingTextListenable)) return;
+    if (attached) {
+      _composingTextListenable.removeListener(_onComposingTextChange);
+    }
+    _composingTextListenable = value;
+    if (attached) {
+      _composingTextListenable.addListener(_onComposingTextChange);
+    }
+    markNeedsPaint();
+  }
+
   @override
   bool get isRepaintBoundary => true;
 
@@ -1576,6 +1598,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     _focusNode.addListener(_onFocusChange);
     _offset.addListener(markNeedsPaint);
     _cursorBlinkVisibleListenable.addListener(_onCursorBlinkVisibleChange);
+    _composingTextListenable.addListener(_onComposingTextChange);
   }
 
   @override
@@ -1584,6 +1607,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     _focusNode.removeListener(_onFocusChange);
     _offset.removeListener(markNeedsPaint);
     _cursorBlinkVisibleListenable.removeListener(_onCursorBlinkVisibleChange);
+    _composingTextListenable.removeListener(_onComposingTextChange);
     super.detach();
   }
 
@@ -1601,7 +1625,17 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     markNeedsPaint();
   }
 
+  void _onComposingTextChange() {
+    markNeedsPaint();
+  }
+
   void _onTerminalChange() {
+    final renderTerminal = _renderTerminal();
+    if (renderTerminal != null &&
+        renderTerminal.isComposing &&
+        renderTerminal.editableCursorOffset == _lastEditableCursorOffset) {
+      return;
+    }
     markNeedsPaint();
   }
 
@@ -1628,6 +1662,9 @@ class _RenderTerminalCursorOverlay extends RenderBox {
         !renderTerminal.hasSize) {
       return;
     }
+
+    final editableCursorOffset = renderTerminal.editableCursorOffset;
+    _lastEditableCursorOffset = editableCursorOffset;
 
     if (!renderTerminal.shouldShowCursor) {
       return;
@@ -1661,7 +1698,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
   Offset? _cursorOffsetInOverlay(RenderTerminal renderTerminal) {
     final cursorGlobal = MatrixUtils.transformPoint(
       renderTerminal.getTransformTo(null),
-      renderTerminal.cursorOffset,
+      _lastEditableCursorOffset ?? renderTerminal.editableCursorOffset,
     );
     final overlayToGlobal = getTransformTo(null);
     final globalToOverlay = Matrix4.copy(overlayToGlobal);

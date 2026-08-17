@@ -387,7 +387,9 @@ void main() {
     controller.dispose();
   });
 
-  test('RenderTerminal tracks the terminal cursor while composing', () {
+  test(
+      'RenderTerminal pins IME caret to composition start when PTY cursor moves',
+      () {
     final terminal = Terminal();
     const vsync = TestVSync();
     final controller = TerminalController(vsync: vsync);
@@ -410,18 +412,23 @@ void main() {
 
     terminal.write('\x1b[2;3H');
     render.composingText = 'pin';
-    final initialOffset = render.editableCursorOffset;
+    final anchoredCaret = render.editableCursorOffset;
 
     terminal.write('\x1b[8;12H');
 
-    expect(render.cursorOffset, isNot(initialOffset));
+    expect(render.cursorOffset, isNot(anchoredCaret));
+    expect(render.editableCursorOffset, anchoredCaret);
+    expect(render.isComposing, isTrue);
+
+    render.composingText = null;
     expect(render.editableCursorOffset, render.cursorOffset);
+    expect(render.isComposing, isFalse);
 
     focusNode.dispose();
     controller.dispose();
   });
 
-  test('RenderTerminal isolates composing text in a repaint boundary', () {
+  test('RenderTerminal grows the frozen IME caret with composing text', () {
     final terminal = Terminal();
     const vsync = TestVSync();
     final controller = TerminalController(vsync: vsync);
@@ -442,14 +449,31 @@ void main() {
       alwaysShowCursor: false,
     );
 
-    expect(render.firstChild, isNotNull);
-    expect(render.firstChild!.isRepaintBoundary, isTrue);
+    terminal.write('\x1b[2;3H');
+    render.composingText = 'p';
+    final start = render.compositionAnchorOffset;
+    final firstCaret = render.editableCursorOffset;
+
+    render.composingText = 'pin';
+    terminal.write('\x1b[20;20H');
+
+    expect(render.compositionAnchorOffset, start);
+    expect(render.editableCursorOffset.dx, greaterThan(firstCaret.dx));
+    expect(
+      render.editableCursorOffset,
+      RenderTerminal.resolveComposingEndOffset(
+        startOffset: start,
+        text: 'pin',
+        viewWidth: terminal.viewWidth,
+        cellSize: render.cellSize,
+      ),
+    );
 
     focusNode.dispose();
     controller.dispose();
   });
 
-  test('RenderTerminal scopes the composing layer to the preedit rows', () {
+  test('RenderTerminal follows the composition anchor through reflow', () {
     final terminal = Terminal();
     const vsync = TestVSync();
     final controller = TerminalController(vsync: vsync);
@@ -470,14 +494,49 @@ void main() {
       alwaysShowCursor: false,
     );
 
-    render.layout(BoxConstraints.tight(const Size(800, 400)));
-    render.composingText = 'pinyin';
+    terminal.write(List.filled(80, 'a').join());
+    terminal.write('\x1b[2;3H');
+    render.composingText = 'pin';
+    final beforeResize = render.compositionAnchorOffset;
 
-    final paintBounds = render.firstChild!.paintBounds;
-    expect(paintBounds.height, lessThan(render.size.height));
-    expect(paintBounds.width, lessThan(render.size.width));
-    expect(paintBounds.height, greaterThanOrEqualTo(render.cellSize.height));
-    expect(paintBounds.height, lessThanOrEqualTo(render.cellSize.height + 2));
+    terminal.resize(40, 24);
+
+    expect(render.compositionAnchorOffset, render.cursorOffset);
+    expect(render.compositionAnchorOffset.dy, isNot(beforeResize.dy));
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal reanchors composition when switching buffers', () {
+    final terminal = Terminal();
+    const vsync = TestVSync();
+    final controller = TerminalController(vsync: vsync);
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    terminal.write('\x1b[2;3H');
+    render.composingText = 'pin';
+    final mainBufferOffset = render.compositionAnchorOffset;
+
+    terminal.write('\x1b[?1049h');
+
+    expect(render.compositionAnchorOffset, render.cursorOffset);
+    expect(render.compositionAnchorOffset, isNot(mainBufferOffset));
 
     focusNode.dispose();
     controller.dispose();
@@ -567,6 +626,19 @@ void main() {
     );
   });
 
+  test('RenderTerminal wraps a wide composing backdrop before the last cell',
+      () {
+    expect(
+      RenderTerminal.resolveComposingBackdropRects(
+        startOffset: const Offset(90, 0),
+        text: '中',
+        viewWidth: 10,
+        cellSize: const Size(10, 20),
+      ),
+      const [Rect.fromLTWH(0, 20, 20, 20)],
+    );
+  });
+
   test('RenderTerminal wraps composing paragraphs at the terminal grid width',
       () {
     expect(
@@ -610,6 +682,17 @@ void main() {
     );
 
     expect(offset, const Offset(60, 40));
+  });
+
+  test('RenderTerminal wraps a wide rune before the last cell', () {
+    final offset = RenderTerminal.resolveComposingEndOffset(
+      startOffset: const Offset(790, 0),
+      text: '中',
+      viewWidth: 80,
+      cellSize: const Size(10, 20),
+    );
+
+    expect(offset, const Offset(20, 20));
   });
 
   test('RenderTerminal hides cursor when terminal visibility mode is disabled',
