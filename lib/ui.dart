@@ -6,5 +6,6 @@ export 'src/ui/selection_mode.dart';
 export 'src/ui/shortcut/shortcuts.dart';
 export 'src/ui/terminal_text_style.dart';
 export 'src/ui/terminal_theme.dart';
+export 'src/ui/terminal_highlight.dart';
 export 'src/ui/themes.dart';
 export 'src/ui/custom_text_edit.dart' show CustomTextEditState;

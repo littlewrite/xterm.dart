@@ -27,6 +27,7 @@ import 'package:xterm/src/ui/shortcut/actions.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
+import 'package:xterm/src/ui/terminal_highlight.dart';
 import 'package:xterm/src/ui/themes.dart';
 import 'package:xterm/src/ui/search_box.dart';
 
@@ -44,6 +45,7 @@ class TerminalView extends StatefulWidget {
     super.key,
     this.controller,
     this.theme = TerminalThemes.defaultTheme,
+    this.highlightSource,
     this.textStyle = const TerminalStyle(),
     this.textScaler,
     this.padding,
@@ -93,6 +95,9 @@ class TerminalView extends StatefulWidget {
 
   /// The theme to use for this terminal.
   final TerminalTheme theme;
+
+  /// Optional paint-only syntax highlight overlays.
+  final TerminalHighlightSource? highlightSource;
 
   /// The style to use for painting characters.
   final TerminalStyle textStyle;
@@ -1314,6 +1319,7 @@ class TerminalViewState extends State<TerminalView>
       textStyle: widget.textStyle.copyWith(fontSize: textSize),
       textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
       theme: widget.theme,
+      highlightSource: widget.highlightSource,
       focusNode: _focusNode,
       cursorType: widget.cursorType,
       cursorBlinkEnabled: _cursorBlinkEnabled,
@@ -1344,6 +1350,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.textStyle,
     required this.textScaler,
     required this.theme,
+    this.highlightSource,
     required this.focusNode,
     required this.cursorType,
     required this.cursorBlinkEnabled,
@@ -1370,6 +1377,8 @@ class _TerminalView extends LeafRenderObjectWidget {
   final TextScaler textScaler;
 
   final TerminalTheme theme;
+
+  final TerminalHighlightSource? highlightSource;
 
   final FocusNode focusNode;
 
@@ -1400,6 +1409,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       textStyle: textStyle,
       textScaler: textScaler,
       theme: theme,
+      highlightSource: highlightSource,
       focusNode: focusNode,
       cursorType: cursorType,
       cursorBlinkEnabled: cursorBlinkEnabled,
@@ -1423,6 +1433,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..textStyle = textStyle
       ..textScaler = textScaler
       ..theme = theme
+      ..highlightSource = highlightSource
       ..focusNode = focusNode
       ..cursorType = cursorType
       ..cursorBlinkEnabled = cursorBlinkEnabled

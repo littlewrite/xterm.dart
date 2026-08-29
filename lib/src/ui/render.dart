@@ -22,6 +22,7 @@ import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/terminal_size.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
+import 'package:xterm/src/ui/terminal_highlight.dart';
 import 'package:xterm/src/utils/unicode_v11.dart';
 
 typedef EditableRectCallback = void Function(
@@ -46,6 +47,7 @@ class RenderTerminal extends RenderBox
     required bool cursorBlinkEnabled,
     required bool cursorBlinkVisible,
     required bool alwaysShowCursor,
+    TerminalHighlightSource? highlightSource,
     double devicePixelRatio = 1.0,
     bool paintCursor = true,
     bool paintSelectionHandles = true,
@@ -61,6 +63,7 @@ class RenderTerminal extends RenderBox
         _cursorBlinkEnabled = cursorBlinkEnabled,
         _cursorBlinkVisible = cursorBlinkVisible,
         _alwaysShowCursor = alwaysShowCursor,
+        _highlightSource = highlightSource,
         _paintCursor = paintCursor,
         _paintSelectionHandles = paintSelectionHandles,
         _shouldReportEditableRect = onEditableRect != null,
@@ -203,6 +206,19 @@ class RenderTerminal extends RenderBox
     markNeedsPaint();
   }
 
+  TerminalHighlightSource? _highlightSource;
+  set highlightSource(TerminalHighlightSource? value) {
+    if (identical(value, _highlightSource)) return;
+    if (attached) {
+      _highlightSource?.removeListener(_onHighlightSourceChange);
+    }
+    _highlightSource = value;
+    if (attached) {
+      _highlightSource?.addListener(_onHighlightSourceChange);
+    }
+    markNeedsPaint();
+  }
+
   bool _paintCursor;
   set paintCursor(bool value) {
     if (value == _paintCursor) return;
@@ -328,17 +344,21 @@ class RenderTerminal extends RenderBox
                     ? _compositionAnchor!.offset
                     : null);
     markNeedsPaint();
-    if (geometryChanged || compositionAnchorChanged) {
-      _markComposingLayerNeedsPaint();
-    }
-    // 组字期间 PTY 光标乱跳不应推动 IME 候选框。滚动/尺寸变化仍要同步。
-    if (!_isComposingText || geometryChanged) {
+    // The composing layer is a repaint boundary, so terminal style changes
+    // must invalidate it even when geometry stays unchanged.
+    _markComposingLayerNeedsPaint();
+    // A re-anchored preedit caret must also move the platform candidate rect.
+    if (!_isComposingText || geometryChanged || compositionAnchorChanged) {
       _scheduleEditableRectUpdate();
     }
   }
 
   void _onControllerUpdate() {
     // 选择、高亮等 controller 更新只影响覆盖层绘制。
+    markNeedsPaint();
+  }
+
+  void _onHighlightSourceChange() {
     markNeedsPaint();
   }
 
@@ -351,6 +371,7 @@ class RenderTerminal extends RenderBox
     _offset.addListener(_onScroll);
     _terminal.addListener(_onTerminalChange);
     _controller.addListener(_onControllerUpdate);
+    _highlightSource?.addListener(_onHighlightSourceChange);
     _focusNode.addListener(_onFocusChange);
   }
 
@@ -360,6 +381,7 @@ class RenderTerminal extends RenderBox
     _offset.removeListener(_onScroll);
     _terminal.removeListener(_onTerminalChange);
     _controller.removeListener(_onControllerUpdate);
+    _highlightSource?.removeListener(_onHighlightSourceChange);
     _focusNode.removeListener(_onFocusChange);
   }
 
@@ -926,6 +948,7 @@ class RenderTerminal extends RenderBox
 
     final effectFirstLine = firstLine.clamp(0, lines.length - 1);
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
+    _highlightSource?.updateVisibleRange(effectFirstLine, effectLastLine);
     final selection = _controller.selection?.normalized;
     final cellData = CellData.empty();
 
@@ -933,7 +956,15 @@ class RenderTerminal extends RenderBox
       final lineOffset = offset.translate(
           0, (i * charHeight + _lineOffset).truncateToDouble());
       if (selection == null || !_selectionIntersectsLine(selection, i)) {
-        _painter.paintLine(canvas, lineOffset, lines[i]);
+        final source = _highlightSource;
+        _painter.paintLine(
+          canvas,
+          lineOffset,
+          lines[i],
+          highlightRevision: source?.revisionForLine(lines[i], i) ?? 0,
+          highlightSource: source,
+          highlightLineIndex: i,
+        );
         continue;
       }
       _paintLineWithSelection(
@@ -943,11 +974,11 @@ class RenderTerminal extends RenderBox
         i,
         selection,
         cellData,
+        _highlightSource?.spansForLine(lines[i], i) ?? const [],
       );
     }
 
-    if (!_isComposingText &&
-        isCursorInViewport &&
+    if (isCursorInViewport &&
         _paintCursor &&
         shouldPaintCursor(cursorBlinkVisible: _cursorBlinkVisible)) {
       _painter.paintCursor(
@@ -1027,6 +1058,7 @@ class RenderTerminal extends RenderBox
     int lineIndex,
     BufferRange selection,
     CellData cellData,
+    List<TerminalHighlightSpan> highlights,
   ) {
     final cellWidth = _painter.cellSize.width;
     final startColumn = selectedStartColumn(selection, lineIndex);
@@ -1035,18 +1067,38 @@ class RenderTerminal extends RenderBox
       lineIndex,
       _terminal.viewWidth,
     );
+    var highlightIndex = 0;
 
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
+
+      while (highlightIndex < highlights.length &&
+          highlights[highlightIndex].endColumn <= i) {
+        highlightIndex++;
+      }
+      final highlight = highlightIndex < highlights.length &&
+              highlights[highlightIndex].contains(i)
+          ? highlights[highlightIndex]
+          : null;
 
       final charWidth = cellData.content >> CellContent.widthShift;
       final cellOffset = offset.translate(i * cellWidth, 0);
       final isSelected = i >= startColumn && i < endColumn;
 
       if (isSelected) {
-        _painter.paintSelectedCell(canvas, cellOffset, cellData);
+        _painter.paintSelectedCellWithHighlight(
+          canvas,
+          cellOffset,
+          cellData,
+          highlight,
+        );
       } else {
-        _painter.paintCell(canvas, cellOffset, cellData);
+        _painter.paintCellWithHighlight(
+          canvas,
+          cellOffset,
+          cellData,
+          highlight,
+        );
       }
 
       if (charWidth == 2) {

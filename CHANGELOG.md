@@ -1,3 +1,16 @@
+## Unreleased
+* Add paint-only terminal highlight overlays with per-line invalidation,
+  preserving the terminal's original ANSI cell styles.
+* Cache compiled highlight grammars and limit visible-line parsing work.
+* Fix highlight cache invalidation for source replacement, line reindexing,
+  inverse cells, and freshly parsed lines.
+* Keep composing text and IME caret geometry in sync when terminal styles or
+  composition anchors change.
+* Match Windows Terminal clipboard shortcuts on Windows while preserving
+  `Ctrl+C` as terminal input when no selection is active.
+* Preserve terminal control keys in Linux desktop shortcuts.
+* Encode Alt-modified letters with their actual character case.
+
 ## [4.0.0] - 2024-02-27
 * Update for Flutter 3.19 [#190]. Thanks [@domesticmouse].
 * Fix designate charset logic [#186]. Thanks [@djnalluri].

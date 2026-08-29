@@ -170,10 +170,25 @@ class TerminalPainter {
 
   /// Paints [line] to [canvas] at [offset]. The x offset of [offset] is usually
   /// 0, and the y offset is the top of the line.
-  void paintLine(Canvas canvas, Offset offset, BufferLine line) {
+  void paintLine(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line, {
+    List<TerminalHighlightSpan>? highlights,
+    int highlightRevision = 0,
+    TerminalHighlightSource? highlightSource,
+    int highlightLineIndex = -1,
+  }) {
     final originPhase = _devicePixelPhase(offset);
-    var cached = _linePictureCache.remove(line);
-    if (cached != null && cached.revision != line.revision) {
+    // An explicit span list has no revision/identity contract. Avoid reusing
+    // a cached picture unless a source can describe when it changed.
+    final cacheable = highlights == null;
+    var cached = cacheable ? _linePictureCache.remove(line) : null;
+    if (cached != null &&
+        (cached.revision != line.revision ||
+            cached.highlightRevision != highlightRevision ||
+            !identical(cached.highlightSource, highlightSource) ||
+            cached.highlightLineIndex != highlightLineIndex)) {
       _linePictureCacheEntryCount -= cached.pictures.length;
       cached.dispose();
       cached = null;
@@ -195,20 +210,35 @@ class TerminalPainter {
 
     final recorder = ui.PictureRecorder();
     final recordingCanvas = Canvas(recorder);
-    _paintLineCells(recordingCanvas, originPhase, line);
+    final resolvedHighlights = highlights ??
+        highlightSource?.spansForLine(line, highlightLineIndex) ??
+        const [];
+    _paintLineCells(
+      recordingCanvas,
+      originPhase,
+      line,
+      highlights: resolvedHighlights,
+    );
     final picture = recorder.endRecording();
     _linePictureBuildCount++;
 
-    cached ??= _CachedLinePictures(line.revision);
-    cached.pictures[originPhase] = picture;
-    _linePictureCacheEntryCount++;
-    while (cached.pictures.length > _maximumLinePicturePhases) {
-      final oldestPhase = cached.pictures.keys.first;
-      cached.pictures.remove(oldestPhase)?.dispose();
-      _linePictureCacheEntryCount--;
+    if (cacheable) {
+      cached ??= _CachedLinePictures(
+        line.revision,
+        highlightRevision,
+        highlightSource,
+        highlightLineIndex,
+      );
+      cached.pictures[originPhase] = picture;
+      _linePictureCacheEntryCount++;
+      while (cached.pictures.length > _maximumLinePicturePhases) {
+        final oldestPhase = cached.pictures.keys.first;
+        cached.pictures.remove(oldestPhase)?.dispose();
+        _linePictureCacheEntryCount--;
+      }
+      _linePictureCache[line] = cached;
+      _evictLinePictureIfNeeded();
     }
-    _linePictureCache[line] = cached;
-    _evictLinePictureIfNeeded();
 
     canvas.save();
     canvas.translate(
@@ -275,21 +305,68 @@ class TerminalPainter {
     BufferLine line, {
     bool paintBackground = true,
     bool paintForeground = true,
+    List<TerminalHighlightSpan> highlights = const [],
   }) {
+    if (highlights.isEmpty) {
+      _paintLineCellsPlain(
+        canvas,
+        offset,
+        line,
+        paintBackground: paintBackground,
+        paintForeground: paintForeground,
+      );
+      return;
+    }
     final cellData = CellData.empty();
     final cellWidth = _cellSize.width;
+    var highlightIndex = 0;
 
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
+
+      while (highlightIndex < highlights.length &&
+          highlights[highlightIndex].endColumn <= i) {
+        highlightIndex++;
+      }
+      final highlight = highlightIndex < highlights.length &&
+              highlights[highlightIndex].contains(i)
+          ? highlights[highlightIndex]
+          : null;
+      final foregroundOverride = _highlightForegroundOverride(
+        cellData,
+        highlight,
+      );
+      final backgroundOverride = _highlightBackgroundOverride(
+        cellData,
+        highlight,
+      );
 
       final charWidth = cellData.content >> CellContent.widthShift;
       final cellOffset = offset.translate(i * cellWidth, 0);
 
       if (paintBackground) {
-        paintCellBackground(canvas, cellOffset, cellData);
+        paintCellBackground(
+          canvas,
+          cellOffset,
+          cellData,
+          foregroundOverride: foregroundOverride,
+          backgroundOverride: backgroundOverride,
+          flagsOverride: highlight == null
+              ? null
+              : (cellData.flags | highlight.addFlags) & ~highlight.removeFlags,
+        );
       }
       if (paintForeground) {
-        paintCellForeground(canvas, cellOffset, cellData);
+        paintCellForeground(
+          canvas,
+          cellOffset,
+          cellData,
+          foregroundOverride: foregroundOverride,
+          backgroundOverride: backgroundOverride,
+          flagsOverride: highlight == null
+              ? null
+              : (cellData.flags | highlight.addFlags) & ~highlight.removeFlags,
+        );
       }
 
       if (charWidth == 2) {
@@ -298,10 +375,76 @@ class TerminalPainter {
     }
   }
 
+  void _paintLineCellsPlain(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line, {
+    bool paintBackground = true,
+    bool paintForeground = true,
+  }) {
+    final cellData = CellData.empty();
+    final cellWidth = _cellSize.width;
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cellData);
+      final cellOffset = offset.translate(i * cellWidth, 0);
+      if (paintBackground) paintCellBackground(canvas, cellOffset, cellData);
+      if (paintForeground) paintCellForeground(canvas, cellOffset, cellData);
+      if (cellData.content >> CellContent.widthShift == 2) i++;
+    }
+  }
+
   @pragma('vm:prefer-inline')
-  void paintCell(Canvas canvas, Offset offset, CellData cellData) {
-    paintCellBackground(canvas, offset, cellData);
-    paintCellForeground(canvas, offset, cellData);
+  void paintCell(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData, {
+    Color? foregroundOverride,
+    Color? backgroundOverride,
+    int? flagsOverride,
+  }) {
+    paintCellBackground(
+      canvas,
+      offset,
+      cellData,
+      foregroundOverride: foregroundOverride,
+      backgroundOverride: backgroundOverride,
+      flagsOverride: flagsOverride,
+    );
+    paintCellForeground(
+      canvas,
+      offset,
+      cellData,
+      foregroundOverride: foregroundOverride,
+      backgroundOverride: backgroundOverride,
+      flagsOverride: flagsOverride,
+    );
+  }
+
+  @pragma('vm:prefer-inline')
+  void paintCellWithHighlight(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData,
+    TerminalHighlightSpan? highlight,
+  ) {
+    final foregroundOverride = _highlightForegroundOverride(
+      cellData,
+      highlight,
+    );
+    final backgroundOverride = _highlightBackgroundOverride(
+      cellData,
+      highlight,
+    );
+    paintCell(
+      canvas,
+      offset,
+      cellData,
+      foregroundOverride: foregroundOverride,
+      backgroundOverride: backgroundOverride,
+      flagsOverride: highlight == null
+          ? null
+          : (cellData.flags | highlight.addFlags) & ~highlight.removeFlags,
+    );
   }
 
   @pragma('vm:prefer-inline')
@@ -315,18 +458,60 @@ class TerminalPainter {
     paintCellForeground(canvas, offset, cellData);
   }
 
+  @pragma('vm:prefer-inline')
+  void paintSelectedCellWithHighlight(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData,
+    TerminalHighlightSpan? highlight,
+  ) {
+    paintHighlight(
+      canvas,
+      offset,
+      cellData.content >> CellContent.widthShift == 2 ? 2 : 1,
+      _theme.selection,
+    );
+    final foregroundOverride = _highlightForegroundOverride(
+      cellData,
+      highlight,
+    );
+    final backgroundOverride = _highlightBackgroundOverride(
+      cellData,
+      highlight,
+    );
+    paintCellForeground(
+      canvas,
+      offset,
+      cellData,
+      foregroundOverride: foregroundOverride,
+      backgroundOverride: backgroundOverride,
+      flagsOverride: highlight == null
+          ? null
+          : (cellData.flags | highlight.addFlags) & ~highlight.removeFlags,
+    );
+  }
+
   /// Paints the character in the cell represented by [cellData] to [canvas] at
   /// [offset].
   @pragma('vm:prefer-inline')
   void paintCellForeground(
     Canvas canvas,
     Offset offset,
-    CellData cellData,
-  ) {
+    CellData cellData, {
+    Color? foregroundOverride,
+    Color? backgroundOverride,
+    int? flagsOverride,
+  }) {
     final charCode = cellData.content & CellContent.codepointMask;
     if (charCode == 0) return;
+    final cellFlags = flagsOverride ?? cellData.flags;
 
-    final glyphPaint = customGlyphPaint(cellData);
+    final glyphPaint = customGlyphPaint(
+      cellData,
+      foregroundOverride: foregroundOverride,
+      backgroundOverride: backgroundOverride,
+      flagsOverride: flagsOverride,
+    );
     if (glyphPaint != null) {
       TerminalCustomGlyphRasterizer(
         canvas: canvas,
@@ -339,15 +524,24 @@ class TerminalPainter {
       return;
     }
 
-    final cacheKey = cellData.getHash() ^ _textScaler.hashCode;
+    var cacheKey = cellData.getHash() ^ _textScaler.hashCode;
+    if (foregroundOverride != null) {
+      cacheKey ^= foregroundOverride.hashCode;
+    }
+    if (backgroundOverride != null) {
+      cacheKey ^= backgroundOverride.hashCode;
+    }
+    if (flagsOverride != null) {
+      cacheKey ^= flagsOverride;
+    }
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
 
     if (paragraph == null) {
-      final cellFlags = cellData.flags;
+      var color = cellFlags & CellFlags.inverse != 0
+          ? backgroundOverride ?? resolveBackgroundColor(cellData.background)
+          : foregroundOverride ?? resolveForegroundColor(cellData.foreground);
 
-      var color = effectiveForegroundColor(cellData);
-
-      if (cellData.flags & CellFlags.faint != 0) {
+      if (cellFlags & CellFlags.faint != 0) {
         color = color.withOpacity(0.5);
       }
 
@@ -382,9 +576,13 @@ class TerminalPainter {
 
   @visibleForTesting
   ({Color color, TerminalCustomGlyph glyph})? customGlyphPaint(
-    CellData cellData,
-  ) {
-    if (cellData.flags & CellFlags.invisible != 0) {
+    CellData cellData, {
+    Color? foregroundOverride,
+    Color? backgroundOverride,
+    int? flagsOverride,
+  }) {
+    final flags = flagsOverride ?? cellData.flags;
+    if (flags & CellFlags.invisible != 0) {
       return null;
     }
 
@@ -395,24 +593,52 @@ class TerminalPainter {
       return null;
     }
 
-    var color = effectiveForegroundColor(cellData);
-    if (cellData.flags & CellFlags.faint != 0) {
+    var color = flags & CellFlags.inverse != 0
+        ? backgroundOverride ?? resolveBackgroundColor(cellData.background)
+        : foregroundOverride ?? resolveForegroundColor(cellData.foreground);
+    if (flags & CellFlags.faint != 0) {
       color = color.withOpacity(0.5);
     }
 
     return (color: color, glyph: glyph);
   }
 
-  Color effectiveForegroundColor(CellData cellData) {
-    return cellData.flags & CellFlags.inverse == 0
+  Color? _highlightForegroundOverride(
+    CellData cellData,
+    TerminalHighlightSpan? highlight,
+  ) {
+    if (highlight == null ||
+        (highlight.preserveAnsiColors &&
+            cellData.foreground & CellColor.typeMask != CellColor.normal)) {
+      return null;
+    }
+    return highlight.foreground;
+  }
+
+  Color? _highlightBackgroundOverride(
+    CellData cellData,
+    TerminalHighlightSpan? highlight,
+  ) {
+    if (highlight == null ||
+        (highlight.preserveAnsiColors &&
+            cellData.background & CellColor.typeMask != CellColor.normal)) {
+      return null;
+    }
+    return highlight.background;
+  }
+
+  Color effectiveForegroundColor(CellData cellData, {int? flags}) {
+    final effectiveFlags = flags ?? cellData.flags;
+    return effectiveFlags & CellFlags.inverse == 0
         ? resolveForegroundColor(cellData.foreground)
         : resolveBackgroundColor(cellData.background);
   }
 
-  Color? effectiveBackgroundColor(CellData cellData) {
+  Color? effectiveBackgroundColor(CellData cellData, {int? flags}) {
     final colorType = cellData.background & CellColor.typeMask;
+    final effectiveFlags = flags ?? cellData.flags;
 
-    if (cellData.flags & CellFlags.inverse != 0) {
+    if (effectiveFlags & CellFlags.inverse != 0) {
       return resolveForegroundColor(cellData.foreground);
     }
 
@@ -426,12 +652,22 @@ class TerminalPainter {
   /// Paints the background of a cell represented by [cellData] to [canvas] at
   /// [offset].
   @pragma('vm:prefer-inline')
-  void paintCellBackground(Canvas canvas, Offset offset, CellData cellData) {
+  void paintCellBackground(
+    Canvas canvas,
+    Offset offset,
+    CellData cellData, {
+    Color? foregroundOverride,
+    Color? backgroundOverride,
+    int? flagsOverride,
+  }) {
     late Color color;
     final colorType = cellData.background & CellColor.typeMask;
+    final flags = flagsOverride ?? cellData.flags;
 
-    if (cellData.flags & CellFlags.inverse != 0) {
-      color = resolveForegroundColor(cellData.foreground);
+    if (backgroundOverride != null) {
+      color = backgroundOverride;
+    } else if (flags & CellFlags.inverse != 0) {
+      color = foregroundOverride ?? resolveForegroundColor(cellData.foreground);
     } else if (colorType == CellColor.normal) {
       return;
     } else {
@@ -487,9 +723,17 @@ class TerminalPainter {
 }
 
 class _CachedLinePictures {
-  _CachedLinePictures(this.revision);
+  _CachedLinePictures(
+    this.revision,
+    this.highlightRevision,
+    this.highlightSource,
+    this.highlightLineIndex,
+  );
 
   final int revision;
+  final int highlightRevision;
+  final TerminalHighlightSource? highlightSource;
+  final int highlightLineIndex;
   final pictures = <Offset, ui.Picture>{};
 
   void dispose() {
