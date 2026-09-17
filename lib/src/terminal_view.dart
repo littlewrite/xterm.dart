@@ -245,8 +245,7 @@ class TerminalView extends StatefulWidget {
   State<TerminalView> createState() => TerminalViewState();
 }
 
-class TerminalViewState extends State<TerminalView>
-    with TickerProviderStateMixin {
+class TerminalViewState extends State<TerminalView> {
   late FocusNode _focusNode;
 
   late final ShortcutManager _shortcutManager;
@@ -288,6 +287,12 @@ class TerminalViewState extends State<TerminalView>
   RenderTerminal get renderTerminal =>
       _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
 
+  /// The [Terminal] this view renders.
+  ///
+  /// Exposed so that child widgets which need to observe buffer mutations
+  /// (e.g. to keep selection handles anchored) can listen to it.
+  Terminal get terminal => widget.terminal;
+
   late Widget _searchBox;
   late final textSizeNoti = ValueNotifier(widget.textStyle.fontSize);
 
@@ -295,7 +300,7 @@ class TerminalViewState extends State<TerminalView>
   void initState() {
     _focusNode = widget.focusNode ?? FocusNode();
     _focusNode.addListener(_handleFocusChange);
-    _controller = widget.controller ?? TerminalController(vsync: this);
+    _controller = widget.controller ?? TerminalController();
     _scrollController = widget.scrollController ?? ScrollController();
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
@@ -344,7 +349,7 @@ class TerminalViewState extends State<TerminalView>
       if (oldWidget.controller == null) {
         _controller.dispose();
       }
-      _controller = widget.controller ?? TerminalController(vsync: this);
+      _controller = widget.controller ?? TerminalController();
     }
     if (oldWidget.scrollController != widget.scrollController) {
       if (oldWidget.scrollController == null) {
@@ -1446,6 +1451,27 @@ class _TerminalView extends LeafRenderObjectWidget {
   }
 }
 
+/// Test hook: cursor overlay fingerprint-gated dirty count under [root].
+@visibleForTesting
+int debugCursorOverlayVisualDirtyCount(RenderObject root) {
+  _RenderTerminalCursorOverlay? found;
+  void walk(RenderObject object) {
+    if (found != null) return;
+    if (object is _RenderTerminalCursorOverlay) {
+      found = object;
+      return;
+    }
+    object.visitChildren(walk);
+  }
+
+  walk(root);
+  final target = found;
+  if (target == null) {
+    throw StateError('Cursor overlay render object not found under $root');
+  }
+  return target.debugCursorVisualDirtyCount;
+}
+
 class _TerminalCursorOverlay extends LeafRenderObjectWidget {
   const _TerminalCursorOverlay({
     required this.renderTerminal,
@@ -1528,7 +1554,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
   set renderTerminal(RenderTerminal? Function() value) {
     if (identical(value, _renderTerminal)) return;
     _renderTerminal = value;
-    markNeedsPaint();
+    _markNeedsPaintIfCursorVisualChanged();
   }
 
   Terminal _terminal;
@@ -1537,7 +1563,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     if (attached) _terminal.removeListener(_onTerminalChange);
     _terminal = value;
     if (attached) _terminal.addListener(_onTerminalChange);
-    markNeedsPaint();
+    _markNeedsPaintIfCursorVisualChanged();
   }
 
   FocusNode _focusNode;
@@ -1546,22 +1572,23 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     if (attached) _focusNode.removeListener(_onFocusChange);
     _focusNode = value;
     if (attached) _focusNode.addListener(_onFocusChange);
-    markNeedsPaint();
+    _markNeedsPaintIfCursorVisualChanged();
   }
 
   ViewportOffset _offset;
   set offset(ViewportOffset value) {
     if (value == _offset) return;
-    if (attached) _offset.removeListener(markNeedsPaint);
+    if (attached) _offset.removeListener(_onViewportOffsetChange);
     _offset = value;
-    if (attached) _offset.addListener(markNeedsPaint);
-    markNeedsPaint();
+    if (attached) _offset.addListener(_onViewportOffsetChange);
+    _markNeedsPaintIfCursorVisualChanged();
   }
 
   TerminalTheme _theme;
   set theme(TerminalTheme value) {
     if (value == _theme) return;
     _theme = value;
+    // Theme cursor color is not part of the geometry fingerprint; always dirty.
     markNeedsPaint();
   }
 
@@ -1569,7 +1596,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
   set cursorType(TerminalCursorType value) {
     if (value == _cursorType) return;
     _cursorType = value;
-    markNeedsPaint();
+    _markNeedsPaintIfCursorVisualChanged();
   }
 
   ValueListenable<bool> _cursorBlinkVisibleListenable;
@@ -1582,11 +1609,10 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     if (attached) {
       _cursorBlinkVisibleListenable.addListener(_onCursorBlinkVisibleChange);
     }
-    markNeedsPaint();
+    _markNeedsPaintIfCursorVisualChanged();
   }
 
   ValueListenable<String?> _composingTextListenable;
-  Offset? _lastEditableCursorOffset;
   set composingTextListenable(ValueListenable<String?> value) {
     if (identical(value, _composingTextListenable)) return;
     if (attached) {
@@ -1596,8 +1622,17 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     if (attached) {
       _composingTextListenable.addListener(_onComposingTextChange);
     }
-    markNeedsPaint();
+    _markNeedsPaintIfCursorVisualChanged();
   }
+
+  /// Last painted cursor visual fingerprint (WT mutation-id / Ghostty blink
+  /// param semantics). Buffer noise that does not change these fields must not
+  /// dirty the overlay.
+  Object? _lastCursorVisualFingerprint;
+
+  /// Debug/test counter: how many times fingerprint-gated dirty actually ran.
+  @visibleForTesting
+  int debugCursorVisualDirtyCount = 0;
 
   @override
   bool get isRepaintBoundary => true;
@@ -1607,7 +1642,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
     super.attach(owner);
     _terminal.addListener(_onTerminalChange);
     _focusNode.addListener(_onFocusChange);
-    _offset.addListener(markNeedsPaint);
+    _offset.addListener(_onViewportOffsetChange);
     _cursorBlinkVisibleListenable.addListener(_onCursorBlinkVisibleChange);
     _composingTextListenable.addListener(_onComposingTextChange);
   }
@@ -1616,7 +1651,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
   void detach() {
     _terminal.removeListener(_onTerminalChange);
     _focusNode.removeListener(_onFocusChange);
-    _offset.removeListener(markNeedsPaint);
+    _offset.removeListener(_onViewportOffsetChange);
     _cursorBlinkVisibleListenable.removeListener(_onCursorBlinkVisibleChange);
     _composingTextListenable.removeListener(_onComposingTextChange);
     super.detach();
@@ -1633,30 +1668,80 @@ class _RenderTerminalCursorOverlay extends RenderBox {
   }
 
   void _onCursorBlinkVisibleChange() {
-    markNeedsPaint();
+    _markNeedsPaintIfCursorVisualChanged();
   }
 
   void _onComposingTextChange() {
-    markNeedsPaint();
+    _markNeedsPaintIfCursorVisualChanged();
   }
 
   void _onTerminalChange() {
-    final renderTerminal = _renderTerminal();
-    if (renderTerminal != null &&
-        renderTerminal.isComposing &&
-        renderTerminal.editableCursorOffset == _lastEditableCursorOffset) {
-      return;
-    }
-    markNeedsPaint();
+    // N1: only dirty when cursor *visual* fingerprint changes. Buffer writes
+    // that leave cursor geometry/visibility alone must not repaint overlay.
+    _markNeedsPaintIfCursorVisualChanged();
   }
 
   void _onFocusChange() {
+    _markNeedsPaintIfCursorVisualChanged();
+  }
+
+  void _onViewportOffsetChange() {
+    _markNeedsPaintIfCursorVisualChanged();
+  }
+
+  /// Cursor visual identity used to gate overlay paints.
+  ///
+  /// Fields (perf-plan-v2 §4 N1): editable cursor position, cell size, viewport
+  /// scroll pixels, show/paint flags, blink visible, type, focus, composing
+  /// text, theme cursor color hash.
+  Object? _cursorVisualFingerprint(RenderTerminal? renderTerminal) {
+    if (renderTerminal == null ||
+        !renderTerminal.attached ||
+        !renderTerminal.hasSize) {
+      return null;
+    }
+    final editable = renderTerminal.editableCursorOffset;
+    final cell = renderTerminal.cellSize;
+    final composing = _composingTextListenable.value;
+    return Object.hash(
+      editable.dx,
+      editable.dy,
+      cell.width,
+      cell.height,
+      _offset.pixels,
+      renderTerminal.shouldShowCursor,
+      renderTerminal.shouldPaintCursor(
+        cursorBlinkVisible: _cursorBlinkVisibleListenable.value,
+      ),
+      _cursorBlinkVisibleListenable.value,
+      _cursorType,
+      _focusNode.hasFocus,
+      renderTerminal.isComposing,
+      composing,
+      _theme.cursor.value,
+    );
+  }
+
+  void _markNeedsPaintIfCursorVisualChanged() {
+    final fingerprint = _cursorVisualFingerprint(_renderTerminal());
+    if (fingerprint != null &&
+        fingerprint == _lastCursorVisualFingerprint) {
+      return;
+    }
+    // Keep fingerprint in lock-step with a scheduled dirty so a no-op notify
+    // after a real change does not double-paint, and a paint that never runs
+    // (detached) still re-evaluates next time.
+    _lastCursorVisualFingerprint = fingerprint;
+    debugCursorVisualDirtyCount++;
     markNeedsPaint();
   }
 
   @override
   void paint(PaintingContext context, Offset offset) {
     final renderTerminal = _renderTerminal();
+    // Refresh fingerprint on every paint so skipped dirties stay accurate even
+    // if geometry moved without a listener (e.g. layout-only parent change).
+    _lastCursorVisualFingerprint = _cursorVisualFingerprint(renderTerminal);
     _paint(context.canvas, offset, renderTerminal);
     if (renderTerminal != null && renderTerminal.shouldHintWillChange) {
       context.setWillChangeHint();
@@ -1673,9 +1758,6 @@ class _RenderTerminalCursorOverlay extends RenderBox {
         !renderTerminal.hasSize) {
       return;
     }
-
-    final editableCursorOffset = renderTerminal.editableCursorOffset;
-    _lastEditableCursorOffset = editableCursorOffset;
 
     if (!renderTerminal.shouldShowCursor) {
       return;
@@ -1709,7 +1791,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
   Offset? _cursorOffsetInOverlay(RenderTerminal renderTerminal) {
     final cursorGlobal = MatrixUtils.transformPoint(
       renderTerminal.getTransformTo(null),
-      _lastEditableCursorOffset ?? renderTerminal.editableCursorOffset,
+      renderTerminal.editableCursorOffset,
     );
     final overlayToGlobal = getTransformTo(null);
     final globalToOverlay = Matrix4.copy(overlayToGlobal);

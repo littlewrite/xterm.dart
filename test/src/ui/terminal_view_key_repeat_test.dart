@@ -45,7 +45,7 @@ void main() {
     final outputs = <String>[];
     final clipboardText = <String>[];
     final terminal = Terminal(onOutput: outputs.add);
-    final controller = TerminalController(vsync: const TestVSync());
+    final controller = TerminalController();
     terminal.write('copy');
     controller.setSelection(
       terminal.buffer.createAnchor(0, 0),

@@ -33,6 +33,7 @@ class TerminalPainter {
   final _paragraphCache = ParagraphCache(10240);
   final _linePictureCache = <BufferLine, _CachedLinePictures>{};
   int _linePictureBuildCount = 0;
+  int _linePictureCacheHitCount = 0;
   int _linePictureCacheEntryCount = 0;
 
   static const _maximumLinePictureCacheSize = 512;
@@ -40,6 +41,16 @@ class TerminalPainter {
 
   @visibleForTesting
   int get linePictureBuildCount => _linePictureBuildCount;
+
+  /// Cache hits that reused an existing line Picture (drawPicture path).
+  @visibleForTesting
+  int get linePictureCacheHitCount => _linePictureCacheHitCount;
+
+  @visibleForTesting
+  void resetLinePictureBuildCount() {
+    _linePictureBuildCount = 0;
+    _linePictureCacheHitCount = 0;
+  }
 
   TerminalStyle get textStyle => _textStyle;
   TerminalStyle _textStyle;
@@ -198,6 +209,7 @@ class TerminalPainter {
     if (cachedPicture != null) {
       cached!.pictures[originPhase] = cachedPicture;
       _linePictureCache[line] = cached;
+      _linePictureCacheHitCount++;
       canvas.save();
       canvas.translate(
         offset.dx - originPhase.dx,
@@ -279,6 +291,11 @@ class TerminalPainter {
     }
     _linePictureCache.clear();
     _linePictureCacheEntryCount = 0;
+  }
+
+  /// Drop all cached line pictures (chrome invalidation: theme/font/highlight).
+  void clearLinePictureCache() {
+    _clearLinePictureCache();
   }
 
   void paintLineBackgrounds(Canvas canvas, Offset offset, BufferLine line) {
@@ -420,33 +437,7 @@ class TerminalPainter {
     );
   }
 
-  @pragma('vm:prefer-inline')
-  void paintCellWithHighlight(
-    Canvas canvas,
-    Offset offset,
-    CellData cellData,
-    TerminalHighlightSpan? highlight,
-  ) {
-    final foregroundOverride = _highlightForegroundOverride(
-      cellData,
-      highlight,
-    );
-    final backgroundOverride = _highlightBackgroundOverride(
-      cellData,
-      highlight,
-    );
-    paintCell(
-      canvas,
-      offset,
-      cellData,
-      foregroundOverride: foregroundOverride,
-      backgroundOverride: backgroundOverride,
-      flagsOverride: highlight == null
-          ? null
-          : (cellData.flags | highlight.addFlags) & ~highlight.removeFlags,
-    );
-  }
-
+  /// Selection cell without syntax-highlight overrides (tests / simple callers).
   @pragma('vm:prefer-inline')
   void paintSelectedCell(Canvas canvas, Offset offset, CellData cellData) {
     paintHighlight(
@@ -458,19 +449,16 @@ class TerminalPainter {
     paintCellForeground(canvas, offset, cellData);
   }
 
+  /// Glyph pass for a selected cell, including optional [TerminalHighlightSpan]
+  /// overrides (search / syntax). Does not paint selection fill — caller draws
+  /// the range strip once.
   @pragma('vm:prefer-inline')
-  void paintSelectedCellWithHighlight(
+  void paintSelectionCellForeground(
     Canvas canvas,
     Offset offset,
     CellData cellData,
     TerminalHighlightSpan? highlight,
   ) {
-    paintHighlight(
-      canvas,
-      offset,
-      cellData.content >> CellContent.widthShift == 2 ? 2 : 1,
-      _theme.selection,
-    );
     final foregroundOverride = _highlightForegroundOverride(
       cellData,
       highlight,

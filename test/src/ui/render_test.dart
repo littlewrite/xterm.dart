@@ -25,8 +25,7 @@ void main() {
     final terminal = Terminal();
     terminal.write('foo bar');
 
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
 
     final render = RenderTerminal(
@@ -359,8 +358,7 @@ void main() {
 
   test('RenderTerminal exposes cursor visibility state for overlay', () {
     final terminal = Terminal();
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
 
     final render = RenderTerminal(
@@ -391,8 +389,7 @@ void main() {
       'RenderTerminal pins IME caret to composition start when PTY cursor moves',
       () {
     final terminal = Terminal();
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
     final render = RenderTerminal(
       terminal: terminal,
@@ -430,8 +427,7 @@ void main() {
 
   test('RenderTerminal grows the frozen IME caret with composing text', () {
     final terminal = Terminal();
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
     final render = RenderTerminal(
       terminal: terminal,
@@ -475,8 +471,7 @@ void main() {
 
   test('RenderTerminal follows the composition anchor through reflow', () {
     final terminal = Terminal();
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
     final render = RenderTerminal(
       terminal: terminal,
@@ -510,8 +505,7 @@ void main() {
 
   test('RenderTerminal reanchors composition when switching buffers', () {
     final terminal = Terminal();
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
     final render = RenderTerminal(
       terminal: terminal,
@@ -545,8 +539,7 @@ void main() {
   test('RenderTerminal uses an explicit cursor background for composing text',
       () {
     final terminal = Terminal();
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
     final render = RenderTerminal(
       terminal: terminal,
@@ -574,8 +567,7 @@ void main() {
 
   test('RenderTerminal keeps the default composing background transparent', () {
     final terminal = Terminal();
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
     final render = RenderTerminal(
       terminal: terminal,
@@ -699,8 +691,7 @@ void main() {
       () {
     final terminal = Terminal();
     terminal.write('\x1b[?25l');
-    const vsync = TestVSync();
-    final controller = TerminalController(vsync: vsync);
+    final controller = TerminalController();
     final focusNode = FocusNode();
 
     final render = RenderTerminal(
@@ -728,8 +719,7 @@ void main() {
 
   group('RenderTerminal.selectCharacters with wide chars', () {
     (RenderTerminal, TerminalController) createRender(Terminal terminal) {
-      const vsync = TestVSync();
-      final controller = TerminalController(vsync: vsync);
+      final controller = TerminalController();
       final focusNode = FocusNode();
       final render = RenderTerminal(
         terminal: terminal,
@@ -843,8 +833,7 @@ void main() {
 
   group('RenderTerminal.selectBufferRange with wide chars', () {
     (RenderTerminal, TerminalController) createRender(Terminal terminal) {
-      const vsync = TestVSync();
-      final controller = TerminalController(vsync: vsync);
+      final controller = TerminalController();
       final focusNode = FocusNode();
       final render = RenderTerminal(
         terminal: terminal,

@@ -110,6 +110,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   ScrollController? _attachedScrollController;
+
+  Terminal? _attachedTerminal;
   bool _scrollUpdateScheduled = false;
   ValueListenable<bool>? _scrollActivityNotifier;
   bool _selectionHandlesVisible = false;
@@ -146,6 +148,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   void initState() {
     super.initState();
     widget.terminalController.addListener(_handleControllerSelectionChanged);
+    _attachTerminal(widget.terminalView.terminal);
     _syncSelectionFromController();
     _attachScrollController(widget.scrollController);
   }
@@ -194,6 +197,10 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       widget.terminalController.addListener(_handleControllerSelectionChanged);
       _syncSelectionFromController();
     }
+    // The terminal outlives widget updates: TerminalView supports swapping it
+    // while keeping the same state, so re-check on every update. _attachTerminal
+    // is a no-op when the instance is unchanged.
+    _attachTerminal(widget.terminalView.terminal);
     if (oldWidget.scrollController != widget.scrollController) {
       _detachScrollController(oldWidget.scrollController);
       _attachScrollController(widget.scrollController);
@@ -203,6 +210,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   @override
   void dispose() {
     widget.terminalController.removeListener(_handleControllerSelectionChanged);
+    _attachedTerminal?.removeListener(_handleTerminalChanged);
     _detachScrollController(_attachedScrollController);
     _trackedPointers.clear();
     _resetMouseSelectionState();
@@ -381,7 +389,34 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     _syncSelectionFromController();
   }
 
-  void _syncSelectionFromController() {
+  /// Keeps the drag handles anchored while the buffer mutates underneath them.
+  ///
+  /// Handle positions come from [_selectedRange], a snapshot of cell offsets
+  /// taken when the selection was committed, whereas the painted highlight is
+  /// recomputed from the live [CellAnchor]s on every paint. Buffer mutations
+  /// (scrolling output, scrollback trim, `clear`) move the anchors without
+  /// going through [TerminalController.setSelection], so without this the
+  /// handles would stay behind while the highlight moves away.
+  ///
+  /// [Terminal] already batches its notifications to at most one per frame, so
+  /// this stays off the per-write path.
+  void _handleTerminalChanged() {
+    if (!mounted || _selectedRange == null) {
+      return;
+    }
+    _syncSelectionFromController(repositionToolbar: false);
+  }
+
+  void _attachTerminal(Terminal terminal) {
+    if (identical(terminal, _attachedTerminal)) {
+      return;
+    }
+    _attachedTerminal?.removeListener(_handleTerminalChanged);
+    terminal.addListener(_handleTerminalChanged);
+    _attachedTerminal = terminal;
+  }
+
+  void _syncSelectionFromController({bool repositionToolbar = true}) {
     final selection = widget.terminalController.selection;
 
     BufferRangeLine? nextRange;
@@ -420,6 +455,10 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     }
 
     if (_isViewportScrolling) {
+      return;
+    }
+
+    if (!repositionToolbar) {
       return;
     }
 

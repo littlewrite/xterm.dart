@@ -13,7 +13,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(
@@ -47,7 +46,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(
@@ -82,7 +80,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(
@@ -120,7 +117,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(
@@ -158,7 +154,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(
@@ -258,7 +253,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(
@@ -307,7 +301,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(
@@ -345,7 +338,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(
@@ -379,7 +371,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     Widget buildTerminal({required bool invertWheelScroll}) {
@@ -426,7 +417,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(
@@ -580,7 +570,6 @@ void main() {
 
     final controller = TerminalController(
       pointerInputs: PointerInputs.all(),
-      vsync: tester,
     );
 
     await tester.pumpWidget(

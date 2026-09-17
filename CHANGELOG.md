@@ -1,4 +1,18 @@
 ## Unreleased
+* **Breaking:** remove the selection-handle animation API — `SelectionAnimation`,
+  `SelectionAnimationType`, and `TerminalController.selectionAnimation`. The
+  animation drove identity tweens that no widget ever consumed, so it had no
+  visual effect; it only scheduled a repaint every frame.
+* Deprecate `TerminalController`'s `vsync` parameter. It existed solely to drive
+  that animation and is now unused. It is kept only so existing call sites keep
+  compiling — drop the argument, the parameter will be removed later.
+* **Breaking:** `TerminalViewState` no longer mixes in `TickerProviderStateMixin`
+  and is therefore no longer a `TickerProvider`. This was only needed to pass
+  the widget's own state as the `vsync` argument above; keep a plain
+  `TickerProviderStateMixin` on your own state if you need one.
+* Keep selection drag handles anchored when the buffer mutates without a new
+  selection (streaming output, scrollback trim, `clear`). Handle positions are
+  now re-derived from the live anchors the painter uses.
 * Add paint-only terminal highlight overlays with per-line invalidation,
   preserving the terminal's original ANSI cell styles.
 * Cache compiled highlight grammars and limit visible-line parsing work.

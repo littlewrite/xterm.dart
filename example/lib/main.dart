@@ -41,12 +41,12 @@ class Home extends StatefulWidget {
   _HomeState createState() => _HomeState();
 }
 
-class _HomeState extends State<Home> with TickerProviderStateMixin {
+class _HomeState extends State<Home> {
   final terminal = Terminal(
     maxLines: 10000,
   );
 
-  late final terminalController = TerminalController(vsync: this);
+  late final terminalController = TerminalController();
 
   late final Pty pty;
 

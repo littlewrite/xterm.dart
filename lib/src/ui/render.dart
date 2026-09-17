@@ -28,6 +28,19 @@ import 'package:xterm/src/utils/unicode_v11.dart';
 typedef EditableRectCallback = void Function(
     Size editableSize, Matrix4 transform, Rect caretRect);
 
+/// Content-layer invalidation channels (perf-plan-v2 N3 / WT Invalidate*).
+///
+/// Cursor blink/position on the product path is handled by the cursor overlay
+/// (N1 fingerprint), not [TerminalInvalidation.cursor] on this layer.
+enum TerminalInvalidation {
+  cursor,
+  selection,
+  /// Controller notified but selection geometry / highlights unchanged.
+  selectionSkipped,
+  content,
+  chrome,
+}
+
 class RenderTerminal extends RenderBox
     with
         ContainerRenderObjectMixin<RenderBox, _TerminalParentData>,
@@ -143,8 +156,10 @@ class RenderTerminal extends RenderBox
   set textStyle(TerminalStyle value) {
     if (value == _painter.textStyle) return;
     _painter.textStyle = value;
+    // Painter setter already clears line pictures; layout for new cell metrics.
     markNeedsLayout();
     _markComposingLayerNeedsPaint();
+    _debugNoteInvalidation(TerminalInvalidation.chrome);
   }
 
   set textScaler(TextScaler value) {
@@ -152,19 +167,21 @@ class RenderTerminal extends RenderBox
     _painter.textScaler = value;
     markNeedsLayout();
     _markComposingLayerNeedsPaint();
+    _debugNoteInvalidation(TerminalInvalidation.chrome);
   }
 
   set theme(TerminalTheme value) {
     if (value == _painter.theme) return;
     _painter.theme = value;
-    markNeedsPaint();
+    invalidateChrome();
     _markComposingLayerNeedsPaint();
   }
 
   set devicePixelRatio(double value) {
     if (value == _painter.devicePixelRatio) return;
     _painter.devicePixelRatio = value;
-    markNeedsPaint();
+    // devicePixelRatio also clears line pictures inside painter setter.
+    invalidateChrome();
     _markComposingLayerNeedsPaint();
   }
 
@@ -175,35 +192,44 @@ class RenderTerminal extends RenderBox
     if (attached) _focusNode.removeListener(_onFocusChange);
     _focusNode = value;
     if (attached) _focusNode.addListener(_onFocusChange);
-    markNeedsPaint();
+    // Focus only changes cursor chrome on the content layer when this RO
+    // paints the cursor itself; product path uses the overlay (N1).
+    invalidateCursor();
   }
 
   TerminalCursorType _cursorType;
   set cursorType(TerminalCursorType value) {
     if (value == _cursorType) return;
     _cursorType = value;
-    markNeedsPaint();
+    invalidateCursor();
   }
 
   bool _cursorBlinkEnabled;
   set cursorBlinkEnabled(bool value) {
     if (value == _cursorBlinkEnabled) return;
     _cursorBlinkEnabled = value;
-    markNeedsPaint();
+    // Blink enable/disable only affects cursor overlay drawing when the
+    // product path keeps paintCursor:false. Dirty the content layer only if
+    // this render object still paints the cursor itself.
+    invalidateCursor();
   }
 
   bool _cursorBlinkVisible;
   set cursorBlinkVisible(bool value) {
     if (value == _cursorBlinkVisible) return;
     _cursorBlinkVisible = value;
-    markNeedsPaint();
+    // N1 (perf-plan-v2): blink is an overlay paint param (Ghostty blink_visible
+    // / WT cursor mutation id). Never dirty the content layer for blink ticks.
+    // When paintCursor is true (tests / legacy), still dirty so the main paint
+    // path can hide/show the in-layer cursor.
+    invalidateCursor();
   }
 
   bool _alwaysShowCursor;
   set alwaysShowCursor(bool value) {
     if (value == _alwaysShowCursor) return;
     _alwaysShowCursor = value;
-    markNeedsPaint();
+    invalidateCursor();
   }
 
   TerminalHighlightSource? _highlightSource;
@@ -216,21 +242,23 @@ class RenderTerminal extends RenderBox
     if (attached) {
       _highlightSource?.addListener(_onHighlightSourceChange);
     }
-    markNeedsPaint();
+    // New source identity must not reuse pictures keyed by the previous one.
+    invalidateChrome();
   }
 
   bool _paintCursor;
   set paintCursor(bool value) {
     if (value == _paintCursor) return;
     _paintCursor = value;
-    markNeedsPaint();
+    // Toggling whether content paints cursor is a content-layer concern.
+    invalidateContent();
   }
 
   bool _paintSelectionHandles;
   set paintSelectionHandles(bool value) {
     if (value == _paintSelectionHandles) return;
     _paintSelectionHandles = value;
-    markNeedsPaint();
+    invalidateSelection();
   }
 
   EditableRectCallback? _onEditableRect;
@@ -255,7 +283,9 @@ class RenderTerminal extends RenderBox
     _composingText = value;
     _syncCompositionAnchor();
     if (wasComposing != _isComposingText) {
-      markNeedsPaint();
+      // Composing start/end can change cursor visibility on content layer
+      // when paintCursor is true; always treat as content for safety.
+      invalidateContent();
     }
     // The layer must also repaint when composition ends so its retained
     // raster is cleared before the committed terminal text is painted.
@@ -293,6 +323,10 @@ class RenderTerminal extends RenderBox
 
   final TerminalPainter _painter;
 
+  /// Benchmark/test access to the line-picture painter. Not for product use.
+  @visibleForTesting
+  TerminalPainter get debugPainter => _painter;
+
   var _stickToBottom = true;
   bool _editableRectUpdateScheduled = false;
   int _lastKnownLineCount = 0;
@@ -312,14 +346,16 @@ class RenderTerminal extends RenderBox
   void _onScroll() {
     // 允许半像素误差，避免高频输出时浮点导致 stick 状态抖掉。
     _stickToBottom = _scrollOffset >= _maxScrollExtent - 0.5;
-    // 滚动只改变视口看到的内容，不改变终端几何信息。
-    markNeedsPaint();
+    // Scroll changes which buffer rows are visible — content channel.
+    invalidateContent();
     _markComposingLayerNeedsPaint();
     _scheduleEditableRectUpdate();
   }
 
   void _onFocusChange() {
-    markNeedsPaint();
+    // Product path: cursor is on overlay (N1). Content layer only dirties when
+    // it paints the cursor itself.
+    invalidateCursor();
     _scheduleEditableRectUpdate();
   }
 
@@ -343,7 +379,7 @@ class RenderTerminal extends RenderBox
                 (_compositionAnchor?.attached == true
                     ? _compositionAnchor!.offset
                     : null);
-    markNeedsPaint();
+    invalidateContent();
     // The composing layer is a repaint boundary, so terminal style changes
     // must invalidate it even when geometry stays unchanged.
     _markComposingLayerNeedsPaint();
@@ -354,12 +390,101 @@ class RenderTerminal extends RenderBox
   }
 
   void _onControllerUpdate() {
-    // 选择、高亮等 controller 更新只影响覆盖层绘制。
-    markNeedsPaint();
+    // Selection / controller highlights: selection channel with geometry gate.
+    invalidateSelection();
   }
 
   void _onHighlightSourceChange() {
+    // Span/revision updates for the current highlight source. Pictures already
+    // key on highlightRevision, so a paint is enough (no full chrome clear).
+    invalidateContent();
+  }
+
+  // --- N3 typed invalidation (WT Invalidate* semantics, Flutter carriers) ---
+
+  /// Last selection geometry fingerprint used to skip no-op controller notifies
+  /// (e.g. pointer-input-only updates that still call notifyListeners).
+  Object? _lastSelectionVisualFingerprint;
+
+  /// Last content-layer invalidation channel (test / debug).
+  @visibleForTesting
+  TerminalInvalidation? debugLastInvalidation;
+
+  @visibleForTesting
+  final Map<TerminalInvalidation, int> debugInvalidationCounts = {
+    for (final v in TerminalInvalidation.values) v: 0,
+  };
+
+  void _debugNoteInvalidation(TerminalInvalidation channel) {
+    debugLastInvalidation = channel;
+    debugInvalidationCounts[channel] =
+        (debugInvalidationCounts[channel] ?? 0) + 1;
+  }
+
+  /// Cursor channel: content layer only if it paints the cursor (`paintCursor`).
+  /// Overlay handles blink/focus/position via its own fingerprint (N1).
+  void invalidateCursor() {
+    _debugNoteInvalidation(TerminalInvalidation.cursor);
+    if (_paintCursor) {
+      markNeedsPaint();
+    }
+  }
+
+  /// Selection channel: dirty content when selection geometry (or controller
+  /// highlights / mode) actually changes. Pointer-input-only notifies skip.
+  void invalidateSelection() {
+    final fingerprint = _selectionVisualFingerprint();
+    if (fingerprint == _lastSelectionVisualFingerprint) {
+      _debugNoteInvalidation(TerminalInvalidation.selectionSkipped);
+      return;
+    }
+    _lastSelectionVisualFingerprint = fingerprint;
+    _debugNoteInvalidation(TerminalInvalidation.selection);
     markNeedsPaint();
+  }
+
+  /// Content channel: buffer / scroll / composing — always paint content layer.
+  void invalidateContent() {
+    _debugNoteInvalidation(TerminalInvalidation.content);
+    markNeedsPaint();
+  }
+
+  /// Chrome channel: theme / font metrics / highlight source identity.
+  /// Clears line Picture cache then dirties content.
+  void invalidateChrome() {
+    _debugNoteInvalidation(TerminalInvalidation.chrome);
+    _painter.clearLinePictureCache();
+    markNeedsPaint();
+  }
+
+  Object? _selectionVisualFingerprint() {
+    final selection = _controller.selection?.normalized;
+    final highlights = _controller.highlights;
+    return Object.hash(
+      selection?.begin.x,
+      selection?.begin.y,
+      selection?.end.x,
+      selection?.end.y,
+      selection?.runtimeType,
+      _controller.selectionMode,
+      highlights.length,
+      // Identity of highlight entries (add/remove) without deep range walk.
+      Object.hashAll(highlights.map((h) => identityHashCode(h))),
+      _paintSelectionHandles,
+    );
+  }
+
+  /// N1 test hook: content-layer markNeedsPaint invocations (debug only).
+  @visibleForTesting
+  int debugMarkNeedsPaintCount = 0;
+
+  @override
+  void markNeedsPaint() {
+    assert(() {
+      debugMarkNeedsPaintCount++;
+      return true;
+    }());
+    super.markNeedsPaint();
   }
 
   @override
@@ -950,33 +1075,42 @@ class RenderTerminal extends RenderBox
     final effectLastLine = lastLine.clamp(0, lines.length - 1);
     _highlightSource?.updateVisibleRange(effectFirstLine, effectLastLine);
     final selection = _controller.selection?.normalized;
-    final cellData = CellData.empty();
+    final source = _highlightSource;
 
+    // N2 + selection look (editors / pre-N2 selected cell path):
+    //   1) paintLine — always (line Picture cache)
+    //   2) flatten selection range (terminal bg wipe + selection fill) so ANSI
+    //      cell backgrounds do not stripe through translucent selection
+    //   3) glyphs only in selected columns, with TerminalHighlightSpan overrides
+    // Keep fingerprint in sync with what we actually painted (N3 gate).
+    final cellData = CellData.empty();
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
       final lineOffset = offset.translate(
           0, (i * charHeight + _lineOffset).truncateToDouble());
-      if (selection == null || !_selectionIntersectsLine(selection, i)) {
-        final source = _highlightSource;
-        _painter.paintLine(
-          canvas,
-          lineOffset,
-          lines[i],
-          highlightRevision: source?.revisionForLine(lines[i], i) ?? 0,
-          highlightSource: source,
-          highlightLineIndex: i,
-        );
-        continue;
-      }
-      _paintLineWithSelection(
+      final line = lines[i];
+      final lineHighlights = source?.spansForLine(line, i) ?? const [];
+      _painter.paintLine(
         canvas,
         lineOffset,
-        lines[i],
-        i,
-        selection,
-        cellData,
-        _highlightSource?.spansForLine(lines[i], i) ?? const [],
+        line,
+        highlightRevision: source?.revisionForLine(line, i) ?? 0,
+        highlightSource: source,
+        highlightLineIndex: i,
       );
+      if (selection != null && _selectionIntersectsLine(selection, i)) {
+        _paintSelectionRectOnLine(canvas, lineOffset, i, selection);
+        _paintSelectionForegroundsOnLine(
+          canvas,
+          lineOffset,
+          line,
+          i,
+          selection,
+          cellData,
+          lineHighlights,
+        );
+      }
     }
+    _lastSelectionVisualFingerprint = _selectionVisualFingerprint();
 
     if (isCursorInViewport &&
         _paintCursor &&
@@ -1051,9 +1185,50 @@ class RenderTerminal extends RenderBox
     return line >= begin.y && line <= end.y;
   }
 
-  void _paintLineWithSelection(
+  /// Selection range fill for [lineIndex]. Does not touch line Picture keys.
+  ///
+  /// Wipes with [TerminalTheme.background] first so translucent selection does
+  /// not blend with ANSI cell backgrounds baked into the line picture (old
+  /// selected-cell path never painted cell bg under selection).
+  void _paintSelectionRectOnLine(
     Canvas canvas,
-    Offset offset,
+    Offset lineOffset,
+    int lineIndex,
+    BufferRange selection,
+  ) {
+    final startColumn = selectedStartColumn(selection, lineIndex);
+    final endColumn = selectedEndColumn(
+      selection,
+      lineIndex,
+      _terminal.viewWidth,
+    );
+    final length = endColumn - startColumn;
+    if (length <= 0) return;
+
+    final cellOffset = lineOffset.translate(
+      startColumn * _painter.cellSize.width,
+      0,
+    );
+    // Flatten line-picture content in the range (glyphs + ANSI bg).
+    _painter.paintHighlight(
+      canvas,
+      cellOffset,
+      length,
+      _painter.theme.background,
+    );
+    _painter.paintHighlight(
+      canvas,
+      cellOffset,
+      length,
+      _painter.theme.selection,
+    );
+  }
+
+  /// Glyphs in the selected columns above the selection fill (original colors
+  /// + optional syntax/search [TerminalHighlightSpan] overrides).
+  void _paintSelectionForegroundsOnLine(
+    Canvas canvas,
+    Offset lineOffset,
     BufferLine line,
     int lineIndex,
     BufferRange selection,
@@ -1067,9 +1242,15 @@ class RenderTerminal extends RenderBox
       lineIndex,
       _terminal.viewWidth,
     );
-    var highlightIndex = 0;
+    if (endColumn <= startColumn) return;
 
-    for (var i = 0; i < line.length; i++) {
+    var highlightIndex = 0;
+    while (highlightIndex < highlights.length &&
+        highlights[highlightIndex].endColumn <= startColumn) {
+      highlightIndex++;
+    }
+
+    for (var i = startColumn; i < endColumn && i < line.length; i++) {
       line.getCellData(i, cellData);
 
       while (highlightIndex < highlights.length &&
@@ -1082,25 +1263,13 @@ class RenderTerminal extends RenderBox
           : null;
 
       final charWidth = cellData.content >> CellContent.widthShift;
-      final cellOffset = offset.translate(i * cellWidth, 0);
-      final isSelected = i >= startColumn && i < endColumn;
-
-      if (isSelected) {
-        _painter.paintSelectedCellWithHighlight(
-          canvas,
-          cellOffset,
-          cellData,
-          highlight,
-        );
-      } else {
-        _painter.paintCellWithHighlight(
-          canvas,
-          cellOffset,
-          cellData,
-          highlight,
-        );
-      }
-
+      final cellOffset = lineOffset.translate(i * cellWidth, 0);
+      _painter.paintSelectionCellForeground(
+        canvas,
+        cellOffset,
+        cellData,
+        highlight,
+      );
       if (charWidth == 2) {
         i++;
       }
@@ -1198,7 +1367,7 @@ class RenderTerminal extends RenderBox
       // 计算需要滚动的像素距离
       final scrollDelta = targetY - (visibleTop + viewportHeight / 2);
       _offset.jumpTo(currentScroll + scrollDelta);
-      markNeedsPaint();
+      invalidateContent();
       _scheduleEditableRectUpdate();
     }
   }

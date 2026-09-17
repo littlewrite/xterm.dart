@@ -200,7 +200,6 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: PointerInputs.all(),
-        vsync: tester,
       );
       addTearDown(terminalView.dispose);
 
@@ -247,7 +246,6 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: PointerInputs.none(),
-        vsync: tester,
       );
 
       await tester.pumpWidget(
@@ -280,7 +278,6 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: PointerInputs.all(),
-        vsync: tester,
       );
       addTearDown(terminalView.dispose);
 
@@ -321,7 +318,6 @@ void main() {
 
         final terminalView = TerminalController(
           pointerInputs: PointerInputs.all(),
-          vsync: tester,
         );
 
         await tester.pumpWidget(
@@ -361,7 +357,6 @@ void main() {
 
         final terminalView = TerminalController(
           pointerInputs: PointerInputs.all(),
-          vsync: tester,
         );
 
         await tester.pumpWidget(
@@ -401,7 +396,6 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: PointerInputs.all(),
-        vsync: tester,
       );
 
       await tester.pumpWidget(
@@ -450,7 +444,6 @@ void main() {
 
         final terminalView = TerminalController(
           pointerInputs: PointerInputs.all(),
-          vsync: tester,
         );
 
         await tester.pumpWidget(
@@ -506,7 +499,6 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: PointerInputs.all(),
-        vsync: tester,
       );
 
       await tester.pumpWidget(
@@ -566,7 +558,6 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: PointerInputs.all(),
-        vsync: tester,
       );
 
       await tester.pumpWidget(
@@ -623,7 +614,6 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: const PointerInputs({PointerInput.tap}),
-        vsync: tester,
       );
 
       await tester.pumpWidget(
@@ -673,7 +663,6 @@ void main() {
 
       final terminalView = TerminalController(
         pointerInputs: PointerInputs.all(),
-        vsync: tester,
       );
 
       await tester.pumpWidget(
@@ -774,7 +763,7 @@ void main() {
     testWidgets('double click with mouse selects the whole word',
         (tester) async {
       final terminal = Terminal();
-      final controller = TerminalController(vsync: tester);
+      final controller = TerminalController();
       final key = GlobalKey<TerminalViewState>();
 
       await tester.pumpWidget(
@@ -824,7 +813,7 @@ void main() {
     testWidgets('double click on separator falls back to a single character',
         (tester) async {
       final terminal = Terminal();
-      final controller = TerminalController(vsync: tester);
+      final controller = TerminalController();
       final key = GlobalKey<TerminalViewState>();
 
       await tester.pumpWidget(
@@ -875,7 +864,7 @@ void main() {
       tester,
     ) async {
       final terminal = Terminal()..resize(5, 6);
-      final controller = TerminalController(vsync: tester);
+      final controller = TerminalController();
       final key = GlobalKey<TerminalViewState>();
 
       await tester.pumpWidget(

@@ -9,49 +9,22 @@ import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
 
-enum SelectionAnimationType {
-  insert, // 插入新选区
-  update, // 更新现有选区
-}
-
-class SelectionAnimation {
-  final AnimationController controller;
-  final Animation<double> scaleAnimation;
-  final Animation<Offset> positionAnimation;
-  final SelectionAnimationType type;
-
-  SelectionAnimation({
-    required this.controller,
-    required this.scaleAnimation,
-    required this.positionAnimation,
-    required this.type,
-  });
-
-  void dispose() {
-    controller.dispose();
-  }
-}
-
 class TerminalController with ChangeNotifier {
   TerminalController({
     SelectionMode selectionMode = SelectionMode.line,
     PointerInputs pointerInputs = const PointerInputs({PointerInput.tap}),
     bool suspendPointerInput = false,
-    required TickerProvider vsync,
+    @Deprecated(
+      'The selection-handle animation was removed and this parameter is no '
+      'longer used. It is kept only to avoid breaking existing call sites.',
+    )
+    TickerProvider? vsync,
   })  : _selectionMode = selectionMode,
         _pointerInputs = pointerInputs,
-        _suspendPointerInputs = suspendPointerInput,
-        _vsync = vsync;
-
-  final TickerProvider _vsync;
+        _suspendPointerInputs = suspendPointerInput;
 
   CellAnchor? _selectionBase;
   CellAnchor? _selectionExtent;
-
-  // 动画相关状态
-  SelectionAnimation? _selectionAnimation;
-  CellOffset? _lastSelectionBegin;
-  CellOffset? _lastSelectionEnd;
 
   SelectionMode get selectionMode => _selectionMode;
   SelectionMode _selectionMode;
@@ -74,9 +47,6 @@ class TerminalController with ChangeNotifier {
     notifyListeners();
   }
 
-  // 动画访问器
-  SelectionAnimation? get selectionAnimation => _selectionAnimation;
-
   BufferRange? get selection {
     final base = _selectionBase;
     final extent = _selectionExtent;
@@ -93,28 +63,6 @@ class TerminalController with ChangeNotifier {
   }
 
   void setSelection(CellAnchor base, CellAnchor extent, {SelectionMode? mode}) {
-    final newBegin = base.offset;
-    final newEnd = extent.offset;
-
-    // 检测是插入还是更新
-    final isNewSelection = _selectionBase == null || _selectionExtent == null;
-    final animationType = isNewSelection
-        ? SelectionAnimationType.insert
-        : SelectionAnimationType.update;
-
-    // 清理旧动画
-    _selectionAnimation?.dispose();
-
-    // 创建新动画
-    _selectionAnimation = _createSelectionAnimation(
-      type: animationType,
-      oldBegin: _lastSelectionBegin,
-      oldEnd: _lastSelectionEnd,
-      newBegin: newBegin,
-      newEnd: newEnd,
-    );
-
-    // 更新选区
     _selectionBase?.dispose();
     _selectionBase = base;
 
@@ -125,85 +73,7 @@ class TerminalController with ChangeNotifier {
       _selectionMode = mode;
     }
 
-    // 记录位置用于下次动画
-    _lastSelectionBegin = newBegin;
-    _lastSelectionEnd = newEnd;
-
     notifyListeners();
-  }
-
-  SelectionAnimation _createSelectionAnimation({
-    required SelectionAnimationType type,
-    CellOffset? oldBegin,
-    CellOffset? oldEnd,
-    required CellOffset newBegin,
-    required CellOffset newEnd,
-  }) {
-    final controller = AnimationController(
-      duration: type == SelectionAnimationType.insert
-          ? const Duration(milliseconds: 100)
-          : const Duration(milliseconds: 150),
-      vsync: _vsync,
-    );
-
-    late Animation<double> scaleAnimation;
-    late Animation<Offset> positionAnimation;
-
-    if (type == SelectionAnimationType.insert) {
-      scaleAnimation = Tween<double>(
-        begin: 1.0,
-        end: 1.0,
-      ).animate(CurvedAnimation(
-        parent: controller,
-        curve: Curves.easeOut,
-      ));
-
-      positionAnimation = Tween<Offset>(
-        begin: Offset.zero,
-        end: Offset.zero,
-      ).animate(controller);
-    } else {
-      scaleAnimation = Tween<double>(
-        begin: 1.0,
-        end: 1.0,
-      ).animate(controller);
-
-      final beginOffset = oldBegin != null && oldBegin != newBegin
-          ? Offset(
-              (oldBegin.x - newBegin.x).toDouble(),
-              (oldBegin.y - newBegin.y).toDouble(),
-            )
-          : Offset.zero;
-
-      positionAnimation = Tween<Offset>(
-        begin: beginOffset,
-        end: Offset.zero,
-      ).animate(CurvedAnimation(
-        parent: controller,
-        curve: Curves.easeOut,
-      ));
-    }
-
-    controller.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        _selectionAnimation?.dispose();
-        _selectionAnimation = null;
-        notifyListeners();
-      }
-    });
-
-    controller.addListener(() {
-      notifyListeners();
-    });
-
-    controller.forward();
-
-    return SelectionAnimation(
-      controller: controller,
-      scaleAnimation: scaleAnimation,
-      positionAnimation: positionAnimation,
-      type: type,
-    );
   }
 
   BufferRange _createRange(CellOffset begin, CellOffset end) {
@@ -224,17 +94,10 @@ class TerminalController with ChangeNotifier {
   }
 
   void clearSelection() {
-    // 清理动画
-    _selectionAnimation?.dispose();
-    _selectionAnimation = null;
-
     _selectionBase?.dispose();
     _selectionBase = null;
     _selectionExtent?.dispose();
     _selectionExtent = null;
-
-    _lastSelectionBegin = null;
-    _lastSelectionEnd = null;
 
     notifyListeners();
   }
@@ -277,12 +140,6 @@ class TerminalController with ChangeNotifier {
     });
 
     return highlight;
-  }
-
-  @override
-  void dispose() {
-    _selectionAnimation?.dispose();
-    super.dispose();
   }
 }
 

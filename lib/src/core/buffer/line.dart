@@ -105,19 +105,11 @@ class BufferLine with IndexedItem {
     cellData.content = _data[offset + _cellContent];
   }
 
+  /// Allocates a [CellData] snapshot of cell [index]. Read-only — never mutates
+  /// the line (N4a: previous implementation wrote empty into the cell).
   CellData createCellData(int index) {
     final cellData = CellData.empty();
-    final offset = index * _cellSize;
-    if (_data[offset + _cellForeground] != cellData.foreground ||
-        _data[offset + _cellBackground] != cellData.background ||
-        _data[offset + _cellAttributes] != cellData.flags ||
-        _data[offset + _cellContent] != cellData.content) {
-      _data[offset + _cellForeground] = cellData.foreground;
-      _data[offset + _cellBackground] = cellData.background;
-      _data[offset + _cellAttributes] = cellData.flags;
-      _data[offset + _cellContent] = cellData.content;
-      _markDirty();
-    }
+    getCellData(index, cellData);
     return cellData;
   }
 
@@ -240,6 +232,12 @@ class BufferLine with IndexedItem {
     assert(start >= 0 && start < _length);
     assert(count >= 0 && start + count <= _length);
 
+    // N4a: count==0 must not bump revision (move loop would no-op but still
+    // called _markDirty before).
+    if (count == 0) {
+      return;
+    }
+
     style ??= CursorStyle.empty;
 
     if (start + count < _length) {
@@ -275,6 +273,11 @@ class BufferLine with IndexedItem {
 
   /// Inserts [count] cells at [start]. New cells are initialized with [style].
   void insertCells(int start, int count, [CursorStyle? style]) {
+    // N4a: count==0 must not bump revision.
+    if (count == 0) {
+      return;
+    }
+
     style ??= CursorStyle.empty;
 
     if (start > 0 && getWidth(start - 1) == 2) {
@@ -373,13 +376,13 @@ class BufferLine with IndexedItem {
   /// Copies [len] cells from [src] starting at [srcCol] to [dstCol] at this
   /// line.
   void copyFrom(BufferLine src, int srcCol, int dstCol, int len) {
-    resize(dstCol + len);
-
-    // data.setRange(
-    //   dstCol * _cellSize,
-    //   (dstCol + len) * _cellSize,
-    //   Uint32List.sublistView(src.data, srcCol * _cellSize, len * _cellSize),
-    // );
+    // Grow if needed without shrinking past existing content beyond the copy
+    // window — resize to max so trailing cells outside the copy stay put and
+    // we avoid a spurious revision bump from length-only shrink+restore.
+    final needed = dstCol + len;
+    if (needed > _length) {
+      resize(needed);
+    }
 
     var srcOffset = srcCol * _cellSize;
     var dstOffset = dstCol * _cellSize;
