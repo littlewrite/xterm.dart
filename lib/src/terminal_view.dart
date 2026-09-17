@@ -317,6 +317,11 @@ class TerminalViewState extends State<TerminalView> {
   }
 
   void _initSearchBox() {
+    try {
+      _searchController.detach();
+    } catch (_) {
+      // First init: late field not assigned yet.
+    }
     _searchController = TerminalSearchController(
       terminal: widget.terminal,
       controller: _controller,
@@ -412,6 +417,7 @@ class TerminalViewState extends State<TerminalView> {
     widget.terminal.removeListener(_handleTerminalChange);
     widget.terminal.onSearch = null;
     widget.terminal.onCloseSearch = null;
+    _searchController.detach();
     super.dispose();
   }
 

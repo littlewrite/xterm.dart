@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/terminal.dart';
-import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/controller.dart';
+import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/themes.dart';
 import 'package:xterm/src/ui/terminal_theme.dart'; // 导入 TerminalTheme
 
@@ -59,12 +57,22 @@ class TerminalSearchController extends ChangeNotifier {
   List<MatchInfo> _matches = [];
   int _currentMatchIndex = -1;
 
+  /// Last buffer geometry used for search; resize/reflow triggers re-search (F3).
+  int _lastSearchViewWidth = -1;
+  int _lastSearchLineCount = -1;
+  bool _listeningTerminal = false;
+
   TerminalSearchController({
     required this.terminal,
     required this.controller,
     required this.scrollToLine,
     required this.setShowSearch,
-  });
+  }) {
+    terminal.addListener(_onTerminalChanged);
+    _listeningTerminal = true;
+    _lastSearchViewWidth = terminal.viewWidth;
+    _lastSearchLineCount = terminal.buffer.lines.length;
+  }
 
   /// get current search text
   String get searchText => _lastSearchText;
@@ -84,8 +92,30 @@ class TerminalSearchController extends ChangeNotifier {
   /// match count
   int get matchCount => _matches.length;
 
-  /// current match index
-  int get currentIdx => _currentMatchIndex % _matches.length;
+  /// current match index for UI (1-based display uses +1)
+  int get currentIdx =>
+      _matches.isEmpty ? 0 : _currentMatchIndex.clamp(0, _matches.length - 1);
+
+  void _onTerminalChanged() {
+    final width = terminal.viewWidth;
+    final lines = terminal.buffer.lines.length;
+    if (width == _lastSearchViewWidth && lines == _lastSearchLineCount) {
+      return;
+    }
+    _lastSearchViewWidth = width;
+    _lastSearchLineCount = lines;
+    if (_lastSearchText.isEmpty) return;
+    _handleSearch(_lastSearchText, preserveCurrent: true);
+    notifyListeners();
+  }
+
+  /// Detach terminal listener when the search UI is torn down.
+  void detach() {
+    if (_listeningTerminal) {
+      terminal.removeListener(_onTerminalChanged);
+      _listeningTerminal = false;
+    }
+  }
 
   /// set search text
   void setSearchText(String text) {
@@ -140,36 +170,50 @@ class TerminalSearchController extends ChangeNotifier {
   }
 
   void _selectCurrentMatch() {
-    if (_currentMatchIndex >= 0 && _currentMatchIndex < _matches.length) {
-      final match = _matches[_currentMatchIndex];
-
-      if (match.isWrapped && match.wrappedPositions != null) {
-        // 处理跨行匹配
-        final positions = match.wrappedPositions!;
-        final start =
-            terminal.buffer.createAnchor(positions.first.x, positions.first.y);
-        final end = terminal.buffer.createAnchor(
-          positions.last.x + 1,
-          positions.last.y,
-        );
-        controller.setSelection(start, end);
-      } else {
-        // 处理单行匹配
-        final start = terminal.buffer.createAnchor(match.x, match.y);
-        final end = terminal.buffer.createAnchor(
-          match.x + match.length,
-          match.y,
-        );
-        controller.setSelection(start, end);
-      }
-
-      // 滚动到匹配行
-      scrollToLine(match.y);
+    if (_currentMatchIndex < 0 || _currentMatchIndex >= _matches.length) {
+      return;
     }
+    final match = _matches[_currentMatchIndex];
+    final positions = match.wrappedPositions;
+    if (positions != null && positions.isNotEmpty) {
+      final first = positions.first;
+      final last = positions.last;
+      final start = terminal.buffer.createAnchor(first.x, first.y);
+      final end = terminal.buffer.createAnchor(last.x + 1, last.y);
+      controller.setSelection(start, end, mode: SelectionMode.line);
+    } else {
+      final start = terminal.buffer.createAnchor(match.x, match.y);
+      final end = terminal.buffer.createAnchor(
+        match.x + match.length,
+        match.y,
+      );
+      controller.setSelection(start, end, mode: SelectionMode.line);
+    }
+    scrollToLine(match.y);
   }
 
-  /// search text
-  void _handleSearch(String text) {
+  /// Physical line → list of (UTF-16 unit, cell) for index-aligned search.
+  List<({int codeUnit, CellOffset cell})> _lineCharCells(
+    BufferLine line,
+    int y,
+  ) {
+    final out = <({int codeUnit, CellOffset cell})>[];
+    final to = line.getTrimmedLength();
+    for (var i = 0; i < to; i++) {
+      final codePoint = line.getCodePoint(i);
+      if (codePoint != 0) {
+        final s = String.fromCharCode(codePoint);
+        for (final unit in s.codeUnits) {
+          out.add((codeUnit: unit, cell: CellOffset(i, y)));
+        }
+      } else if (!line.isWideCharContinuationCell(i)) {
+        out.add((codeUnit: 0x20, cell: CellOffset(i, y)));
+      }
+    }
+    return out;
+  }
+
+  void _handleSearch(String text, {bool preserveCurrent = false}) {
     if (text.isEmpty) {
       controller.clearSelection();
       _matches.clear();
@@ -178,203 +222,142 @@ class TerminalSearchController extends ChangeNotifier {
     }
 
     _lastSearchText = text;
+    _lastSearchViewWidth = terminal.viewWidth;
+    _lastSearchLineCount = terminal.buffer.lines.length;
+
+    String? preserveKey;
+    if (preserveCurrent &&
+        _currentMatchIndex >= 0 &&
+        _currentMatchIndex < _matches.length) {
+      preserveKey = _matchStableKey(_matches[_currentMatchIndex]);
+    }
+
     final buffer = terminal.buffer;
     _matches.clear();
     _currentMatchIndex = -1;
 
-    // get terminal width
-    final terminalWidth = buffer.viewWidth;
+    final lines = buffer.lines;
+    if (lines.length == 0) {
+      controller.clearSelection();
+      return;
+    }
 
-    // used to record processed matches, avoid duplicate
-    final Set<String> processedMatches = {};
+    var cells = <({int codeUnit, CellOffset cell})>[];
+    void flushLogicalLine() {
+      if (cells.isEmpty) return;
+      _collectMatchesOnLogicalLine(text, cells);
+      cells = <({int codeUnit, CellOffset cell})>[];
+    }
+
+    for (var y = 0; y < lines.length; y++) {
+      final line = lines[y];
+      cells.addAll(_lineCharCells(line, y));
+      // isWrapped means this row continues onto the next physical row.
+      if (!line.isWrapped || y == lines.length - 1) {
+        flushLogicalLine();
+      }
+    }
+
+    _matches = _filterDuplicateMatches(_matches);
+
+    if (_matches.isEmpty) {
+      controller.clearSelection();
+      return;
+    }
+
+    if (preserveKey != null) {
+      final idx = _matches.indexWhere((m) => _matchStableKey(m) == preserveKey);
+      _currentMatchIndex = idx >= 0 ? idx : 0;
+    } else {
+      _currentMatchIndex = 0;
+    }
+    _selectCurrentMatch();
+  }
+
+  void _collectMatchesOnLogicalLine(
+    String query,
+    List<({int codeUnit, CellOffset cell})> cells,
+  ) {
+    final buffer = StringBuffer();
+    for (final c in cells) {
+      buffer.writeCharCode(c.codeUnit);
+    }
+    final lineText = buffer.toString();
+    if (lineText.isEmpty || query.isEmpty) return;
+
+    void addMatch(int start, int end, String matchedText) {
+      if (start < 0 || end > cells.length || start >= end) return;
+      if (_wholeWord && !_isWholeWord(lineText, start, end)) return;
+
+      final slice = cells.sublist(start, end);
+      final first = slice.first.cell;
+      final last = slice.last.cell;
+      final multiLine = first.y != last.y;
+      // Deduplicate consecutive identical cells (multi code-unit chars).
+      final positions = <CellOffset>[];
+      for (final s in slice) {
+        if (positions.isEmpty ||
+            positions.last.x != s.cell.x ||
+            positions.last.y != s.cell.y) {
+          positions.add(s.cell);
+        }
+      }
+      final cellLen = multiLine
+          ? positions.length
+          : (positions.last.x - positions.first.x + 1);
+
+      _matches.add(
+        MatchInfo(
+          x: first.x,
+          y: first.y,
+          length: cellLen,
+          matchedText: matchedText,
+          isWrapped: multiLine,
+          wrappedPositions: multiLine ? positions : null,
+        ),
+      );
+    }
 
     if (_regex) {
-      // regex search
-      String pattern = text;
-
+      var pattern = query;
       if (_wholeWord) {
         pattern = r'\b' + pattern + r'\b';
       }
-
       try {
-        final regex = RegExp(pattern, caseSensitive: _caseSensitive);
-
-        // handle wrapped line
-        String currentLine = '';
-        int startY = 0;
-        int startX = 0;
-        List<CellOffset> wrappedPositions = [];
-
-        for (int y = 0; y < buffer.lines.length; y++) {
-          final line = buffer.lines[y];
-          final lineText = line.toString();
-
-          // 使用 isWrapped 属性判断是否是自动换行
-          bool isWrapped = line.isWrapped;
-
-          if (isWrapped) {
-            // 如果是自动换行，将文本拼接
-            currentLine += lineText;
-            wrappedPositions.add(CellOffset(startX, startY));
-          } else {
-            // 如果不是自动换行，开始新的行
-            currentLine = lineText;
-            startY = y;
-            startX = 0;
-            wrappedPositions = [CellOffset(0, y)];
-          }
-
-          // 在当前行（可能包含自动换行的文本）中搜索
-          final searchText =
-              _caseSensitive ? currentLine : currentLine.toLowerCase();
-          final matches = regex.allMatches(searchText);
-
-          for (final match in matches) {
-            if (!_wholeWord ||
-                _isWholeWord(currentLine, match.start, match.end)) {
-              // 计算匹配在终端中的实际位置
-              final matchStart = match.start;
-              final matchEnd = match.end;
-
-              // 检查匹配是否跨越自动换行
-              bool isWrappedMatch = false;
-              List<CellOffset> matchPositions = [];
-
-              for (int i = matchStart; i < matchEnd; i++) {
-                final lineIndex = i ~/ terminalWidth;
-                final x = i % terminalWidth;
-                final y = startY + lineIndex;
-                matchPositions.add(CellOffset(x, y));
-
-                if (lineIndex > 0) {
-                  isWrappedMatch = true;
-                }
-              }
-
-              // 生成匹配的唯一标识符
-              final matchKey = '${matchStart}_${matchEnd}_${startY}';
-
-              // 检查是否已经处理过这个匹配
-              if (!processedMatches.contains(matchKey)) {
-                processedMatches.add(matchKey);
-
-                _matches.add(MatchInfo(
-                  x: matchStart % terminalWidth,
-                  y: startY + (matchStart ~/ terminalWidth),
-                  length: matchEnd - matchStart,
-                  matchedText: match.group(0)!,
-                  isWrapped: isWrappedMatch,
-                  wrappedPositions: isWrappedMatch ? matchPositions : null,
-                ));
-              }
-            }
-          }
+        final re = RegExp(pattern, caseSensitive: _caseSensitive);
+        for (final m in re.allMatches(lineText)) {
+          addMatch(m.start, m.end, m.group(0)!);
         }
-      } catch (e) {
+      } catch (_) {
         return;
       }
-    } else {
-      // 普通文本搜索
-      final pattern = _caseSensitive ? text : text.toLowerCase();
-
-      // 处理自动换行的情况
-      String currentLine = '';
-      int startY = 0;
-      int startX = 0;
-      List<CellOffset> wrappedPositions = [];
-
-      for (int y = 0; y < buffer.lines.length; y++) {
-        final line = buffer.lines[y];
-        final lineText = line.toString();
-
-        // 使用 isWrapped 属性判断是否是自动换行
-        bool isWrapped = line.isWrapped;
-
-        if (isWrapped) {
-          // 如果是自动换行，将文本拼接
-          currentLine += lineText;
-          wrappedPositions.add(CellOffset(startX, startY));
-        } else {
-          // 如果不是自动换行，开始新的行
-          currentLine = lineText;
-          startY = y;
-          startX = 0;
-          wrappedPositions = [CellOffset(0, y)];
-        }
-
-        // 在当前行（可能包含自动换行的文本）中搜索
-        final searchText =
-            _caseSensitive ? currentLine : currentLine.toLowerCase();
-
-        for (int x = 0; x <= searchText.length - pattern.length; x++) {
-          final substring = searchText.substring(x, x + pattern.length);
-          if (substring == pattern) {
-            if (!_wholeWord ||
-                _isWholeWord(currentLine, x, x + pattern.length)) {
-              // 检查匹配是否跨越自动换行
-              bool isWrappedMatch = false;
-              List<CellOffset> matchPositions = [];
-
-              for (int i = x; i < x + pattern.length; i++) {
-                final lineIndex = i ~/ terminalWidth;
-                final matchX = i % terminalWidth;
-                final matchY = startY + lineIndex;
-                matchPositions.add(CellOffset(matchX, matchY));
-
-                if (lineIndex > 0) {
-                  isWrappedMatch = true;
-                }
-              }
-
-              // 生成匹配的唯一标识符
-              final matchKey = '${x}_${x + pattern.length}_${startY}';
-
-              // 检查是否已经处理过这个匹配
-              if (!processedMatches.contains(matchKey)) {
-                processedMatches.add(matchKey);
-
-                _matches.add(MatchInfo(
-                  x: x % terminalWidth,
-                  y: startY + (x ~/ terminalWidth),
-                  length: pattern.length,
-                  matchedText: currentLine.substring(x, x + pattern.length),
-                  isWrapped: isWrappedMatch,
-                  wrappedPositions: isWrappedMatch ? matchPositions : null,
-                ));
-              }
-            }
-          }
-        }
-      }
+      return;
     }
 
-    // 过滤重复的匹配
-    _matches = _filterDuplicateMatches(_matches);
-
-    if (_matches.isNotEmpty) {
-      _currentMatchIndex = 0;
-      _selectCurrentMatch();
-    } else {
-      controller.clearSelection();
+    final hay = _caseSensitive ? lineText : lineText.toLowerCase();
+    final needle = _caseSensitive ? query : query.toLowerCase();
+    if (needle.isEmpty) return;
+    var from = 0;
+    while (from <= hay.length - needle.length) {
+      final x = hay.indexOf(needle, from);
+      if (x < 0) break;
+      addMatch(x, x + needle.length, lineText.substring(x, x + needle.length));
+      from = x + 1;
     }
   }
 
-  // 过滤重复的匹配
+  String _matchStableKey(MatchInfo m) =>
+      '${m.y}:${m.x}:${m.length}:${m.matchedText}';
+
   List<MatchInfo> _filterDuplicateMatches(List<MatchInfo> matches) {
-    final Set<String> uniqueMatches = {};
-    final List<MatchInfo> filteredMatches = [];
-
+    final uniqueMatches = <String>{};
+    final filteredMatches = <MatchInfo>[];
     for (final match in matches) {
-      // 生成唯一标识符，包含位置和文本内容
-      final matchKey =
-          '${match.x}_${match.y}_${match.length}_${match.matchedText}';
-
-      if (!uniqueMatches.contains(matchKey)) {
-        uniqueMatches.add(matchKey);
+      final matchKey = _matchStableKey(match);
+      if (uniqueMatches.add(matchKey)) {
         filteredMatches.add(match);
       }
     }
-
     return filteredMatches;
   }
 
@@ -397,9 +380,9 @@ class TerminalSearchController extends ChangeNotifier {
   bool _isLetterOrDigit(String char) {
     if (char.isEmpty) return false;
     final codeUnit = char.codeUnitAt(0);
-    return (codeUnit >= 0x30 && codeUnit <= 0x39) || // 数字 0-9
-        (codeUnit >= 0x41 && codeUnit <= 0x5A) || // 大写字母 A-Z
-        (codeUnit >= 0x61 && codeUnit <= 0x7A); // 小写字母 a-z
+    return (codeUnit >= 0x30 && codeUnit <= 0x39) ||
+        (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
+        (codeUnit >= 0x61 && codeUnit <= 0x7A);
   }
 }
 
