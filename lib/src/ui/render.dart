@@ -111,6 +111,7 @@ class RenderTerminal extends RenderBox
     _compositionAnchor?.dispose();
     _compositionAnchor = null;
     _compositionAnchorBuffer = null;
+    _releaseViewportAnchor();
     _syncCompositionAnchor();
     if (attached) _terminal.addListener(_onTerminalChange);
     _resizeTerminalIfNeeded();
@@ -328,6 +329,19 @@ class RenderTerminal extends RenderBox
   TerminalPainter get debugPainter => _painter;
 
   var _stickToBottom = true;
+
+  /// 重排前锚定的「视口顶行」。字号变化、拖窗口/面板都会触发重排，此时按像素
+  /// 保留的滚动偏移对应的已经是另一段文本了；锚点会随重排 reparent，用它还原
+  /// 才能让视口停在原来那段内容上。
+  CellAnchor? _viewportAnchor;
+
+  /// 锚定行之内的分数偏移，范围 `[0, 1)`。不能存旧字号下的像素余量，
+  /// 否则还原时和新 `cellHeight` 相加会单位混用。
+  double _viewportAnchorFraction = 0;
+
+  /// 上一次 layout 时的 cell 高度，用来把 [_scrollOffset] 换算成行号。
+  double _lastLayoutCellHeight = 0;
+
   bool _editableRectUpdateScheduled = false;
   int _lastKnownLineCount = 0;
   int _lastKnownViewWidth = 0;
@@ -513,6 +527,7 @@ class RenderTerminal extends RenderBox
   @override
   void dispose() {
     _compositionAnchor?.dispose();
+    _releaseViewportAnchor();
     super.dispose();
   }
 
@@ -535,6 +550,7 @@ class RenderTerminal extends RenderBox
     final parentData = _composingLayer.parentData! as _TerminalParentData;
     parentData.offset = Offset.zero;
 
+    _captureViewportAnchor();
     _updateViewportSize();
 
     // applyContentDimensions 可能在 extent 变大后让 pixels 暂时离开底部；
@@ -548,9 +564,68 @@ class RenderTerminal extends RenderBox
         _offset.correctBy(delta);
       }
       _stickToBottom = true;
+    } else {
+      _restoreViewportAnchor();
     }
 
+    _lastLayoutCellHeight = _painter.cellSize.height;
     _syncTerminalGeometryCache();
+    _scheduleEditableRectUpdate();
+  }
+
+  /// 记录当前视口顶行（含行内分数偏移），供本帧重排后还原。
+  void _captureViewportAnchor() {
+    _releaseViewportAnchor();
+    // 贴着底部时由 stick-to-bottom 负责，不需要锚点。
+    if (_stickToBottom) return;
+
+    final lines = _terminal.buffer.lines;
+    // `_scrollOffset` 是上一次 layout 那个字号下的像素值：改字号时 painter 在
+    // layout 之前就已经换成新高度了，换算行号必须用旧高度。
+    final cellHeight = _lastLayoutCellHeight > 0
+        ? _lastLayoutCellHeight
+        : _painter.cellSize.height;
+    final scroll = _scrollOffset;
+    if (lines.length == 0 || cellHeight <= 0 || scroll <= 0) return;
+
+    final topLineExact = scroll / cellHeight;
+    final topLine = topLineExact.floor().clamp(0, lines.length - 1);
+    _viewportAnchor = _terminal.buffer.createAnchor(0, topLine);
+    _viewportAnchorFraction = (topLineExact - topLine).clamp(0.0, 1.0 - 1e-9);
+  }
+
+  /// 重排后把锚定的那一行放回视口顶部。
+  void _restoreViewportAnchor() {
+    final anchor = _viewportAnchor;
+    _viewportAnchor = null;
+    if (anchor == null) return;
+
+    // anchor.attached / anchor.y 必须在 dispose 之前读：dispose 会摘掉 owner。
+    final cellHeight = _painter.cellSize.height;
+    final double target;
+    if (anchor.attached && cellHeight > 0) {
+      target = ((anchor.y + _viewportAnchorFraction) * cellHeight)
+          .clamp(0.0, _maxScrollExtent);
+    } else {
+      // 锚定行被裁掉时没法还原原内容，至少把旧像素偏移夹回合法范围。
+      target = _scrollOffset.clamp(0.0, _maxScrollExtent);
+    }
+    anchor.dispose();
+
+    if ((target - _scrollOffset).abs() < 0.5) return;
+    _jumpViewportTo(target);
+  }
+
+  void _releaseViewportAnchor() {
+    _viewportAnchor?.dispose();
+    _viewportAnchor = null;
+  }
+
+  /// 跳转视口并刷新受影响的图层（内容层 + 输入法合成层 + 光标矩形）。
+  void _jumpViewportTo(double offset) {
+    _offset.jumpTo(offset);
+    invalidateContent();
+    _markComposingLayerNeedsPaint();
     _scheduleEditableRectUpdate();
   }
 
@@ -1344,32 +1419,32 @@ class RenderTerminal extends RenderBox
     _painter.paintHighlight(canvas, startOffset, end - start, color);
   }
 
-  /// 滚动到指定行
+  /// 滚动到指定行。
+  ///
+  /// 全程按「行」换算：像素偏移只有在 cellSize 不变时才和行号一一对应，而缩放
+  /// （改字号 / 拖窗口）会让 cellSize 变化，混着用会算出离谱的目标位置。
   void scrollToLine(int line) {
-    // 余量
-    final above = 10;
     final cellHeight = _painter.cellSize.height;
+    if (cellHeight <= 0) return;
+
     final currentScroll = _scrollOffset;
     final viewportHeight = _viewportHeight;
+    final visibleFromLine = currentScroll / cellHeight;
+    final visibleLines = viewportHeight / cellHeight;
 
-    // 计算目标行的像素位置
-    final targetY = line * cellHeight;
-
-    // 计算视口边界
-    final visibleTop = currentScroll;
-    final visibleBottom = currentScroll + viewportHeight;
-
-    // 如果目标行不在视口范围内，需要滚动
-    if (targetY < visibleTop - above ||
-        targetY > visibleBottom - cellHeight - above) {
-      print(
-          'scrollToLine: $line, targetY: $targetY, visibleTop: $visibleTop, visibleBottom: $visibleBottom, cellHeight: $cellHeight');
-      // 计算需要滚动的像素距离
-      final scrollDelta = targetY - (visibleTop + viewportHeight / 2);
-      _offset.jumpTo(currentScroll + scrollDelta);
-      invalidateContent();
-      _scheduleEditableRectUpdate();
+    // 目标行已经在视口内就不动。余量随可见行数收敛，避免 4~5 行小面板里
+    // `margin=2` 让守卫恒不成立、每次 F3 都强制跳到中部。
+    final margin = (visibleLines / 2 - 0.5).clamp(0.0, 2.0);
+    if (line > visibleFromLine + margin &&
+        line < visibleFromLine + visibleLines - margin) {
+      return;
     }
+
+    // 把目标行放到视口中部。
+    final target = ((line - visibleLines / 2) * cellHeight)
+        .clamp(0.0, _maxScrollExtent);
+    if ((target - currentScroll).abs() < 0.5) return;
+    _jumpViewportTo(target);
   }
 
   /// 获取当前视口范围（行号）

@@ -397,6 +397,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     newWidth = max(newWidth, 1);
     newHeight = max(newHeight, 1);
 
+    final sizeChanged = newWidth != _viewWidth || newHeight != _viewHeight;
+
     onResize?.call(newWidth, newHeight, pixelWidth ?? 0, pixelHeight ?? 0);
 
     //we need to resize both buffers so that they are ready when we switch between them
@@ -412,6 +414,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
     _altBuffer.resetVerticalMargins();
     _mainBuffer.resetVerticalMargins();
+
+    // 重排会把文本在物理行之间搬来搬去，任何持有行列坐标的监听者（比如 find 的
+    // 匹配表）都必须重算。走和 `write` 同一套批量刷新：resize 常常发生在
+    // RenderTerminal.performLayout 里，直接 notifyListeners 会让监听者在 layout
+    // 中途跑，这里统一推迟到下一帧开始。
+    if (sizeChanged) {
+      _markPendingFlush();
+    }
   }
 
   @override
@@ -1003,6 +1013,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// trigger search widget show
   @override
   void showSearch() {
+    // 单槽回调：View 重建竞态下可能短暂为 null。调用方应能容忍 no-op，
+    // 但活跃 TerminalView 会在 build/didUpdateWidget 里重新声明所有权。
     onSearch?.call();
   }
 

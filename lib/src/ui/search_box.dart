@@ -57,6 +57,10 @@ class TerminalSearchController extends ChangeNotifier {
   List<MatchInfo> _matches = [];
   int _currentMatchIndex = -1;
 
+  /// 当前匹配起点。独立于用户选区：点终端清选区 / 拖选复制都不会丢掉身份。
+  /// 重排时由 buffer reparent，被动重搜再用它落到新匹配表。
+  CellAnchor? _currentMatchAnchor;
+
   /// Last buffer geometry used for search; resize/reflow triggers re-search (F3).
   int _lastSearchViewWidth = -1;
   int _lastSearchLineCount = -1;
@@ -105,7 +109,10 @@ class TerminalSearchController extends ChangeNotifier {
     _lastSearchViewWidth = width;
     _lastSearchLineCount = lines;
     if (_lastSearchText.isEmpty) return;
-    _handleSearch(_lastSearchText, preserveCurrent: true);
+    // 被动重搜（终端自己输出、或者窗口/字号变化触发重排）：只把匹配表和高亮
+    // 挪到新坐标，**不动视口**。以前这里会 scrollToLine，导致只要终端在刷输出
+    // 或者一拖窗口大小，视口就被拽回匹配行，用户滚下去看新内容也会被拉回来。
+    _handleSearch(_lastSearchText, preserveCurrent: true, scrollToMatch: false);
     notifyListeners();
   }
 
@@ -115,6 +122,17 @@ class TerminalSearchController extends ChangeNotifier {
       terminal.removeListener(_onTerminalChanged);
       _listeningTerminal = false;
     }
+    _clearCurrentMatchAnchor();
+  }
+
+  void _clearCurrentMatchAnchor() {
+    _currentMatchAnchor?.dispose();
+    _currentMatchAnchor = null;
+  }
+
+  void _setCurrentMatchAnchor(CellAnchor anchor) {
+    _currentMatchAnchor?.dispose();
+    _currentMatchAnchor = anchor;
   }
 
   /// set search text
@@ -164,32 +182,41 @@ class TerminalSearchController extends ChangeNotifier {
 
   /// close search widget
   void close() {
+    _lastSearchText = '';
+    _matches.clear();
+    _currentMatchIndex = -1;
+    _clearCurrentMatchAnchor();
     setShowSearch(false);
     controller.clearSelection();
     notifyListeners();
   }
 
-  void _selectCurrentMatch() {
+  void _selectCurrentMatch({bool scroll = true}) {
     if (_currentMatchIndex < 0 || _currentMatchIndex >= _matches.length) {
       return;
     }
     final match = _matches[_currentMatchIndex];
     final positions = match.wrappedPositions;
+    final CellAnchor start;
+    final CellAnchor end;
     if (positions != null && positions.isNotEmpty) {
       final first = positions.first;
       final last = positions.last;
-      final start = terminal.buffer.createAnchor(first.x, first.y);
-      final end = terminal.buffer.createAnchor(last.x + 1, last.y);
-      controller.setSelection(start, end, mode: SelectionMode.line);
+      start = terminal.buffer.createAnchor(first.x, first.y);
+      end = terminal.buffer.createAnchor(last.x + 1, last.y);
     } else {
-      final start = terminal.buffer.createAnchor(match.x, match.y);
-      final end = terminal.buffer.createAnchor(
+      start = terminal.buffer.createAnchor(match.x, match.y);
+      end = terminal.buffer.createAnchor(
         match.x + match.length,
         match.y,
       );
-      controller.setSelection(start, end, mode: SelectionMode.line);
     }
-    scrollToLine(match.y);
+    // 身份锚点单独持有一份起点；选区锚点归 controller 管，两边互不影响。
+    _setCurrentMatchAnchor(terminal.buffer.createAnchor(start.x, start.y));
+    controller.setSelection(start, end, mode: SelectionMode.line);
+    if (scroll) {
+      scrollToLine(match.y);
+    }
   }
 
   /// Physical line → list of (UTF-16 unit, cell) for index-aligned search.
@@ -213,31 +240,37 @@ class TerminalSearchController extends ChangeNotifier {
     return out;
   }
 
-  void _handleSearch(String text, {bool preserveCurrent = false}) {
-    if (text.isEmpty) {
-      controller.clearSelection();
-      _matches.clear();
-      _currentMatchIndex = -1;
-      return;
-    }
-
+  void _handleSearch(
+    String text, {
+    bool preserveCurrent = false,
+    bool scrollToMatch = true,
+  }) {
     _lastSearchText = text;
-    _lastSearchViewWidth = terminal.viewWidth;
-    _lastSearchLineCount = terminal.buffer.lines.length;
 
-    String? preserveKey;
-    if (preserveCurrent &&
-        _currentMatchIndex >= 0 &&
-        _currentMatchIndex < _matches.length) {
-      preserveKey = _matchStableKey(_matches[_currentMatchIndex]);
-    }
+    // 当前匹配身份由专用 CellAnchor 跟踪（会随重排 reparent）。用户选区是另一
+    // 回事——点终端清选区或拖选复制都不能当成“丢掉了当前匹配”。
+    final previousStart = preserveCurrent &&
+            _currentMatchAnchor != null &&
+            _currentMatchAnchor!.attached
+        ? _currentMatchAnchor!.offset
+        : null;
 
-    final buffer = terminal.buffer;
     _matches.clear();
     _currentMatchIndex = -1;
 
+    if (text.isEmpty) {
+      _clearCurrentMatchAnchor();
+      controller.clearSelection();
+      return;
+    }
+
+    _lastSearchViewWidth = terminal.viewWidth;
+    _lastSearchLineCount = terminal.buffer.lines.length;
+
+    final buffer = terminal.buffer;
     final lines = buffer.lines;
     if (lines.length == 0) {
+      _clearCurrentMatchAnchor();
       controller.clearSelection();
       return;
     }
@@ -261,17 +294,33 @@ class TerminalSearchController extends ChangeNotifier {
     _matches = _filterDuplicateMatches(_matches);
 
     if (_matches.isEmpty) {
+      _clearCurrentMatchAnchor();
       controller.clearSelection();
       return;
     }
 
-    if (preserveKey != null) {
-      final idx = _matches.indexWhere((m) => _matchStableKey(m) == preserveKey);
-      _currentMatchIndex = idx >= 0 ? idx : 0;
-    } else {
-      _currentMatchIndex = 0;
+    _currentMatchIndex =
+        previousStart == null ? 0 : _matchIndexNearest(previousStart);
+    _selectCurrentMatch(scroll: scrollToMatch);
+  }
+
+  /// 离 [position] 最近的匹配下标。专用 anchor 重排后仍靠近原匹配起点，
+  /// 所以按「行距优先、列距次之」落到新匹配表即可。
+  int _matchIndexNearest(CellOffset position) {
+    var best = 0;
+    var bestRow = 1 << 30;
+    var bestCol = 1 << 30;
+    for (var i = 0; i < _matches.length; i++) {
+      final match = _matches[i];
+      final row = (match.y - position.y).abs();
+      final col = (match.x - position.x).abs();
+      if (row < bestRow || (row == bestRow && col < bestCol)) {
+        bestRow = row;
+        bestCol = col;
+        best = i;
+      }
     }
-    _selectCurrentMatch();
+    return best;
   }
 
   void _collectMatchesOnLogicalLine(

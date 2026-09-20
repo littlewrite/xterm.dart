@@ -311,9 +311,15 @@ class TerminalViewState extends State<TerminalView> {
     widget.terminal.addListener(_handleTerminalChange);
     _updateCursorBlink(scheduleSetState: false);
     _initSearchBox();
+    _claimSearchCallbacks();
+    _composingText.addListener(_syncComposingTextToRender);
+  }
+
+  /// `Terminal.onSearch` 是单槽：Tab 重建 / Offstage 切页时，旧 State 的
+  /// dispose 可能晚于新 State 的挂载。每次激活都重新声明所有权。
+  void _claimSearchCallbacks() {
     widget.terminal.onSearch = _showSearch;
     widget.terminal.onCloseSearch = _closeSearch;
-    _composingText.addListener(_syncComposingTextToRender);
   }
 
   void _initSearchBox() {
@@ -328,7 +334,16 @@ class TerminalViewState extends State<TerminalView> {
       scrollToLine: _scrollToLine,
       setShowSearch: (show) => setState(() => _showSearchBox = show),
     );
+    _rebuildSearchBox();
+  }
 
+  /// 只重建搜索框 widget，**保留** [_searchController]（连同匹配表和高亮）。
+  ///
+  /// 上层通常写成 `getCustomSearchDelegate: (c) => MyBox(c)`，闭包每次 build 都是
+  /// 新对象，而 TerminalView 常常待在一个 LayoutBuilder 里 —— 尺寸一变就重建。
+  /// 如果这种情况下也把 controller 换掉，缩放/拖窗口后查找框就变成 0/0、回车失效
+  /// （匹配表跟着被丢掉）。
+  void _rebuildSearchBox() {
     if (widget.getCustomSearchDelegate != null) {
       _searchBox = widget.getCustomSearchDelegate!(_searchController);
     } else {
@@ -378,21 +393,31 @@ class TerminalViewState extends State<TerminalView> {
     }
     if (oldWidget.terminal != widget.terminal) {
       oldWidget.terminal.removeListener(_handleTerminalChange);
-      oldWidget.terminal.onSearch = null;
-      oldWidget.terminal.onCloseSearch = null;
+      // 单槽回调：只有仍指向本 State 时才清空，避免「新 View 已挂上、
+      // 旧 View 稍后 dispose/换绑」把新回调抹掉，表现为查找偶发打不开。
+      if (identical(oldWidget.terminal.onSearch, _showSearch)) {
+        oldWidget.terminal.onSearch = null;
+      }
+      if (identical(oldWidget.terminal.onCloseSearch, _closeSearch)) {
+        oldWidget.terminal.onCloseSearch = null;
+      }
       _lastTerminalCursorBlinkMode = widget.terminal.cursorBlinkMode;
       _wasUsingAltBuffer = widget.terminal.isUsingAltBuffer;
       _resetWheelStepAccumulators();
       widget.terminal.addListener(_handleTerminalChange);
     }
     if (oldWidget.terminal != widget.terminal ||
-        oldWidget.controller != widget.controller ||
-        oldWidget.getCustomSearchDelegate != widget.getCustomSearchDelegate ||
-        oldWidget.theme != widget.theme) {
+        oldWidget.controller != widget.controller) {
+      // 换了终端/控制器：controller 必须重建才能绑定到新的 buffer。
       _initSearchBox();
-      widget.terminal.onSearch = _showSearch;
-      widget.terminal.onCloseSearch = _closeSearch;
+    } else if (oldWidget.getCustomSearchDelegate !=
+            widget.getCustomSearchDelegate ||
+        oldWidget.theme != widget.theme) {
+      // 只是 delegate 闭包/主题变了（父级 LayoutBuilder 重建就会这样）：保留
+      // controller，否则一次缩放就把查找状态清空。
+      _rebuildSearchBox();
     }
+    _claimSearchCallbacks();
     super.didUpdateWidget(oldWidget);
   }
 
@@ -415,14 +440,21 @@ class TerminalViewState extends State<TerminalView> {
     _composingText.removeListener(_syncComposingTextToRender);
     _composingText.dispose();
     widget.terminal.removeListener(_handleTerminalChange);
-    widget.terminal.onSearch = null;
-    widget.terminal.onCloseSearch = null;
+    if (identical(widget.terminal.onSearch, _showSearch)) {
+      widget.terminal.onSearch = null;
+    }
+    if (identical(widget.terminal.onCloseSearch, _closeSearch)) {
+      widget.terminal.onCloseSearch = null;
+    }
     _searchController.detach();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // 活跃 View 每帧巩固所有权，防止短暂的双实例竞态把回调清成 null。
+    _claimSearchCallbacks();
+
     Widget child = Listener(
       onPointerSignal: _handlePointerSignal,
       onPointerPanZoomStart: _handlePointerPanZoomStart,
@@ -592,6 +624,19 @@ class TerminalViewState extends State<TerminalView> {
 
   void closeKeyboard() {
     _customTextEditKey.currentState?.closeKeyboard();
+  }
+
+  /// 直接打开查找框。优先于 [Terminal.showSearch]：后者依赖单槽
+  /// `onSearch` 回调，View 重建竞态下可能短暂为空。
+  void showSearch() {
+    _claimSearchCallbacks();
+    _showSearch();
+  }
+
+  /// 关闭查找框。
+  void closeSearch() {
+    _claimSearchCallbacks();
+    _closeSearch();
   }
 
   void unFocus() {
