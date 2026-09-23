@@ -78,6 +78,16 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// [Buffer.defaultWordSeparators] will be used.
   final Set<int>? wordSeparators;
 
+  /// Whether `CSI 8 ; height ; width t` may resize this terminal.
+  ///
+  /// The sequence asks for a window resize, and only a host that owns its
+  /// window can satisfy it. Defaults to `false`, which is correct for a
+  /// terminal embedded in a layout it does not own (a Flutter widget, for
+  /// example): resizing the grid while the viewport stays the same draws
+  /// everything at the wrong scale until the next layout pass. Only a host
+  /// that really owns its window should opt in.
+  final bool allowCsiWindowResize;
+
   Terminal({
     this.maxLines = 1000,
     this.onBell,
@@ -91,10 +101,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     this.onPrivateOSC,
     this.onClipboard,
     this.reflowEnabled = true,
+    this.allowCsiWindowResize = false,
     this.wordSeparators,
   });
 
-  late final _parser = EscapeParser(this);
+  late final _parser = EscapeParser(
+    this,
+    allowCsiWindowResize: allowCsiWindowResize,
+  );
 
   final _emitter = const EscapeEmitter();
 

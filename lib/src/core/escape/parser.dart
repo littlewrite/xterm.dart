@@ -15,7 +15,14 @@ import 'package:xterm/src/utils/lookup_table.dart';
 class EscapeParser {
   final EscapeHandler handler;
 
-  EscapeParser(this.handler);
+  /// Whether `CSI 8 ; height ; width t` may call [EscapeHandler.resize].
+  ///
+  /// Off by default: the sequence is a window-resize request, and only a host
+  /// that owns its window should opt in. Other window operations in this group
+  /// are always ignored.
+  final bool allowCsiWindowResize;
+
+  EscapeParser(this.handler, {this.allowCsiWindowResize = false});
 
   final _queue = ByteConsumer();
 
@@ -878,6 +885,9 @@ class EscapeParser {
       case 8: // Set Terminal Window Size (in characters)
         // This CSI contains 2 more parameters: width and height.
         if (_csi.params.length != 3) {
+          return;
+        }
+        if (!allowCsiWindowResize) {
           return;
         }
         final rows = _csi.params[1];

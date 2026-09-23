@@ -27,7 +27,10 @@ class TerminalCommand {
 }
 
 class TerminalDebugger with Observable {
-  late final _parser = EscapeParser(_handler);
+  late final _parser = EscapeParser(
+    _handler,
+    allowCsiWindowResize: true,
+  );
 
   late final _handler = _TerminalDebuggerHandler(recordCommand);
 

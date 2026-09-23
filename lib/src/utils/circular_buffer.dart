@@ -257,27 +257,30 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
   }
 
   /// Replaces all elements in the list with [replacement].
+  ///
+  /// The oldest elements are dropped when [replacement] is longer than
+  /// [maxLength]. New items are adopted from index 0, so the whole backing
+  /// array has to be cleared first: dropping only the current live range would
+  /// leave the old tail (or nulls) inside the new live range after a wrap.
+  ///
+  /// Slots are cleared by physical index, not through [_dropChild]: after a
+  /// wrap, [_startIndex] is non-zero, and [_dropChild] would map through it
+  /// and miss the physical tail. [replacement] may also reuse items already
+  /// in this buffer (reflow does); they are detached here and re-attached by
+  /// [push].
   void replaceWith(List<T> replacement) {
-    for (var i = 0; i < _length; i++) {
-      _dropChild(i);
+    for (var i = 0; i < _array.length; i++) {
+      _array[i]?._detach();
+      _array[i] = null;
     }
-
-    var copyStart = 0;
-    if (replacement.length > maxLength) {
-      copyStart = replacement.length - maxLength;
-    }
-
-    for (var i = 0; i < copyStart; i++) {
-      _dropChild(i);
-    }
-
-    final copyLength = replacement.length - copyStart;
-    for (var i = 0; i < copyLength; i++) {
-      _adoptChild(i, replacement[copyStart + i]);
-    }
-
     _startIndex = 0;
-    _length = copyLength;
+    _length = 0;
+
+    final copyStart =
+        replacement.length > maxLength ? replacement.length - maxLength : 0;
+    for (var i = copyStart; i < replacement.length; i++) {
+      push(replacement[i]);
+    }
   }
 
   /// Replaces the element at [index] with [value] and returns the replaced

@@ -207,6 +207,108 @@ void main() {
       expect(terminal.buffer.lines[1].toString(), ' Worl');
       expect(terminal.buffer.lines[2].toString(), 'd');
     });
+
+    test('keeps the line order when reflowing a wrapped buffer', () {
+      final terminal = Terminal(maxLines: 30);
+      for (var i = 0; i < 60; i++) {
+        terminal.write('L${i.toString().padLeft(2, '0')}\r\n');
+      }
+
+      terminal.resize(15, 24);
+
+      final lines = terminal.buffer.lines;
+      expect(lines.length, 30);
+      for (var i = 0; i < 29; i++) {
+        expect(lines[i].toString().trimRight(), 'L${i + 31}');
+      }
+      expect(lines[29].toString().trimRight(), isEmpty);
+    });
+  });
+
+  group('Terminal.windowResizeRequests', () {
+    test('is refused by default', () {
+      final terminal = Terminal();
+
+      terminal.resize(40, 10);
+      terminal.write('\x1b[8;30;100t');
+
+      expect(terminal.viewWidth, 40);
+      expect(terminal.viewHeight, 10);
+    });
+
+    test('defaults the opt-in to off', () {
+      expect(Terminal().allowCsiWindowResize, isFalse);
+    });
+
+    test('is honored when the host opts in', () {
+      final terminal = Terminal(allowCsiWindowResize: true);
+
+      terminal.resize(40, 10);
+      terminal.write('\x1b[8;30;100t');
+
+      expect(terminal.viewWidth, 100);
+      expect(terminal.viewHeight, 30);
+    });
+
+    test('reports the host-owned size to the application', () {
+      // The terminal answers `CSI 18 t` with `CSI 8 ; rows ; cols t` — the very
+      // sequence an application uses to ask for a resize. A granted request is
+      // therefore indistinguishable from a report, which is why the grid may
+      // only ever follow the host.
+      final terminal = Terminal();
+      terminal.resize(40, 10);
+
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      terminal.write('\x1b[18t');
+
+      expect(output, ['\x1b[8;10;40t']);
+    });
+
+    test('an honored request reaches the host as a resize it never asked for',
+        () {
+      // This is the hazard the opt-in buys: nothing on the host side changed,
+      // yet the grid did, and the host is told to follow. A host that forwards
+      // onResize to its pty then holds a pty, a grid and a viewport at three
+      // different sizes until the next real layout.
+      final terminal = Terminal(allowCsiWindowResize: true);
+      terminal.resize(40, 10);
+
+      final requested = <(int, int)>[];
+      terminal.onResize =
+          (width, height, _, __) => requested.add((width, height));
+
+      terminal.write('\x1b[8;30;100t');
+
+      expect(requested, [(100, 30)]);
+    });
+
+    test('no escape sequence moves the grid without the host asking', () {
+      final terminal = Terminal();
+      terminal.resize(40, 10);
+
+      final requested = <(int, int)>[];
+      terminal.onResize =
+          (width, height, _, __) => requested.add((width, height));
+
+      for (final sequence in const [
+        '\x1b[8;30;100t', // Set Terminal Window Size (in characters)
+        '\x1b[4;800;600t', // Set Terminal Window Size in Pixels
+        '\x1b[3;10;10t', // Set Terminal Window Position
+        '\x1b[9t', '\x1b[10t', '\x1b[11t', '\x1b[13t', '\x1b[14t',
+        '\x1b[15t', '\x1b[16t', '\x1b[19t', '\x1b[20t', '\x1b[21t',
+        '\x1b[18t', // Report Terminal Size: a query, not a resize
+        '\x1b[?3h', // DECCOLM: a real xterm switches to 132 columns here
+        '\x1b[?3l',
+      ]) {
+        terminal.write(sequence);
+      }
+
+      expect(requested, isEmpty);
+      expect(terminal.viewWidth, 40);
+      expect(terminal.viewHeight, 10);
+    });
   });
 
   group('Terminal.mouseInput', () {

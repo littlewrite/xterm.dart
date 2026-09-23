@@ -345,7 +345,102 @@ void main() {
       expect(items[5].index, 3);
     });
 
-    test('push when full detaches overwritten item in the same cyclic slot', () {
+    test("replaceWith works", () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(10);
+      cl.pushAll(
+        List<int>.generate(3, (index) => index).map(IndexedValue.new),
+      );
+
+      cl.replaceWith(
+        List<int>.generate(4, (index) => index + 10)
+            .map(IndexedValue.new)
+            .toList(),
+      );
+
+      expect(cl.length, 4);
+      expect(cl[0], 10.indexed);
+      expect(cl[3], 13.indexed);
+    });
+
+    test("replaceWith from a wrapped buffer keeps the order", () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(10);
+      cl.pushAll(
+        List<int>.generate(3, (index) => index).map(IndexedValue.new),
+      );
+      cl.trimStart(3);
+
+      cl.replaceWith(
+        List<int>.generate(4, (index) => index + 10)
+            .map(IndexedValue.new)
+            .toList(),
+      );
+
+      expect(cl.length, 4);
+      expect(cl[0], 10.indexed);
+      expect(cl[1], 11.indexed);
+      expect(cl[2], 12.indexed);
+      expect(cl[3], 13.indexed);
+    });
+
+    test("replaceWith drops the oldest items in overflow", () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(3);
+      cl.pushAll(
+        List<int>.generate(3, (index) => index).map(IndexedValue.new),
+      );
+      cl.trimStart(2);
+
+      cl.replaceWith(
+        List<int>.generate(5, (index) => index + 10)
+            .map(IndexedValue.new)
+            .toList(),
+      );
+
+      expect(cl.length, 3);
+      expect(cl[0], 12.indexed);
+      expect(cl[1], 13.indexed);
+      expect(cl[2], 14.indexed);
+    });
+
+    test("replaceWith detaches the replaced items", () {
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(10);
+      final items = List.generate(3, IndexedValue.new);
+      cl.pushAll(items);
+      cl.trimStart(2);
+
+      final replacement = List.generate(2, IndexedValue.new);
+      cl.replaceWith(replacement);
+
+      expect(items.every((item) => !item.attached), isTrue);
+      expect(replacement.every((item) => item.attached), isTrue);
+      expect(replacement[0].index, 0);
+      expect(replacement[1].index, 1);
+    });
+
+    test("replaceWith reattaches reused items in order", () {
+      // Reflow reuses BufferLine instances: it builds a new list that still
+      // contains the same objects currently sitting in the circular buffer.
+      // replaceWith must detach then re-adopt them, otherwise their indexes
+      // stay at the pre-wrap positions.
+      final cl = IndexAwareCircularBuffer<IndexedValue<int>>(4);
+      final items = List.generate(4, IndexedValue.new);
+      cl.pushAll(items);
+      cl.trimStart(2);
+
+      final reused = [items[3], items[2]];
+      cl.replaceWith(reused);
+
+      expect(items[0].attached, isFalse);
+      expect(items[1].attached, isFalse);
+      expect(reused[0].attached, isTrue);
+      expect(reused[1].attached, isTrue);
+      expect(reused[0].index, 0);
+      expect(reused[1].index, 1);
+      expect(cl[0], same(items[3]));
+      expect(cl[1], same(items[2]));
+    });
+
+    test('push when full detaches overwritten item in the same cyclic slot',
+        () {
       final cl = IndexAwareCircularBuffer<IndexedValue<int>>(3);
       final item0 = IndexedValue(0);
       final item1 = IndexedValue(1);

@@ -9,9 +9,49 @@ import 'parser_test.mocks.dart';
 void main() {
   group('EscapeParser', () {
     test('can parse window manipulation', () {
-      final parser = EscapeParser(MockEscapeHandler());
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler, allowCsiWindowResize: true);
+
       parser.write('\x1b[8;24;80t');
-      verify(parser.handler.resize(80, 24));
+
+      verify(handler.resize(80, 24));
+    });
+
+    test('ignores window manipulation by default', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+
+      parser.write('\x1b[8;24;80t');
+
+      verifyNever(handler.resize(any, any));
+    });
+
+    test('ignores window manipulation with missing parameters', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler, allowCsiWindowResize: true);
+
+      parser.write('\x1b[8t');
+      parser.write('\x1b[8;24t');
+      parser.write('\x1b[8;24;80;5t');
+
+      verifyNever(handler.resize(any, any));
+    });
+
+    test('ignores the other window operations when resize is allowed', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler, allowCsiWindowResize: true);
+
+      // Every other window/screen operation in this group is refused by the
+      // package; CSI 8 is the only opt-in one, so none of them may resize.
+      for (final operation in const [
+        1, 2, 3, 4, 5, 6, 7, //
+        9, 10, 11, 13, 14, 15, 16, //
+        19, 20, 21, 22, 23,
+      ]) {
+        parser.write('\x1b[$operation;24;80t');
+      }
+
+      verifyNever(handler.resize(any, any));
     });
 
     test('maps ESC = to application keypad mode', () {
