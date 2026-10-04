@@ -67,6 +67,18 @@ abstract class EscapeHandler {
 
   void sendCursorPosition();
 
+  /// `CSI ? Ps $ p` —— 报告某个 DEC 私有模式的当前状态。
+  void reportDecMode(int mode);
+
+  /// `CSI > Ps q` —— 报告终端名与版本（XTVERSION）。
+  void sendXtermVersion();
+
+  /// `CSI 14 t` —— 报告窗口的像素尺寸。
+  void sendWindowPixelSize();
+
+  /// `CSI 16 t` —— 报告单个单元格的像素尺寸。
+  void sendCellPixelSize();
+
   void setMargins(int i, [int? bottom]);
 
   void cursorNextLine(int amount);
@@ -214,6 +226,10 @@ abstract class EscapeHandler {
   void unsupportedStyle(int param);
 
   /* OSC */
+
+  /// OSC 8 hyperlink. [params] is the raw parameter list (only `id=` is
+  /// defined by the spec); an empty [uri] closes the current hyperlink.
+  void setHyperlink(String params, String uri);
 
   void setTitle(String name);
 

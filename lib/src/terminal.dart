@@ -11,6 +11,8 @@ import 'package:xterm/src/core/cursor.dart';
 import 'package:xterm/src/core/escape/emitter.dart';
 import 'package:xterm/src/core/escape/handler.dart';
 import 'package:xterm/src/core/escape/parser.dart';
+import 'package:xterm/src/core/hyperlink.dart';
+import 'package:xterm/src/core/hyperlink_text.dart';
 import 'package:xterm/src/core/input/handler.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
@@ -50,6 +52,43 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// program. This is typically caused by user inputs from [textInput],
   /// [keyInput], [mouseInput], or [paste].
   void Function(String data)? onOutput;
+
+  /// Function that is called when the terminal answers a query made by the
+  /// underlying program: device attributes, cursor position, reported size.
+  ///
+  /// Deliberately separate from [onOutput]: a reply is not user input, so a
+  /// caller that routes [onOutput] through input handling (command boundaries,
+  /// input method, suggestion triggers) must not see replies there. When unset
+  /// the reply falls back to [onOutput], so existing callers keep working.
+  void Function(String data)? onTerminalReply;
+
+  void _reply(String data) {
+    (onTerminalReply ?? onOutput)?.call(data);
+  }
+
+  /// Whether this terminal answers capability probes: DECRPM (`CSI ? Ps $ p`),
+  /// XTVERSION (`CSI > Ps q`) and the pixel-size reports (`CSI 14 t` / `16 t`).
+  ///
+  /// The always-on replies — DA1, CPR, character size — are deliberately not
+  /// behind this flag: a terminal that stops answering those reads as broken.
+  /// Defaults to on.
+  bool answerCapabilityQueries = true;
+
+  /// Name and version reported for XTVERSION, so a program can tell which
+  /// terminal it is talking to. Defaults name the emulation core.
+  String terminalName = 'xterm.dart';
+
+  String terminalVersion = '0';
+
+  /// Last cell size in pixels reported by layout. Zero means "not measured
+  /// yet", and the pixel-size queries go unanswered rather than guessing:
+  /// a program sizing images off a wrong number is worse off than one that
+  /// knows the terminal did not answer.
+  int _cellPixelWidth = 0;
+
+  int _cellPixelHeight = 0;
+
+  bool get _hasCellPixelSize => _cellPixelWidth > 0 && _cellPixelHeight > 0;
 
   /// Function that is called when the dimensions of the terminal change.
   void Function(int width, int height, int pixelWidth, int pixelHeight)?
@@ -94,6 +133,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     this.onTitleChange,
     this.onIconChange,
     this.onOutput,
+    this.onTerminalReply,
     this.onResize,
     this.platform = TerminalTargetPlatform.unknown,
     this.inputHandler = defaultInputHandler,
@@ -401,19 +441,38 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// Resize the terminal screen. [newWidth] and [newHeight] should be greater
   /// than 0. Text reflow is currently not implemented and will be avaliable in
   /// the future.
+  ///
+  /// [cellPixelWidth] / [cellPixelHeight] are the size of a single **cell** in
+  /// device pixels — the view's logical cell size times `devicePixelRatio`, so
+  /// Retina and Windows 125% / 150% scaling report real pixels. They are also
+  /// what the pixel-size queries (`CSI 14 t` / `CSI 16 t`) answer, and what
+  /// `onResize` receives as its last two arguments.
   @override
   void resize(
     int newWidth,
     int newHeight, [
-    int? pixelWidth,
-    int? pixelHeight,
+    int? cellPixelWidth,
+    int? cellPixelHeight,
   ]) {
     newWidth = max(newWidth, 1);
     newHeight = max(newHeight, 1);
 
+    if (cellPixelWidth != null &&
+        cellPixelHeight != null &&
+        cellPixelWidth > 0 &&
+        cellPixelHeight > 0) {
+      _cellPixelWidth = cellPixelWidth;
+      _cellPixelHeight = cellPixelHeight;
+    }
+
     final sizeChanged = newWidth != _viewWidth || newHeight != _viewHeight;
 
-    onResize?.call(newWidth, newHeight, pixelWidth ?? 0, pixelHeight ?? 0);
+    onResize?.call(
+      newWidth,
+      newHeight,
+      cellPixelWidth ?? 0,
+      cellPixelHeight ?? 0,
+    );
 
     //we need to resize both buffers so that they are ready when we switch between them
     _altBuffer.resize(_viewWidth, _viewHeight, newWidth, newHeight);
@@ -599,27 +658,95 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void sendPrimaryDeviceAttributes() {
-    onOutput?.call(_emitter.primaryDeviceAttributes());
+    _reply(_emitter.primaryDeviceAttributes());
   }
 
   @override
   void sendSecondaryDeviceAttributes() {
-    onOutput?.call(_emitter.secondaryDeviceAttributes());
+    _reply(_emitter.secondaryDeviceAttributes());
   }
 
   @override
   void sendTertiaryDeviceAttributes() {
-    onOutput?.call(_emitter.tertiaryDeviceAttributes());
+    _reply(_emitter.tertiaryDeviceAttributes());
   }
 
   @override
   void sendOperatingStatus() {
-    onOutput?.call(_emitter.operatingStatus());
+    _reply(_emitter.operatingStatus());
   }
 
   @override
   void sendCursorPosition() {
-    onOutput?.call(_emitter.cursorPosition(_buffer.cursorX, _buffer.cursorY));
+    _reply(_emitter.cursorPosition(_buffer.cursorX, _buffer.cursorY));
+  }
+
+  @override
+  void reportDecMode(int mode) {
+    if (!answerCapabilityQueries) {
+      return;
+    }
+    _reply(_emitter.modeReport(mode, _decModeReportValue(mode)));
+  }
+
+  /// DECRPM 的状态码：0 未识别 / 1 已置位 / 2 已复位。
+  ///
+  /// 只回**能唯一判断**的模式：没实现的回 0，实现了但同一份状态被多个模式共用
+  /// 的也回 0（1000 与 1001 都落到 `MouseMode.upDownScroll`，事后分不出是哪一个
+  /// 被置位 —— 乱回 1 会让程序以为另一个模式也开着）。报成"已复位"更糟：程序
+  /// 会以为发条 `CSI ? Ps h` 就能打开，而本终端根本不认这个模式。
+  int _decModeReportValue(int mode) {
+    switch (mode) {
+      case 7:
+        return autoWrapMode ? 1 : 2;
+      case 9:
+        return _mouseMode == MouseMode.clickOnly ? 1 : 2;
+      case 1002:
+        return _mouseMode == MouseMode.upDownScrollDrag ? 1 : 2;
+      case 1003:
+        return _mouseMode == MouseMode.upDownScrollMove ? 1 : 2;
+      case 1004:
+        return _reportFocusMode ? 1 : 2;
+      case 1005:
+        return _mouseReportMode == MouseReportMode.utf ? 1 : 2;
+      case 1006:
+        return _mouseReportMode == MouseReportMode.sgr ? 1 : 2;
+      case 1015:
+        return _mouseReportMode == MouseReportMode.urxvt ? 1 : 2;
+      case 2004:
+        return _bracketedPasteMode ? 1 : 2;
+      default:
+        return 0;
+    }
+  }
+
+  @override
+  void sendXtermVersion() {
+    if (!answerCapabilityQueries) {
+      return;
+    }
+    _reply(_emitter.xtermVersion(terminalName, terminalVersion));
+  }
+
+  @override
+  void sendWindowPixelSize() {
+    if (!answerCapabilityQueries || !_hasCellPixelSize) {
+      return;
+    }
+    _reply(
+      _emitter.windowPixelSize(
+        viewHeight * _cellPixelHeight,
+        viewWidth * _cellPixelWidth,
+      ),
+    );
+  }
+
+  @override
+  void sendCellPixelSize() {
+    if (!answerCapabilityQueries || !_hasCellPixelSize) {
+      return;
+    }
+    _reply(_emitter.cellPixelSize(_cellPixelHeight, _cellPixelWidth));
   }
 
   @override
@@ -716,7 +843,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void sendSize() {
-    onOutput?.call(_emitter.size(viewHeight, viewWidth));
+    _reply(_emitter.size(viewHeight, viewWidth));
   }
 
   @override
@@ -976,6 +1103,97 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   }
 
   /* OSC */
+
+  /// Hyperlinks opened with `id=`, kept so later rows can reuse the same
+  /// instance and stay one logical link.
+  ///
+  /// Bounded and evicted oldest-first: entries are just a dedupe aid, so losing
+  /// one only costs a fresh object, never correctness.
+  final _hyperlinks = <String, TerminalHyperlink>{};
+
+  static const _maxCachedHyperlinks = 128;
+
+  /// Upper bound for an accepted OSC 8 URI. Longer payloads are dropped
+  /// instead of being attached to cells or kept in the id cache.
+  static const _maxHyperlinkUriLength = 8192;
+
+  @override
+  void setHyperlink(String params, String uri) {
+    if (uri.isEmpty || uri.length > _maxHyperlinkUriLength) {
+      _cursorStyle.hyperlink = null;
+      return;
+    }
+    final id = _parseHyperlinkId(params);
+    // Links without an id are never reused by the terminal, so they skip the
+    // cache entirely — matching xterm's "registered a single time" rule.
+    if (id == null) {
+      final link = TerminalHyperlink(uri: uri);
+      _cursorStyle.hyperlink = link;
+      return;
+    }
+    final key = '$id\u0000$uri';
+    var link = _hyperlinks.remove(key);
+    if (link == null) {
+      link = TerminalHyperlink(uri: uri, id: id);
+      if (_hyperlinks.length >= _maxCachedHyperlinks) {
+        _hyperlinks.remove(_hyperlinks.keys.first);
+      }
+    }
+    _hyperlinks[key] = link;
+    _cursorStyle.hyperlink = link;
+  }
+
+  static String? _parseHyperlinkId(String params) {
+    if (params.isEmpty) {
+      return null;
+    }
+    for (final part in params.split(':')) {
+      if (part.startsWith('id=')) {
+        final id = part.substring(3);
+        return id.isEmpty ? null : id;
+      }
+    }
+    return null;
+  }
+
+  /// Hyperlink attached to [offset] in the active buffer, or null.
+  TerminalHyperlink? hyperlinkAt(CellOffset offset) {
+    final lines = _buffer.lines;
+    if (offset.y < 0 || offset.y >= lines.length) {
+      return null;
+    }
+    final line = lines[offset.y];
+    final explicit = line.getLink(offset.x);
+    if (explicit != null) {
+      return explicit;
+    }
+    // Plain-text URLs (dev servers, test runners) are detected on demand: no
+    // per-cell storage, so nothing can go stale on scroll/reflow/overwrite.
+    final match = terminalUrlMatchAtColumn(
+      line,
+      offset.x,
+      matches: _plainUrlsIn(line),
+    );
+    return match == null ? null : TerminalHyperlink(uri: match.uri);
+  }
+
+  BufferLine? _plainUrlCacheLine;
+  int _plainUrlCacheRevision = -1;
+  List<TerminalUrlMatch> _plainUrlCache = const [];
+
+  /// One-line cache so moving the pointer inside the same URL does not rescan
+  /// the row for every hover event.
+  List<TerminalUrlMatch> _plainUrlsIn(BufferLine line) {
+    if (identical(line, _plainUrlCacheLine) &&
+        line.revision == _plainUrlCacheRevision) {
+      return _plainUrlCache;
+    }
+    final matches = findTerminalUrlsInLine(line);
+    _plainUrlCacheLine = line;
+    _plainUrlCacheRevision = line.revision;
+    _plainUrlCache = matches;
+    return matches;
+  }
 
   @override
   void setTitle(String name) {

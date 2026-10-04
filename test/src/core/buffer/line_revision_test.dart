@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/cursor.dart';
+import 'package:xterm/src/core/hyperlink.dart';
 import 'package:xterm/src/terminal.dart';
 
 /// N4a (perf-plan-v2): BufferLine.revision 与写路径一致性。
@@ -89,6 +90,25 @@ void main() {
       dst.copyFrom(src, 0, 0, 1);
       expect(dst.revision, greaterThan(r));
       expect(dst.getCodePoint(0), 66);
+    });
+
+    test('copyFrom link-only change bumps revision', () {
+      final src = BufferLine(4);
+      final dst = BufferLine(4);
+      // 字符完全相同、只有 OSC 8 链接不同：revision 也得动，否则 painter 的
+      // (line, revision) 缓存会拿旧 span 继续画下划线。
+      src.setCell(
+        0,
+        65,
+        1,
+        CursorStyle(hyperlink: TerminalHyperlink(uri: 'https://example.com')),
+      );
+      dst.setCell(0, 65, 1, CursorStyle.empty);
+      final r = dst.revision;
+
+      dst.copyFrom(src, 0, 0, 1);
+      expect(dst.revision, greaterThan(r));
+      expect(dst.getLink(0)?.uri, 'https://example.com');
     });
 
     test('resize same length is a no-op for revision', () {

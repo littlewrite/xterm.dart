@@ -422,6 +422,34 @@ void main() {
     });
   });
 
+  group('Terminal.titles', () {
+    test('OSC 0 clears the title when the separator is present', () {
+      final titles = <String>[];
+      final terminal = Terminal(onTitleChange: titles.add);
+
+      terminal.write('\x1b]0;Build\x07');
+      terminal.write('\x1b]0;\x07');
+
+      expect(titles, ['Build', '']);
+    });
+
+    test('OSC 0 without a separator is not a title set', () {
+      // `ESC ] 0 BEL` 少了分隔符，按切分规则它不是一条 0 序列 —— 清标题要写
+      // `ESC ] 0 ; BEL`（也就是 `printf '\033]0;\a'`）。
+      final titles = <String>[];
+      final codes = <String>[];
+      final terminal = Terminal(
+        onTitleChange: titles.add,
+        onPrivateOSC: (code, _) => codes.add(code),
+      );
+
+      terminal.write('\x1b]0\x07');
+
+      expect(titles, isEmpty);
+      expect(codes, ['0']);
+    });
+  });
+
   group('Terminal.sgr', () {
     test('does not treat underline subparameters as background colors', () {
       final terminal = Terminal(maxLines: 10);
@@ -474,6 +502,288 @@ void main() {
       expect(selection, 'c');
       expect(payload, 'aGVsbG8=');
       expect(Terminal.decodeOsc52Payload(payload!), 'hello');
+    });
+  });
+
+  group('Terminal capability replies', () {
+    late Terminal terminal;
+    late List<String> replies;
+    late List<String> output;
+
+    setUp(() {
+      output = [];
+      terminal = Terminal(onOutput: output.add);
+      replies = [];
+      terminal.onTerminalReply = replies.add;
+    });
+
+    test('DECRPM reports the live state of an implemented mode', () {
+      terminal.write('\x1b[?2004\$p');
+      expect(replies, ['\x1b[?2004;2\$y']);
+
+      replies.clear();
+      terminal.write('\x1b[?2004h\x1b[?2004\$p');
+      expect(replies, ['\x1b[?2004;1\$y']);
+    });
+
+    test('DECRPM reports an unimplemented mode as not recognized', () {
+      terminal.write('\x1b[?2027\$p');
+      expect(replies, ['\x1b[?2027;0\$y']);
+    });
+
+    test('DECRPM reports mouse tracking modes it can tell apart', () {
+      terminal.write('\x1b[?1002\$p');
+      expect(replies, ['\x1b[?1002;2\$y']);
+
+      replies.clear();
+      terminal.write('\x1b[?1002h\x1b[?1002\$p\x1b[?1003\$p');
+      expect(replies, ['\x1b[?1002;1\$y', '\x1b[?1003;2\$y']);
+
+      replies.clear();
+      // 1000 与 1001 共用 upDownScroll：分不出是哪一个被置位，继续回未识别。
+      terminal.write('\x1b[?1000h\x1b[?1000\$p\x1b[?1001\$p');
+      expect(replies, ['\x1b[?1000;0\$y', '\x1b[?1001;0\$y']);
+    });
+
+    test('DECRPM reports mouse report encoding and autowrap', () {
+      terminal.write('\x1b[?1006\$p');
+      expect(replies, ['\x1b[?1006;2\$y']);
+
+      replies.clear();
+      terminal.write('\x1b[?1006h\x1b[?1006\$p\x1b[?1005\$p\x1b[?1015\$p');
+      expect(replies, [
+        '\x1b[?1006;1\$y',
+        '\x1b[?1005;2\$y',
+        '\x1b[?1015;2\$y',
+      ]);
+
+      replies.clear();
+      terminal.write('\x1b[?7h\x1b[?7\$p');
+      expect(replies, ['\x1b[?7;1\$y']);
+
+      replies.clear();
+      terminal.write('\x1b[?7l\x1b[?7\$p');
+      expect(replies, ['\x1b[?7;2\$y']);
+    });
+
+    test('DECRPM needs the \$ intermediate', () {
+      // Without it this is a different, unknown sequence. Answering would tell
+      // a program it had queried a mode it never asked about.
+      terminal.write('\x1b[?2027p');
+      expect(replies, isEmpty);
+    });
+
+    test('XTVERSION answers with the reported name and version', () {
+      terminal.write('\x1b[>0q');
+      expect(replies, ['\x1bP>|${terminal.terminalName} 0\x1b\\']);
+
+      replies.clear();
+      terminal.terminalName = 'FaTerm';
+      terminal.terminalVersion = '1.0.9';
+      terminal.write('\x1b[>0q');
+      expect(replies, ['\x1bP>|FaTerm 1.0.9\x1b\\']);
+    });
+
+    test('DECSCUSR (CSI Ps SP q) is not mistaken for XTVERSION', () {
+      terminal.write('\x1b[5 q');
+      expect(replies, isEmpty);
+    });
+
+    test('pixel-size queries go unanswered until a cell size is known', () {
+      terminal.resize(40, 10);
+      terminal.write('\x1b[14t\x1b[16t');
+      expect(replies, isEmpty);
+    });
+
+    test('pixel-size queries report the measured cell size', () {
+      terminal.resize(40, 10, 8, 16);
+      terminal.write('\x1b[16t');
+      expect(replies, ['\x1b[6;16;8t']);
+
+      replies.clear();
+      terminal.write('\x1b[14t');
+      expect(replies, ['\x1b[4;160;320t']);
+    });
+
+    test('a zero cell size counts as unmeasured', () {
+      terminal.resize(40, 10, 0, 0);
+      terminal.write('\x1b[16t');
+      expect(replies, isEmpty);
+    });
+
+    test('answerCapabilityQueries=false silences every new reply', () {
+      terminal.resize(40, 10, 8, 16);
+      terminal.answerCapabilityQueries = false;
+
+      terminal.write('\x1b[?2004\$p\x1b[>0q\x1b[14t\x1b[16t');
+
+      expect(replies, isEmpty);
+    });
+
+    test('capability replies never land on the user-input channel', () {
+      terminal.resize(40, 10, 8, 16);
+      terminal.write('\x1b[?2004\$p\x1b[>0q\x1b[14t\x1b[16t');
+
+      expect(replies, hasLength(4));
+      expect(output, isEmpty);
+    });
+  });
+
+  group('Terminal DCS / APC', () {
+    late Terminal terminal;
+    late List<(String, List<String>)> oscCalls;
+
+    setUp(() {
+      oscCalls = [];
+      terminal = Terminal(
+        onPrivateOSC: (code, args) => oscCalls.add((code, args)),
+      );
+    });
+
+    test('tmux passthrough is unwrapped and reaches the OSC handler', () {
+      // Codex inside tmux: the OSC 9 is doubled-ESC wrapped in a DCS.
+      terminal.write('\x1bPtmux;\x1b\x1b]9;Build done\x07\x1b\\');
+
+      expect(oscCalls, hasLength(1));
+      expect(oscCalls.single.$1, '9');
+      expect(oscCalls.single.$2, ['Build done']);
+      // 载荷不能泄漏成屏幕上的文本。
+      expect(terminal.buffer.lines[0].toString(), isEmpty);
+    });
+
+    test('passthrough split across chunks still unwraps', () {
+      terminal.write('\x1bPtmux;\x1b\x1b]9;Build');
+      expect(oscCalls, isEmpty);
+
+      terminal.write(' done\x07\x1b\\');
+
+      expect(oscCalls, hasLength(1));
+      expect(oscCalls.single.$2, ['Build done']);
+      expect(terminal.buffer.lines[0].toString(), isEmpty);
+    });
+
+    test('passthrough with a doubled inner ST still reaches the handler', () {
+      // 内层用 ST 结尾时透传写法是 `ESC ESC \`（每个字面 ESC 双写）：tmux 剥掉
+      // 一个 ESC，外层终端拿到的才是真正的 ST，后面那个单 `ESC \` 才是透传本体
+      // 的结束符。旧状态机会把 `ESC ESC \` 当成结束符，把整条序列截断。
+      terminal.write('\x1bPtmux;\x1b\x1b]9;Build done\x1b\x1b\\\x1b\\');
+
+      expect(oscCalls, hasLength(1));
+      expect(oscCalls.single.$1, '9');
+      expect(oscCalls.single.$2, ['Build done']);
+      expect(terminal.buffer.lines[0].toString(), isEmpty);
+    });
+
+    test('passthrough unwraps an ST-terminated OSC 8 into a real link', () {
+      // 透传里包着 OSC 8 开链/关链，正文夹在中间。内层序列必须比它后面的正文
+      // 先解析，否则文字先写屏、链接后开，一个格子都挂不上。
+      terminal.write(
+        '\x1bPtmux;\x1b\x1b]8;;https://example.com\x1b\x1b\\\x1b\\'
+        'link'
+        '\x1bPtmux;\x1b\x1b]8;;\x1b\x1b\\\x1b\\',
+      );
+
+      final line = terminal.buffer.lines[0];
+      expect(line.toString(), 'link');
+      expect(line.getLink(0)?.uri, 'https://example.com');
+      expect(line.getLink(3)?.uri, 'https://example.com');
+    });
+
+    test('a passthrough does not disturb the text around it', () {
+      terminal.write('A\x1bPtmux;\x1b\x1b]9;hi\x07\x1b\\B');
+
+      expect(terminal.buffer.lines[0].toString(), 'AB');
+      expect(oscCalls, hasLength(1));
+      expect(oscCalls.single.$2, ['hi']);
+    });
+
+    test('other DCS payloads are swallowed instead of printed', () {
+      terminal.write('A\x1bP1\$r0m\x1b\\B');
+
+      expect(terminal.buffer.lines[0].toString(), 'AB');
+    });
+
+    test('APC payloads are swallowed instead of printed', () {
+      // Kitty graphics: unsupported, but the payload must not hit the screen.
+      terminal.write('A\x1b_Ga=T,f=100;AAAA\x1b\\B');
+
+      expect(terminal.buffer.lines[0].toString(), 'AB');
+    });
+
+    test('an over-long DCS is swallowed up to its ST, not printed', () {
+      // 载荷超过收集上限之后不能交还给正文解析：那样剩下的内容会整段喷到屏幕上。
+      terminal.write('A\x1bP${'x' * 20000}still-payload\x1b\\B');
+
+      expect(terminal.buffer.lines[0].toString(), 'AB');
+      expect(oscCalls, isEmpty);
+    });
+
+    test('an unterminated DCS does not stall the terminal forever', () {
+      // 回滚式解析会让残缺的序列挡住后面的输出，所以扫够长度就得放弃。
+      terminal.write('\x1bP${'x' * 20000}');
+      expect(oscCalls, isEmpty);
+
+      // 放弃之后继续吞到 ST：收尾被吞掉，后面的正文要恢复正常。
+      terminal.write('tail\x1b\\after');
+
+      // 会折行，所以在整块缓冲里找。
+      final text = StringBuffer();
+      for (var i = 0; i < terminal.buffer.lines.length; i++) {
+        text.write(terminal.buffer.lines[i]);
+      }
+      expect(text.toString(), contains('after'));
+      expect(text.toString(), isNot(contains('tail')));
+    });
+
+    test('a plain OSC 9 is unaffected', () {
+      terminal.write('\x1b]9;Build done\x07');
+
+      expect(oscCalls, hasLength(1));
+      expect(oscCalls.single.$1, '9');
+      expect(oscCalls.single.$2, ['Build done']);
+    });
+  });
+
+  group('erase at column 0', () {
+    // Regression: `Buffer.eraseLineToCursor()` passes end == 0 when the cursor
+    // sits in column 0, and `eraseRange()` used to read cell `end - 1` without
+    // checking `end > 0`, throwing
+    // `RangeError (index): Index out of range: index must not be negative: -1`.
+    test('EL 1 (erase to the left) in column 0 does not throw', () {
+      final terminal = Terminal();
+      terminal.write('abc\r');
+
+      expect(() => terminal.write('\x1b[1K'), returnsNormally);
+    });
+
+    // The erase span is empty here, so nothing may be erased: the `end > 0`
+    // guard only stops the wide-char look-ahead from reading index -1.
+    test('EL 1 in column 0 keeps a wide char at the line start', () {
+      final terminal = Terminal();
+      terminal.write('切\r\x1b[1K');
+
+      expect(terminal.buffer.lines[0].getText(), '切');
+    });
+
+    test('ED 1 (erase above + left) at the home position does not throw', () {
+      final terminal = Terminal();
+      terminal.write('\x1b[2J\x1b[1;1H');
+
+      expect(() => terminal.write('\x1b[1J'), returnsNormally);
+    });
+
+    test('ECH 0 in column 0 does not throw', () {
+      final terminal = Terminal();
+      terminal.write('abc\r');
+
+      expect(() => terminal.write('\x1b[0X'), returnsNormally);
+    });
+
+    test('EL 1 with the cursor after column 0 still erases to the left', () {
+      final terminal = Terminal();
+      terminal.write('abc\x1b[1K');
+
+      expect(terminal.buffer.lines[0].getText(), '');
     });
   });
 }

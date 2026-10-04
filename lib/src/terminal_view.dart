@@ -8,6 +8,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/hyperlink.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
@@ -37,6 +38,19 @@ enum TerminalShiftEnterMode {
   carriageReturn,
   modifyOtherKeys,
   csiU,
+}
+
+/// How OSC 8 hyperlinks behave on a [TerminalView].
+enum TerminalLinkInteraction {
+  /// Links stay inert (default; keeps the pre-OSC-8 behavior).
+  none,
+
+  /// Desktop: hold ⌘ (macOS) / Ctrl (Windows, Linux) to underline links, show
+  /// a pointer cursor and open them on click.
+  modifier,
+
+  /// Mobile: links are always underlined and a tap opens them.
+  always,
 }
 
 class TerminalView extends StatefulWidget {
@@ -86,6 +100,9 @@ class TerminalView extends StatefulWidget {
     this.onSelectAll,
     this.onPaste,
     this.onImeComposingChanged,
+    this.linkInteraction = TerminalLinkInteraction.none,
+    this.onLinkTap,
+    this.onLinkHover,
   });
 
   /// The underlying terminal that this widget renders.
@@ -241,11 +258,26 @@ class TerminalView extends StatefulWidget {
   /// Called when the platform IME enters or leaves text composition.
   final ValueChanged<bool>? onImeComposingChanged;
 
+  /// How hyperlinks (OSC 8) on screen behave. See [TerminalLinkInteraction].
+  final TerminalLinkInteraction linkInteraction;
+
+  /// Called when a hyperlink is activated by the user (⌘/Ctrl+click on desktop,
+  /// tap on mobile). The view claims the gesture: no PTY mouse event and no
+  /// [onTapUp] callback is emitted for the same gesture.
+  final void Function(TerminalHyperlink link)? onLinkTap;
+
+  /// Called while the pointer moves over the terminal with a hyperlink under
+  /// it. [link] is null when the pointer leaves a link. Only fired for
+  /// [TerminalLinkInteraction.modifier] while the modifier is held, and never
+  /// on mobile.
+  final void Function(TerminalHyperlink? link, Offset localPosition)? onLinkHover;
+
   @override
   State<TerminalView> createState() => TerminalViewState();
 }
 
-class TerminalViewState extends State<TerminalView> {
+class TerminalViewState extends State<TerminalView>
+    with WidgetsBindingObserver {
   late FocusNode _focusNode;
 
   late final ShortcutManager _shortcutManager;
@@ -266,6 +298,16 @@ class TerminalViewState extends State<TerminalView> {
 
   final _composingText = ValueNotifier<String?>(null);
   bool _imeComposing = false;
+
+  /// Mouse cursor override while a link is hovered.
+  final _hoverCursor = ValueNotifier<MouseCursor>(SystemMouseCursors.text);
+
+  TerminalHyperlink? _hoveredLink;
+  TerminalHyperlink? _armedLink;
+  int? _armedLinkLine;
+  int? _lastHoverLineIndex;
+  Offset? _lastHoverLocalPosition;
+  bool _linkModifierPressed = false;
 
   late TerminalController _controller;
 
@@ -313,6 +355,8 @@ class TerminalViewState extends State<TerminalView> {
     _initSearchBox();
     _claimSearchCallbacks();
     _composingText.addListener(_syncComposingTextToRender);
+    _hoverCursor.value = widget.mouseCursor;
+    _syncLinkInteraction();
   }
 
   /// `Terminal.onSearch` 是单槽：Tab 重建 / Offstage 切页时，旧 State 的
@@ -417,6 +461,11 @@ class TerminalViewState extends State<TerminalView> {
       // controller，否则一次缩放就把查找状态清空。
       _rebuildSearchBox();
     }
+    if (oldWidget.linkInteraction != widget.linkInteraction ||
+        oldWidget.mouseCursor != widget.mouseCursor) {
+      _hoverCursor.value = widget.mouseCursor;
+      _syncLinkInteraction();
+    }
     _claimSearchCallbacks();
     super.didUpdateWidget(oldWidget);
   }
@@ -440,6 +489,12 @@ class TerminalViewState extends State<TerminalView> {
     _composingText.removeListener(_syncComposingTextToRender);
     _composingText.dispose();
     widget.terminal.removeListener(_handleTerminalChange);
+    if (_linkModifierListenerInstalled) {
+      HardwareKeyboard.instance.removeHandler(_handleHardwareKey);
+      WidgetsBinding.instance.removeObserver(this);
+      _linkModifierListenerInstalled = false;
+    }
+    _hoverCursor.dispose();
     if (identical(widget.terminal.onSearch, _showSearch)) {
       widget.terminal.onSearch = null;
     }
@@ -479,6 +534,12 @@ class TerminalViewState extends State<TerminalView> {
                   textSize,
                   cursorBlinkVisible: _cursorBlinkVisible.value,
                   paintCursor: false,
+                  underlineAllWebLinks: widget.linkInteraction ==
+                      TerminalLinkInteraction.always,
+                  underlineFileLinks: widget.linkInteraction ==
+                      TerminalLinkInteraction.modifier,
+                  armedLink: _armedLink,
+                  armedLinkLine: _armedLinkLine,
                 );
 
                 return Stack(
@@ -586,12 +647,29 @@ class TerminalViewState extends State<TerminalView> {
           widget.onSecondaryTapDown != null ? _onSecondaryTapDown : null,
       onSecondaryTapUp:
           widget.onSecondaryTapUp != null ? _onSecondaryTapUp : null,
+      linkAtPosition: widget.linkInteraction == TerminalLinkInteraction.none
+          ? null
+          : _linkAtPositionForTap,
+      onLinkTap: widget.onLinkTap,
       readOnly: widget.readOnly,
       scrollController: _scrollController,
       child: child,
     );
 
-    child = MouseRegion(cursor: widget.mouseCursor, child: child);
+    child = ValueListenableBuilder<MouseCursor>(
+      valueListenable: _hoverCursor,
+      builder: (context, cursor, child) => MouseRegion(
+        cursor: cursor,
+        onHover: widget.linkInteraction == TerminalLinkInteraction.none
+            ? null
+            : _handleHover,
+        onExit: widget.linkInteraction == TerminalLinkInteraction.none
+            ? null
+            : _handleHoverExit,
+        child: child,
+      ),
+      child: child,
+    );
 
     child = Container(
       color: widget.theme.background.withOpacity(widget.backgroundOpacity),
@@ -697,12 +775,190 @@ class TerminalViewState extends State<TerminalView> {
       _resetWheelStepAccumulators();
     }
 
+    // Output can overwrite the cell under a stationary pointer (for example a
+    // link streamed into a visible pane). Re-evaluate once per write batch
+    // instead of polling; links are read straight from the cells.
+    final hoverPosition = _lastHoverLocalPosition;
+    if (hoverPosition != null) {
+      _updateHover(hoverPosition);
+    }
+
     final terminalBlinkMode = widget.terminal.cursorBlinkMode;
     if (terminalBlinkMode == _lastTerminalCursorBlinkMode) {
       return;
     }
     _lastTerminalCursorBlinkMode = terminalBlinkMode;
     _updateCursorBlink(resetVisible: true);
+  }
+
+  /// Registers/unregisters the link modifier listener and refreshes the link
+  /// affordance after [TerminalView.linkInteraction] or cursor changes.
+  void _syncLinkInteraction() {
+    final wantsModifierListener =
+        widget.linkInteraction == TerminalLinkInteraction.modifier;
+    if (wantsModifierListener != _linkModifierListenerInstalled) {
+      _linkModifierListenerInstalled = wantsModifierListener;
+      if (wantsModifierListener) {
+        HardwareKeyboard.instance.addHandler(_handleHardwareKey);
+        WidgetsBinding.instance.addObserver(this);
+      } else {
+        HardwareKeyboard.instance.removeHandler(_handleHardwareKey);
+        WidgetsBinding.instance.removeObserver(this);
+      }
+    }
+    _linkModifierPressed =
+        wantsModifierListener && _isLinkModifierPressed();
+    _resetLinkHover();
+  }
+
+  bool _linkModifierListenerInstalled = false;
+
+  /// True while links should be underlined and hoverable.
+  bool get _linkAffordanceActive {
+    switch (widget.linkInteraction) {
+      case TerminalLinkInteraction.none:
+        return false;
+      case TerminalLinkInteraction.always:
+        return true;
+      case TerminalLinkInteraction.modifier:
+        return _linkModifierPressed;
+    }
+  }
+
+  bool _handleHardwareKey(KeyEvent event) {
+    final pressed = _isLinkModifierPressed();
+    if (pressed == _linkModifierPressed) {
+      return false;
+    }
+    _linkModifierPressed = pressed;
+    final hoverPosition = _lastHoverLocalPosition;
+    if (hoverPosition != null) {
+      _updateHover(hoverPosition);
+    } else {
+      _syncArmedLink();
+    }
+    return false;
+  }
+
+  bool _isLinkModifierPressed() {
+    final keyboard = HardwareKeyboard.instance;
+    return defaultTargetPlatform == TargetPlatform.macOS
+        ? keyboard.isMetaPressed
+        : keyboard.isControlPressed;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      return;
+    }
+    // Key-up is not guaranteed when the window loses focus (⌘+Tab), so drop
+    // the affordance instead of leaving every link underlined.
+    if (_linkModifierPressed) {
+      _linkModifierPressed = false;
+    }
+    _resetLinkHover();
+  }
+
+  ({TerminalHyperlink? link, int line})? _hitTestLink(Offset localPosition) {
+    final render = _viewportKey.currentContext?.findRenderObject();
+    if (render is! RenderTerminal) {
+      return null;
+    }
+    final cell = render.getCellOffset(localPosition);
+    return (link: widget.terminal.hyperlinkAt(cell), line: cell.y);
+  }
+
+  void _handleHover(PointerHoverEvent event) {
+    _lastHoverLocalPosition = event.localPosition;
+    if (widget.linkInteraction != TerminalLinkInteraction.modifier) {
+      return;
+    }
+    if (!_linkAffordanceActive) {
+      // iTerm2 semantics: web links only react to modifier + hover, so an
+      // unmodified hover never arms anything. Drop a stale arm if one exists.
+      if (_hoveredLink != null) {
+        _hoveredLink = null;
+        _syncArmedLink();
+      }
+      return;
+    }
+    _updateHover(event.localPosition);
+  }
+
+  void _handleHoverExit(PointerExitEvent event) {
+    _lastHoverLocalPosition = null;
+    _resetLinkHover();
+  }
+
+  void _updateHover(Offset localPosition) {
+    final hit = _hitTestLink(localPosition);
+    final link = hit?.link;
+    if (hit != null) {
+      _lastHoverLineIndex = hit.line;
+    }
+    // Value equality: plain-text URLs produce a fresh object per hit test, and
+    // moving inside the same URL must not re-fire the hover callback.
+    if (link != _hoveredLink) {
+      _hoveredLink = link;
+    }
+    _syncArmedLink();
+  }
+
+  /// Recomputes the armed link (modifier + pointer) and reports changes.
+  void _syncArmedLink() {
+    final armed = widget.linkInteraction == TerminalLinkInteraction.modifier &&
+            _linkAffordanceActive
+        ? _hoveredLink
+        : null;
+    // `TerminalHyperlink` compares by value, and plain-text URLs are rebuilt on
+    // every hit test: the same URL on another row is `==` to the armed one but
+    // the row changed, so compare the row as well — otherwise the underline
+    // highlight (and the render's armed line) stays on the row we left.
+    final armedLine = armed == null ? null : _lastHoverLineIndex;
+    if (armed == _armedLink && armedLine == _armedLinkLine) {
+      return;
+    }
+    _armedLink = armed;
+    _armedLinkLine = armedLine;
+    // Push straight into the render object: hover must not rebuild the
+    // viewport widget subtree (Stack, cursor overlay, gesture handler…),
+    // only repaint.
+    final render = _viewportKey.currentContext?.findRenderObject();
+    if (render is RenderTerminal) {
+      render.armedLink = armed;
+      render.armedLinkLine = _armedLinkLine;
+    }
+    _hoverCursor.value =
+        armed == null ? widget.mouseCursor : SystemMouseCursors.click;
+    widget.onLinkHover?.call(armed, _lastHoverLocalPosition ?? Offset.zero);
+  }
+
+  void _resetLinkHover() {
+    if (_hoveredLink == null && _armedLink == null) {
+      return;
+    }
+    _hoveredLink = null;
+    _syncArmedLink();
+  }
+
+  /// Claims the hyperlink under [localPosition] for a tap, if any is active.
+  TerminalHyperlink? _linkAtPositionForTap(Offset localPosition) {
+    // Desktop requires the modifier; mobile taps are always active.
+    if (!_linkAffordanceActive) {
+      return null;
+    }
+    final link = _hitTestLink(localPosition)?.link;
+    if (link == null) {
+      return null;
+    }
+    if (widget.linkInteraction == TerminalLinkInteraction.always &&
+        !link.hasVisibleAffordance) {
+      // Mobile: a file:// marker points at the remote host's disk, which the
+      // phone cannot open — out of scope for now.
+      return null;
+    }
+    return link;
   }
 
   void _handleFocusChange() {
@@ -1364,6 +1620,10 @@ class TerminalViewState extends State<TerminalView> {
     double textSize, {
     required bool cursorBlinkVisible,
     required bool paintCursor,
+    required bool underlineAllWebLinks,
+    required bool underlineFileLinks,
+    required TerminalHyperlink? armedLink,
+    required int? armedLinkLine,
   }) {
     final viewport = _TerminalView(
       key: _viewportKey,
@@ -1384,6 +1644,10 @@ class TerminalViewState extends State<TerminalView> {
       devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
       paintCursor: paintCursor,
       paintSelectionHandles: widget.showToolbar,
+      underlineAllWebLinks: underlineAllWebLinks,
+      underlineFileLinks: underlineFileLinks,
+      armedLink: armedLink,
+      armedLinkLine: armedLinkLine,
       onEditableRect: _hasInputConnection &&
               !widget.hardwareKeyboardOnly &&
               !widget.readOnly
@@ -1415,6 +1679,10 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.devicePixelRatio,
     required this.paintCursor,
     required this.paintSelectionHandles,
+    required this.underlineAllWebLinks,
+    required this.underlineFileLinks,
+    required this.armedLink,
+    required this.armedLinkLine,
     this.onEditableRect,
   });
 
@@ -1452,11 +1720,19 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final bool paintSelectionHandles;
 
+  final bool underlineAllWebLinks;
+
+  final bool underlineFileLinks;
+
+  final TerminalHyperlink? armedLink;
+
+  final int? armedLinkLine;
+
   final EditableRectCallback? onEditableRect;
 
   @override
   RenderTerminal createRenderObject(BuildContext context) {
-    return RenderTerminal(
+    final render = RenderTerminal(
       terminal: terminal,
       controller: controller,
       offset: offset,
@@ -1476,6 +1752,12 @@ class _TerminalView extends LeafRenderObjectWidget {
       paintSelectionHandles: paintSelectionHandles,
       onEditableRect: onEditableRect,
     );
+    render
+      ..underlineAllWebLinks = underlineAllWebLinks
+      ..underlineFileLinks = underlineFileLinks
+      ..armedLink = armedLink
+      ..armedLinkLine = armedLinkLine;
+    return render;
   }
 
   @override
@@ -1498,6 +1780,10 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..devicePixelRatio = devicePixelRatio
       ..paintCursor = paintCursor
       ..paintSelectionHandles = paintSelectionHandles
+      ..underlineAllWebLinks = underlineAllWebLinks
+      ..underlineFileLinks = underlineFileLinks
+      ..armedLink = armedLink
+      ..armedLinkLine = armedLinkLine
       ..onEditableRect = onEditableRect;
   }
 }

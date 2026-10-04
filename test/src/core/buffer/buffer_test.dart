@@ -396,4 +396,57 @@ void main() {
       expect(terminal.buffer.lines[2].toString(), '');
     });
   });
+
+  group('Buffer.writeChar wide characters', () {
+    test('a wide char at the right margin wraps instead of being split', () {
+      final terminal = Terminal();
+      terminal.resize(4, 3);
+      terminal.write('abc切');
+
+      expect(terminal.buffer.lines[0].toString(), 'abc');
+      // Nothing was written into the last column, and the line is soft-wrapped.
+      expect(terminal.buffer.lines[0].getWidth(3), 0);
+      expect(terminal.buffer.lines[0].isWrapped, isTrue);
+
+      expect(terminal.buffer.lines[1].toString(), '切');
+      expect(terminal.buffer.lines[1].getWidth(0), 2);
+      expect(terminal.buffer.cursorX, 2);
+      expect(terminal.buffer.cursorY, 1);
+    });
+
+    test('a wide char that exactly fills the last two cells does not wrap', () {
+      final terminal = Terminal();
+      terminal.resize(4, 3);
+      terminal.write('ab切');
+
+      expect(terminal.buffer.lines[0].getWidth(2), 2);
+      expect(terminal.buffer.lines[0].isWrapped, isFalse);
+      expect(terminal.buffer.lines[1].toString(), '');
+      expect(terminal.buffer.cursorY, 0);
+    });
+
+    test('overwriting the right half clears the left half', () {
+      final terminal = Terminal();
+      terminal.resize(4, 3);
+      terminal.write('切');
+      terminal.write('\bx');
+
+      final line = terminal.buffer.lines[0];
+      expect(line.getWidth(0), 0, reason: 'left half must not survive');
+      expect(line.getCodePoint(0), 0);
+      expect(line.getCodePoint(1), 'x'.codeUnitAt(0));
+    });
+
+    test('overwriting the right half with a wide char clears the left half', () {
+      final terminal = Terminal();
+      terminal.resize(4, 3);
+      terminal.write('切');
+      terminal.write('\x1b[1D好');
+
+      final line = terminal.buffer.lines[0];
+      expect(line.getWidth(0), 0);
+      expect(line.getCodePoint(1), '好'.codeUnitAt(0));
+      expect(line.getWidth(1), 2);
+    });
+  });
 }

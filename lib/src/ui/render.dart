@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:xterm/src/core/buffer/buffer.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/hyperlink.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_block.dart';
@@ -184,6 +185,9 @@ class RenderTerminal extends RenderBox
     // devicePixelRatio also clears line pictures inside painter setter.
     invalidateChrome();
     _markComposingLayerNeedsPaint();
+    // 单元格的逻辑尺寸不随缩放变，网格不用重算；但 `CSI 14 t` / `CSI 16 t`
+    // 报的是设备像素 —— 拖到另一块屏、改系统缩放之后要重新通知一次。
+    _resizeTerminalIfNeeded();
   }
 
   FocusNode _focusNode;
@@ -260,6 +264,39 @@ class RenderTerminal extends RenderBox
     if (value == _paintSelectionHandles) return;
     _paintSelectionHandles = value;
     invalidateSelection();
+  }
+
+  /// Mobile: every web link is underlined without a pointer.
+  bool _underlineAllWebLinks = false;
+  set underlineAllWebLinks(bool value) {
+    if (value == _underlineAllWebLinks) return;
+    _underlineAllWebLinks = value;
+    markNeedsPaint();
+  }
+
+  /// Desktop: links with a non-web scheme stay dashed all the time.
+  bool _underlineFileLinks = false;
+  set underlineFileLinks(bool value) {
+    if (value == _underlineFileLinks) return;
+    _underlineFileLinks = value;
+    markNeedsPaint();
+  }
+
+  /// Link under the pointer while the modifier is held; only this range turns
+  /// solid and is clickable.
+  TerminalHyperlink? _armedLink;
+  set armedLink(TerminalHyperlink? value) {
+    if (value == _armedLink) return;
+    _armedLink = value;
+    markNeedsPaint();
+  }
+
+  /// Row of [armedLink], so other rows skip the plain-URL text scan.
+  int? _armedLinkLine;
+  set armedLinkLine(int? value) {
+    if (value == _armedLinkLine) return;
+    _armedLinkLine = value;
+    markNeedsPaint();
   }
 
   EditableRectCallback? _onEditableRect;
@@ -994,11 +1031,15 @@ class RenderTerminal extends RenderBox
   /// Notify the underlying terminal that the viewport size has changed.
   void _resizeTerminalIfNeeded() {
     if (_autoResize && _viewportSize != null) {
+      // cellSize 是**逻辑**像素（CharMetricsCache 量的就是这个），而程序通过
+      // `CSI 14 t` / `CSI 16 t` 问的是设备像素。乘上 devicePixelRatio，macOS 的
+      // Retina 和 Windows 的 125% / 150% 缩放才报得出屏幕上真实的单元格大小。
+      final ratio = _painter.devicePixelRatio;
       _terminal.resize(
         _viewportSize!.width,
         _viewportSize!.height,
-        _painter.cellSize.width.round(),
-        _painter.cellSize.height.round(),
+        (_painter.cellSize.width * ratio).round(),
+        (_painter.cellSize.height * ratio).round(),
       );
     }
   }
@@ -1171,6 +1212,16 @@ class RenderTerminal extends RenderBox
         highlightRevision: source?.revisionForLine(line, i) ?? 0,
         highlightSource: source,
         highlightLineIndex: i,
+      );
+      _painter.paintLinkDecorations(
+        canvas,
+        lineOffset,
+        line,
+        lineIndex: i,
+        armedLineIndex: _armedLinkLine,
+        underlineAllWebLinks: _underlineAllWebLinks,
+        underlineFileLinks: _underlineFileLinks,
+        armedLink: _armedLink,
       );
       if (selection != null && _selectionIntersectsLine(selection, i)) {
         _paintSelectionRectOnLine(canvas, lineOffset, i, selection);

@@ -1,4 +1,5 @@
 import 'package:xterm/src/core/cell.dart';
+import 'package:xterm/src/core/hyperlink.dart';
 
 class CursorStyle {
   int foreground;
@@ -7,7 +8,18 @@ class CursorStyle {
 
   int attrs;
 
-  CursorStyle({this.foreground = 0, this.background = 0, this.attrs = 0});
+  /// Hyperlink currently opened by OSC 8, or null when no link is active.
+  ///
+  /// Like SGR attributes this is part of the cursor state and is copied into
+  /// every cell written until the program closes or replaces the link.
+  TerminalHyperlink? hyperlink;
+
+  CursorStyle({
+    this.foreground = 0,
+    this.background = 0,
+    this.attrs = 0,
+    this.hyperlink,
+  });
 
   static final empty = CursorStyle();
 
@@ -125,6 +137,7 @@ class CursorStyle {
     foreground = 0;
     background = 0;
     attrs = 0;
+    // SGR reset must not close an OSC 8 link: only `OSC 8;;` does.
   }
 }
 

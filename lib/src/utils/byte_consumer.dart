@@ -14,12 +14,30 @@ class ByteConsumer {
 
   void add(String data) {
     if (data.isEmpty) return;
-    final runes = data.runes.toList(growable: false);
+    // 允许增长：[prepend] 要在当前读取位置插入字节，块必须能 insertAll。
+    final runes = data.runes.toList();
     // print("term:【${formatIntList(runes)}】"); // TODO
     // for (var i = 0; i < _queue.length; i++) {
     //   print("_queue get runes [[${formatIntList(_queue.elementAt(i))}]]");
     // }
     _queue.addLast(runes);
+    _length += runes.length;
+  }
+
+  /// 把 [data] 插到当前读取位置之前，下一次 [consume] 会先返回它。
+  ///
+  /// 用在 tmux 透传上：还原出的内层序列必须比同一批里它后面的字节先解析，
+  /// 否则正文先写屏、链接后开，文字就挂不上链接（追加到队尾做不到这一点）。
+  /// 插进当前块而 `_currentOffset` 不动，字节数只加进未消费的 [_length]，
+  /// [rollback] 的记账不受影响。
+  void prepend(String data) {
+    if (data.isEmpty) return;
+    final runes = data.runes.toList(growable: false);
+    if (_queue.isEmpty) {
+      _queue.addFirst(runes);
+    } else {
+      _queue.first.insertAll(_currentOffset, runes);
+    }
     _length += runes.length;
   }
 

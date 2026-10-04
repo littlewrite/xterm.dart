@@ -249,6 +249,26 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void reportDecMode(int mode) {
+    onCommand('reportDecMode($mode)');
+  }
+
+  @override
+  void sendXtermVersion() {
+    onCommand('sendXtermVersion');
+  }
+
+  @override
+  void sendWindowPixelSize() {
+    onCommand('sendWindowPixelSize');
+  }
+
+  @override
+  void sendCellPixelSize() {
+    onCommand('sendCellPixelSize');
+  }
+
+  @override
   void setMargins(int i, [int? bottom]) {
     onCommand('setMargins($i, $bottom)');
   }
@@ -600,6 +620,11 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   /* OSC */
+
+  @override
+  void setHyperlink(String params, String uri) {
+    onCommand('setHyperlink($params, $uri)');
+  }
 
   @override
   void setTitle(String name) {

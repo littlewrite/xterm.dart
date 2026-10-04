@@ -54,8 +54,7 @@ class TerminalStyle {
     return TerminalStyle(
       fontSize: textStyle.fontSize ?? _kDefaultFontSize,
       height: textStyle.height ?? _kDefaultHeight,
-      fontFamily:
-          textStyle.fontFamily ??
+      fontFamily: textStyle.fontFamily ??
           textStyle.fontFamilyFallback?.first ??
           _kDefaultFontFamily,
       fontFamilyFallback:
@@ -64,6 +63,10 @@ class TerminalStyle {
     );
   }
 
+  // NOTE: every field below is part of [operator ==] / [hashCode]. Adding a
+  // field means adding it there too (and to _CharMetricsKey in char_metrics.dart),
+  // otherwise two visually different styles compare equal and stale painted
+  // output is reused.
   final double fontSize;
 
   final double height;
@@ -109,5 +112,34 @@ class TerminalStyle {
       fontFamilyFallback: fontFamilyFallback ?? this.fontFamilyFallback,
       letterSpacing: letterSpacing ?? this.letterSpacing,
     );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is TerminalStyle &&
+            fontSize == other.fontSize &&
+            height == other.height &&
+            fontFamily == other.fontFamily &&
+            letterSpacing == other.letterSpacing &&
+            _listEquals(fontFamilyFallback, other.fontFamilyFallback);
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        fontSize,
+        height,
+        fontFamily,
+        letterSpacing,
+        Object.hashAll(fontFamilyFallback),
+      );
+
+  static bool _listEquals(List<String> a, List<String> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 }

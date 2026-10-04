@@ -117,7 +117,7 @@ void main() {
     recorder.endRecording().dispose();
   });
 
-  test('TerminalPainter reuses line pictures across fractional DPR phases', () {
+  test('TerminalPainter reuses one line picture across fractional offsets', () {
     final painter = TerminalPainter(
       theme: TerminalThemes.defaultTheme,
       textStyle: const TerminalStyle(),
@@ -128,13 +128,15 @@ void main() {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
 
+    // Recording is translation-invariant: a single picture per line is
+    // reused for every sub-pixel offset (no per-phase duplicates).
     for (var pass = 0; pass < 2; pass++) {
       for (var y = 0; y < 5; y++) {
         painter.paintLine(canvas, Offset(0, y.toDouble()), line);
       }
     }
 
-    expect(painter.linePictureBuildCount, 4);
+    expect(painter.linePictureBuildCount, 1);
     recorder.endRecording().dispose();
   });
 

@@ -26,6 +26,8 @@ class TerminalGestureHandler extends StatefulWidget {
     this.onSecondaryTapUp,
     this.onTertiaryTapDown,
     this.onTertiaryTapUp,
+    this.linkAtPosition,
+    this.onLinkTap,
     this.readOnly = false,
     this.viewOffset = Offset.zero,
     this.showToolbar = true,
@@ -43,6 +45,13 @@ class TerminalGestureHandler extends StatefulWidget {
   final GestureTapUpCallback? onSecondaryTapUp;
   final GestureTapDownCallback? onTertiaryTapDown;
   final GestureTapUpCallback? onTertiaryTapUp;
+
+  /// Hyperlink that should capture a tap at [localPosition], or null.
+  final TerminalHyperlink? Function(Offset localPosition)? linkAtPosition;
+
+  /// Invoked instead of [onTapUp] when a tap activates a hyperlink.
+  final void Function(TerminalHyperlink link)? onLinkTap;
+
   final bool readOnly;
   final Offset viewOffset;
   final bool showToolbar;
@@ -87,6 +96,11 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   bool _suppressNextTapUp = false;
   bool _mouseDragWasHandledByTerminal = false;
   bool _mouseDownWasHandledByTerminal = false;
+  TerminalHyperlink? _claimedLink;
+  Offset? _linkPointerDownPosition;
+  bool _linkSuppressedPtyDown = false;
+  /// [_handleTapCancel] 把按下补发给了程序：松手时要补上对应的抬起。
+  bool _linkPressHandedBackToPty = false;
   Timer? _autoScrollTimer;
   Offset? _pendingAutoScrollPosition;
 
@@ -175,6 +189,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         child: content,
         onTapUp: onTapUp,
         onTapDown: onTapDown,
+        onTapCancel: _handleTapCancel,
         onSecondaryTapDown: onSecondaryTapDown,
         onSecondaryTapUp: onSecondaryTapUp,
         onTertiaryTapDown: widget.onTertiaryTapDown,
@@ -310,6 +325,25 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   void _onPointerUp(PointerUpEvent event) {
+    // 链接手势中途变成拖动、按下已经被补发过一次：抬起必须跟着补，否则程序
+    // 里的鼠标键会一直按着（触摸拖拽走的就是这条路，_onPointerUp 的鼠标分支
+    // 根本不会执行）。
+    if (_linkPressHandedBackToPty) {
+      _linkPressHandedBackToPty = false;
+      renderTerminal.mouseEvent(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.up,
+        event.localPosition,
+      );
+      _suppressNextTapUp = true;
+      _resetMouseSelectionState();
+      _trackedPointers.remove(event.pointer);
+      if (_trackedPointers.length < 2) {
+        _zoomInitialDistance = null;
+      }
+      return;
+    }
+
     if (_isPointerKindMouse(event.kind)) {
       if (_mouseDragWasHandledByTerminal) {
         renderTerminal.mouseEvent(
@@ -351,6 +385,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   void _onPointerCancel(PointerCancelEvent event) {
     _trackedPointers.remove(event.pointer);
     _zoomInitialDistance = null;
+    // 按下已经补发给程序，但这次手势再也不会收到抬起：标记清掉，别让它
+    // 挂到下一次抬手上去。
+    _linkPressHandedBackToPty = false;
     _resetInteractionState();
   }
 
@@ -856,6 +893,16 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   }
 
   void onTapUp(TapUpDetails details) {
+    final claimedLink = _claimedLink;
+    if (claimedLink != null) {
+      _claimedLink = null;
+      _linkPointerDownPosition = null;
+      _linkSuppressedPtyDown = false;
+      _resetMouseSelectionState();
+      widget.onLinkTap?.call(claimedLink);
+      return;
+    }
+
     if (_suppressNextTapUp) {
       _suppressNextTapUp = false;
       _resetMouseSelectionState();
@@ -904,6 +951,16 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   void onTapDown(TapDownDetails details) {
     _suppressNextTapUp = false;
 
+    // Hyperlinks win over both PTY mouse reporting and the app's tap handling:
+    // the down/up pair is withheld here and only the tap-up opens the link.
+    final link = widget.linkAtPosition?.call(details.localPosition);
+    if (link != null) {
+      _claimedLink = link;
+      _linkPointerDownPosition = details.localPosition;
+      _linkSuppressedPtyDown = true;
+      return;
+    }
+
     if (_isPointerKindMouse(details.kind)) {
       // 鼠标状态已在 _onPointerDown 中设置
       // 如果此时已有选区且在选区外，先清除选区以便重新选择
@@ -932,6 +989,34 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       if (_isPointerKindMouse(details.kind)) {
         _mouseDownWasHandledByTerminal = handled;
       }
+    }
+  }
+
+  /// A claimed link gesture turned into a drag: give the pointer-down back to
+  /// the program so mouse-tracking TUIs do not see motion without a press.
+  void _handleTapCancel() {
+    final hadClaim = _claimedLink != null;
+    _claimedLink = null;
+    final position = _linkPointerDownPosition;
+    _linkPointerDownPosition = null;
+    final suppressed = _linkSuppressedPtyDown;
+    _linkSuppressedPtyDown = false;
+    if (!hadClaim || !suppressed || position == null) {
+      return;
+    }
+    if (!_shouldSendTapEvent ||
+        _shouldForceLocalMouseSelection ||
+        _isNearSelection(position)) {
+      return;
+    }
+    final handled = renderTerminal.mouseEvent(
+      TerminalMouseButton.left,
+      TerminalMouseButtonState.down,
+      position,
+    );
+    if (handled) {
+      // 记账：松手时补上抬起（见 [_onPointerUp]）。
+      _linkPressHandedBackToPty = true;
     }
   }
 

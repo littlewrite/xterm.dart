@@ -40,6 +40,15 @@ class EscapeParser {
 
   void _process() {
     while (_queue.isNotEmpty) {
+      // 一条字符串序列因为太长被放弃之后，剩下的载荷要一直吞到 ST 为止：
+      // 交还给正文解析的话，大载荷会整段喷到屏幕上（见 [_maxStringScan]）。
+      if (_discardingString) {
+        if (!_discardStringUntilSt()) {
+          return;
+        }
+        continue;
+      }
+
       tokenBegin = _queue.totalConsumed;
       final char = _queue.consume();
 
@@ -107,7 +116,8 @@ class EscapeParser {
     'E'.charCode: _escHandleNextLine,
     'H'.charCode: _escHandleTabSet,
     'M'.charCode: _escHandleReverseIndex,
-    // 'P'.charCode: _unsupportedHandler, // Sixel
+    'P'.charCode: _escHandleDcs,
+    '_'.charCode: _escHandleApc,
     // 'c'.charCode: _unsupportedHandler,
     // '#'.charCode: _unsupportedHandler,
     '('.charCode: _escHandleDesignateCharset0, //  SCS - G0
@@ -227,7 +237,7 @@ class EscapeParser {
 
   /// The last parsed [_Csi]. This is a mutable singletion by design to reduce
   /// object allocations.
-  final _csi = _Csi(finalByte: 0, params: [], separators: []);
+  final _csi = _Csi(finalByte: 0, params: [], separators: [], intermediates: []);
 
   /// Parse a CSI from the head of the queue. Return false if the CSI isn't
   /// complete. After a CSI is successfully parsed, [_csi] is updated.
@@ -238,6 +248,7 @@ class EscapeParser {
 
     _csi.params.clear();
     _csi.separators.clear();
+    _csi.intermediates.clear();
 
     // test whether the csi is a `CSI ? Ps ...` or `CSI Ps ...`
     final prefix = _queue.peek();
@@ -276,7 +287,7 @@ class EscapeParser {
       }
 
       if (char > Ascii.NULL && char < Ascii.num0) {
-        // intermediates.add(char);
+        _csi.intermediates.add(char);
         continue;
       }
 
@@ -302,6 +313,8 @@ class EscapeParser {
     'l'.codeUnitAt(0): _csiHandleMode,
     'm'.codeUnitAt(0): _csiHandleSgrOrXtermModifyOtherKeys,
     'n'.codeUnitAt(0): _csiHandleDeviceStatusReport,
+    'p'.codeUnitAt(0): _csiHandleRequestMode,
+    'q'.codeUnitAt(0): _csiHandleXtermVersionQuery,
     'r'.codeUnitAt(0): _csiHandleSetMargins,
     't'.codeUnitAt(0): _csiWindowManipulation,
     'A'.codeUnitAt(0): _csiHandleCursorUp,
@@ -842,6 +855,32 @@ class EscapeParser {
     }
   }
 
+  /// `ESC [ ? Ps $ p` DEC Request Mode (DECRPM)
+  ///
+  /// `$` 是要认的中间字节：少了它，`CSI ? 2027 p` 这类别的序列会被当成查询吃掉。
+  void _csiHandleRequestMode() {
+    if (_csi.prefix != Ascii.questionMark) {
+      return;
+    }
+    if (_csi.intermediates.length != 1 ||
+        _csi.intermediates.first != Ascii.dollarSign) {
+      return;
+    }
+    for (final mode in _csi.params) {
+      handler.reportDecMode(mode);
+    }
+  }
+
+  /// `ESC [ > Ps q` XTVERSION
+  ///
+  /// `CSI Ps SP q`（DECSCUSR，设光标样式）带的是空格中间字节，不会走到这里。
+  void _csiHandleXtermVersionQuery() {
+    if (_csi.prefix != Ascii.greaterThan) {
+      return;
+    }
+    handler.sendXtermVersion();
+  }
+
   /// `ESC [ Ps ; Ps r` Set Top and Bottom Margins (DECSTBM)
   ///
   /// https://terminalguide.namepad.de/seq/csi_sr/
@@ -899,10 +938,12 @@ class EscapeParser {
       case 10: // Alias: Maximize Terminal Window
       case 11: // Report Terminal Window State
       case 13: // Report Terminal Window Position
-      case 14: // Report Terminal Window Size in Pixels
       case 15: // Report Screen Size in Pixels
-      case 16: // Report Cell Size in Pixels
         return;
+      case 14: // Report Terminal Window Size in Pixels
+        return handler.sendWindowPixelSize();
+      case 16: // Report Cell Size in Pixels
+        return handler.sendCellPixelSize();
       case 18: // Report Terminal Size (in characters)
         handler.sendSize();
         return;
@@ -1287,6 +1328,14 @@ class EscapeParser {
         case '2':
           handler.setTitle(pt);
           return true;
+        case '8':
+          // The URI may itself contain ';' (query strings, Windows paths), so
+          // rebuild it from every field after the parameter list rather than
+          // reading _osc[2]. An empty URI closes the current hyperlink.
+          if (_osc.length >= 3) {
+            handler.setHyperlink(pt, _osc.sublist(2).join(';'));
+          }
+          return true;
         case '52':
           final selectionId = pt;
           final data = _osc.length >= 3 ? _osc[2] : '';
@@ -1343,14 +1392,166 @@ class EscapeParser {
       param.writeCharCode(char);
     }
   }
+
+  /// 迟迟等不到 ST 就不再陪着等：多半是条没结尾的序列。
+  ///
+  /// 比整段吞掉更重要的是**别把终端卡死**——回滚式的解析会让一个残缺的 DCS
+  /// 挡住它后面所有的输出。超过这个长度就放弃收集载荷，改为一路吞到 ST
+  /// （见 [_discardStringUntilSt]）；直接把剩下的字节交还给正文解析的话，
+  /// 一条大载荷（剪贴板 / 图片协议）会整段喷到屏幕上。
+  static const _maxStringScan = 16 * 1024;
+
+  /// 放弃收集之后，最多再吞多少字节去找 ST。
+  ///
+  /// 正常的序列在这之前就结束了；到这里还没结束，说明对面发的确实是一条
+  /// 残缺序列，那就不能再无限吞下去，否则后面所有输出都会被吃掉。
+  static const _maxDiscardScan = 64 * 1024;
+
+  /// 正在丢弃一条被放弃的字符串序列的剩余部分。
+  bool _discardingString = false;
+
+  /// 丢弃扫描跨 chunk 时，把上一块结尾的 ESC 留到下一块判断。
+  ///
+  /// 逐块扫描时本地变量会在边界丢掉这个状态，`ESC | \` 被切开就认不出 ST，
+  /// 于是吞过头。
+  bool _discardPendingEsc = false;
+
+  int _discardedBytes = 0;
+
+  static const _tmuxPassthroughPrefix = 'tmux;';
+
+  /// 消费 `ESC P ... ST`（DCS）。载荷收在 [payload] 里。
+  bool _escHandleDcs() {
+    final payload = StringBuffer();
+    if (!_consumeStringSequence(payload)) {
+      return false;
+    }
+    // 放弃收集的序列只吞不解析：半截载荷（比如被截断的 tmux 透传）拿去解析
+    // 只会执行一条不该执行的序列。
+    if (_discardingString) {
+      return true;
+    }
+    _handleDcsPayload(payload.toString());
+    return true;
+  }
+
+  /// 消费 `ESC _ ... ST`（APC）并丢弃。
+  ///
+  /// APC 目前只有 Kitty 图形协议在用，本终端不实现；不吞掉的话载荷会当成
+  /// 普通字符画到屏幕上。
+  bool _escHandleApc() {
+    return _consumeStringSequence(StringBuffer());
+  }
+
+  /// 读一段以 ST（`ESC \`）结尾的字符串序列。返回 false 表示这一 chunk 里
+  /// 还没等到 ST，调用方回滚整段、等下一块（与 OSC 同一套约定）。
+  ///
+  /// 透传体（tmux 的 `DCS tmux;`）里每个字面 ESC 都双写，内层的 ST 因此长成
+  /// `ESC ESC \`。所以 pending 状态下再遇 ESC 要还原成一个字面 ESC 并**清掉**
+  /// pending；继续保持 pending 的话，紧跟其后的 `\` 会被当成外层 ST，把整条
+  /// 透传拦腰截断。
+  bool _consumeStringSequence(StringBuffer payload) {
+    var pendingEsc = false;
+    var scanned = 0;
+    while (true) {
+      if (_queue.isEmpty) {
+        return false;
+      }
+
+      final char = _queue.consume();
+      scanned++;
+
+      if (pendingEsc) {
+        pendingEsc = false;
+        if (char == Ascii.backslash) {
+          return true;
+        }
+        // 不是 ST：那个 ESC 是载荷的一部分（透传里 ESC 就是成对写的），还原成
+        // 一个。
+        payload.writeCharCode(Ascii.ESC);
+        if (char == Ascii.ESC) {
+          continue;
+        }
+      }
+
+      if (char == Ascii.ESC) {
+        pendingEsc = true;
+        continue;
+      }
+
+      // 长度只在攒载荷这一步判：ST 的 `\` 可能正好落在上限上，先判长度会把一
+      // 条正常结束的序列误当成超长。
+      if (scanned > _maxStringScan) {
+        _discardingString = true;
+        _discardPendingEsc = false;
+        _discardedBytes = 0;
+        return true;
+      }
+
+      payload.writeCharCode(char);
+    }
+  }
+
+  /// 吞掉一条被放弃的字符串序列，直到 ST（`ESC \`）。
+  ///
+  /// 返回 false 表示这一块里还没有 ST，保持丢弃状态等下一块。
+  bool _discardStringUntilSt() {
+    while (_queue.isNotEmpty) {
+      final char = _queue.consume();
+
+      if (_discardPendingEsc) {
+        _discardPendingEsc = false;
+        if (char == Ascii.backslash) {
+          _discardingString = false;
+          _discardedBytes = 0;
+          return true;
+        }
+        // 成对的 ESC 是被转义的字面 ESC，它后面的字节不是 ST。
+        if (char == Ascii.ESC) {
+          continue;
+        }
+      }
+
+      if (char == Ascii.ESC) {
+        _discardPendingEsc = true;
+        continue;
+      }
+
+      if (++_discardedBytes > _maxDiscardScan) {
+        _discardingString = false;
+        _discardPendingEsc = false;
+        _discardedBytes = 0;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _handleDcsPayload(String payload) {
+    // 其它 DCS 一律吞掉：以前它们会把载荷当普通文本画到屏幕上。
+    if (!payload.startsWith(_tmuxPassthroughPrefix)) {
+      return;
+    }
+
+    // 透传里的字面 ESC 成对写，[_consumeStringSequence] 已经还原成单个，
+    // 这里只把前缀剥掉。
+    final inner = payload.substring(_tmuxPassthroughPrefix.length);
+    if (inner.isEmpty) {
+      return;
+    }
+
+    // 插到当前位置之前：内层序列要压过同一批里它后面的字节。追加到队尾的话，
+    // 正文会比链接/光标/清屏更早写屏，透传里的状态就错位了。
+    _queue.prepend(inner);
+  }
 }
 
 class _Csi {
   _Csi({
     required this.params,
     required this.separators,
+    required this.intermediates,
     required this.finalByte,
-    // required this.intermediates,
   });
 
   int? prefix;
@@ -1358,8 +1559,11 @@ class _Csi {
   List<int> params;
   List<int> separators;
 
+  /// 参数与终止字节之间的中间字节。`CSI ? 2027 $ p` 靠 `$` 才和
+  /// `CSI ? 2027 p` 区分开，所以不能像以前那样读出来就丢。
+  List<int> intermediates;
+
   int finalByte;
-  // final List<int> intermediates;
 
   @override
   String toString() {

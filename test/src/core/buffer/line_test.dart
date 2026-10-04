@@ -214,4 +214,23 @@ void main() {
       expect(line.getCharacterEnd(10), 10);
     });
   });
+
+  group('BufferLine.eraseRange', () {
+    // Regression for `RangeError (index): ... must not be negative: -1`:
+    // EL 1 / ECH 0 with the cursor in column 0 passes end == 0, and the
+    // wide-char look-ahead used to read cell `end - 1`.
+    test('an empty span starting at column 0 must not read cell -1', () {
+      final line = BufferLine(10);
+      line.setCell(0, 0x61, 1, CursorStyle.empty);
+
+      expect(() => line.eraseRange(0, 0, CursorStyle.empty), returnsNormally);
+      expect(line.getText(), 'a');
+    });
+
+    test('an empty span at the end of the line is a no-op', () {
+      final line = BufferLine(10);
+
+      expect(() => line.eraseRange(10, 10, CursorStyle.empty), returnsNormally);
+    });
+  });
 }

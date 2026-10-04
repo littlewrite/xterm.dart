@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/cursor.dart';
+import 'package:xterm/src/core/hyperlink.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 import 'package:xterm/src/utils/unicode_v11.dart';
 
@@ -28,6 +29,16 @@ class BufferLine with IndexedItem {
   Uint32List _data;
 
   Uint32List get data => _data;
+
+  /// OSC 8 hyperlink ids, in the same cell order as [_data].
+  ///
+  /// Lazily allocated: null until the first hyperlink lands on this line, so
+  /// lines without links keep the exact pre-OSC-8 memory layout. Zero means
+  /// "no hyperlink"; any other value is a 1-based index into [_linkTable].
+  Uint32List? _links;
+
+  /// Distinct hyperlinks referenced by [_links], in first-use order.
+  List<TerminalHyperlink>? _linkTable;
 
   int _revision = 0;
 
@@ -56,6 +67,35 @@ class BufferLine with IndexedItem {
 
   int getContent(int index) {
     return _data[index * _cellSize + _cellContent];
+  }
+
+  /// Whether this line carries at least one OSC 8 hyperlink.
+  bool get hasLinks => _links != null;
+
+  /// Whether cell [index] carries an OSC 8 hyperlink.
+  bool hasLink(int index) {
+    final links = _links;
+    if (links == null || index < 0 || index >= _length) {
+      return false;
+    }
+    return links[index] != 0;
+  }
+
+  /// Hyperlink attached to cell [index], or null when there is none.
+  TerminalHyperlink? getLink(int index) {
+    final links = _links;
+    if (links == null || index < 0 || index >= _length) {
+      return null;
+    }
+    final id = links[index];
+    if (id == 0) {
+      return null;
+    }
+    final table = _linkTable;
+    if (table == null || id > table.length) {
+      return null;
+    }
+    return table[id - 1];
   }
 
   int getCodePoint(int index) {
@@ -149,10 +189,13 @@ class BufferLine with IndexedItem {
   void setCell(int index, int char, int witdh, CursorStyle style) {
     final offset = index * _cellSize;
     final content = char | (witdh << CellContent.widthShift);
-    if (_data[offset + _cellForeground] == style.foreground &&
+    final dataUnchanged =
+        _data[offset + _cellForeground] == style.foreground &&
         _data[offset + _cellBackground] == style.background &&
         _data[offset + _cellAttributes] == style.attrs &&
-        _data[offset + _cellContent] == content) {
+        _data[offset + _cellContent] == content;
+    final linkChanged = _assignLink(index, style.hyperlink);
+    if (dataUnchanged && !linkChanged) {
       return;
     }
     _data[offset + _cellForeground] = style.foreground;
@@ -164,10 +207,14 @@ class BufferLine with IndexedItem {
 
   void setCellData(int index, CellData cellData) {
     final offset = index * _cellSize;
-    if (_data[offset + _cellForeground] == cellData.foreground &&
+    final dataUnchanged =
+        _data[offset + _cellForeground] == cellData.foreground &&
         _data[offset + _cellBackground] == cellData.background &&
         _data[offset + _cellAttributes] == cellData.flags &&
-        _data[offset + _cellContent] == cellData.content) {
+        _data[offset + _cellContent] == cellData.content;
+    // CellData carries no link: copying a cell this way drops its hyperlink.
+    final linkChanged = _assignLink(index, null);
+    if (dataUnchanged && !linkChanged) {
       return;
     }
     _data[offset + _cellForeground] = cellData.foreground;
@@ -179,10 +226,17 @@ class BufferLine with IndexedItem {
 
   void eraseCell(int index, CursorStyle style) {
     final offset = index * _cellSize;
-    if (_data[offset + _cellForeground] == style.foreground &&
+    final dataUnchanged =
+        _data[offset + _cellForeground] == style.foreground &&
         _data[offset + _cellBackground] == style.background &&
         _data[offset + _cellAttributes] == style.attrs &&
-        _data[offset + _cellContent] == 0) {
+        _data[offset + _cellContent] == 0;
+    // Colors and attributes follow the cursor style, but the open OSC 8 link is
+    // **not** stamped onto blank cells: a link on empty cells makes the erased
+    // run clickable / underlined (`EL` then hover hits it). The open link lives
+    // in the cursor style, so whatever is written next still gets it.
+    final linkChanged = _assignLink(index, null);
+    if (dataUnchanged && !linkChanged) {
       return;
     }
     _data[offset + _cellForeground] = style.foreground;
@@ -194,10 +248,13 @@ class BufferLine with IndexedItem {
 
   void resetCell(int index) {
     final offset = index * _cellSize;
-    if (_data[offset + _cellForeground] == 0 &&
+    final dataUnchanged =
+        _data[offset + _cellForeground] == 0 &&
         _data[offset + _cellBackground] == 0 &&
         _data[offset + _cellAttributes] == 0 &&
-        _data[offset + _cellContent] == 0) {
+        _data[offset + _cellContent] == 0;
+    final linkChanged = _assignLink(index, null);
+    if (dataUnchanged && !linkChanged) {
       return;
     }
     _data[offset + _cellForeground] = 0;
@@ -216,7 +273,8 @@ class BufferLine with IndexedItem {
     }
 
     // reset cell one to the right if end is second cell of a wide char
-    if (end < _length && getWidth(end - 1) == 2) {
+    // `end == 0` (EL 1 / ECH 0 with the cursor in column 0) would index -1.
+    if (end > 0 && end < _length && getWidth(end - 1) == 2) {
       eraseCell(end - 1, style);
     }
 
@@ -246,6 +304,12 @@ class BufferLine with IndexedItem {
       final moveOffset = count * _cellSize;
       for (var i = moveStart; i < moveEnd; i++) {
         _data[i] = _data[i + moveOffset];
+      }
+      final links = _links;
+      if (links != null) {
+        for (var i = start; i < _length - count; i++) {
+          links[i] = links[i + count];
+        }
       }
       _markDirty();
     }
@@ -291,6 +355,12 @@ class BufferLine with IndexedItem {
       for (var i = moveEnd - 1; i >= moveStart; i--) {
         _data[i + moveOffset] = _data[i];
       }
+      final links = _links;
+      if (links != null) {
+        for (var i = _length - count - 1; i >= start; i--) {
+          links[i + count] = links[i];
+        }
+      }
       _markDirty();
     }
 
@@ -331,6 +401,12 @@ class BufferLine with IndexedItem {
         final newBuffer = Uint32List(newBufferSize);
         newBuffer.setRange(0, _data.length, _data);
         _data = newBuffer;
+        final links = _links;
+        if (links != null) {
+          final newLinks = Uint32List(newBufferSize ~/ _cellSize);
+          newLinks.setRange(0, links.length, links);
+          _links = newLinks;
+        }
       }
     }
 
@@ -396,9 +472,79 @@ class BufferLine with IndexedItem {
       }
       dstOffset++;
     }
-    if (changed) {
+    var linksChanged = false;
+    final srcLinks = src._links;
+    if (srcLinks != null) {
+      _ensureLinks();
+      // Link ids are per line, so copy the hyperlink itself and re-resolve the
+      // id in this line's table instead of copying the raw id.
+      final srcTable = src._linkTable!;
+      final dstLinks = _links!;
+      final remap = <int, int>{};
+      for (var i = 0; i < len; i++) {
+        final id = srcLinks[srcCol + i];
+        final next = id == 0 ? 0 : (remap[id] ??= _linkIdFor(srcTable[id - 1]));
+        if (dstLinks[dstCol + i] != next) {
+          dstLinks[dstCol + i] = next;
+          linksChanged = true;
+        }
+      }
+    } else {
+      final dstLinks = _links;
+      if (dstLinks != null) {
+        for (var i = 0; i < len; i++) {
+          if (dstLinks[dstCol + i] != 0) {
+            dstLinks[dstCol + i] = 0;
+            linksChanged = true;
+          }
+        }
+      }
+    }
+    // Link-only changes must bump the revision too: the painter's link-span
+    // cache is keyed by (line, revision), so a silent link change keeps stale
+    // underlines on screen after a reflow / scroll copy.
+    if (changed || linksChanged) {
       _markDirty();
     }
+  }
+
+  void _ensureLinks() {
+    _links ??= Uint32List(_data.length ~/ _cellSize);
+    _linkTable ??= <TerminalHyperlink>[];
+  }
+
+  int _linkIdFor(TerminalHyperlink link) {
+    final table = _linkTable!;
+    for (var i = 0; i < table.length; i++) {
+      if (table[i] == link) {
+        return i + 1;
+      }
+    }
+    table.add(link);
+    return table.length;
+  }
+
+  /// Writes the hyperlink of cell [index] without bumping the revision.
+  ///
+  /// Returns true when the stored link id actually changed, so callers can
+  /// decide whether the line needs to be invalidated.
+  bool _assignLink(int index, TerminalHyperlink? link) {
+    final links = _links;
+    if (link == null) {
+      if (links == null || index >= links.length || links[index] == 0) {
+        return false;
+      }
+      links[index] = 0;
+      return true;
+    }
+    _ensureLinks();
+    final id = _linkIdFor(link);
+    final target = _links!;
+    if (index >= target.length || target[index] == id) {
+      return false;
+    }
+    target[index] = id;
+    return true;
   }
 
   void _markDirty() {

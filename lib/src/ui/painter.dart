@@ -37,7 +37,6 @@ class TerminalPainter {
   int _linePictureCacheEntryCount = 0;
 
   static const _maximumLinePictureCacheSize = 512;
-  static const _maximumLinePicturePhases = 8;
 
   @visibleForTesting
   int get linePictureBuildCount => _linePictureBuildCount;
@@ -87,6 +86,9 @@ class TerminalPainter {
   set devicePixelRatio(double value) {
     if (value == _devicePixelRatio) return;
     _devicePixelRatio = value;
+    // Line pictures are recorded at the origin and no longer depend on the
+    // ratio for glyph placement, but custom glyphs (custom_glyphs.dart) still
+    // bake the ratio in at recording time, so this invalidation is required.
     _clearLinePictureCache();
   }
 
@@ -190,7 +192,11 @@ class TerminalPainter {
     TerminalHighlightSource? highlightSource,
     int highlightLineIndex = -1,
   }) {
-    final originPhase = _devicePixelPhase(offset);
+    // Recording is translation-invariant: the picture is always recorded at
+    // the origin and translated to [offset] at draw time, so the rasterized
+    // output is identical for any sub-pixel offset. Keeping one picture per
+    // line (instead of one per sub-pixel phase) avoids recording N redundant
+    // pictures on fractional devicePixelRatios (e.g. 125%/150% on Windows).
     // An explicit span list has no revision/identity contract. Avoid reusing
     // a cached picture unless a source can describe when it changed.
     final cacheable = highlights == null;
@@ -200,21 +206,17 @@ class TerminalPainter {
             cached.highlightRevision != highlightRevision ||
             !identical(cached.highlightSource, highlightSource) ||
             cached.highlightLineIndex != highlightLineIndex)) {
-      _linePictureCacheEntryCount -= cached.pictures.length;
+      _linePictureCacheEntryCount--;
       cached.dispose();
       cached = null;
     }
 
-    final cachedPicture = cached?.pictures.remove(originPhase);
+    final cachedPicture = cached?.picture;
     if (cachedPicture != null) {
-      cached!.pictures[originPhase] = cachedPicture;
-      _linePictureCache[line] = cached;
+      _linePictureCache[line] = cached!;
       _linePictureCacheHitCount++;
       canvas.save();
-      canvas.translate(
-        offset.dx - originPhase.dx,
-        offset.dy - originPhase.dy,
-      );
+      canvas.translate(offset.dx, offset.dy);
       canvas.drawPicture(cachedPicture);
       canvas.restore();
       return;
@@ -227,7 +229,7 @@ class TerminalPainter {
         const [];
     _paintLineCells(
       recordingCanvas,
-      originPhase,
+      Offset.zero,
       line,
       highlights: resolvedHighlights,
     );
@@ -241,47 +243,23 @@ class TerminalPainter {
         highlightSource,
         highlightLineIndex,
       );
-      cached.pictures[originPhase] = picture;
+      cached.picture = picture;
       _linePictureCacheEntryCount++;
-      while (cached.pictures.length > _maximumLinePicturePhases) {
-        final oldestPhase = cached.pictures.keys.first;
-        cached.pictures.remove(oldestPhase)?.dispose();
-        _linePictureCacheEntryCount--;
-      }
       _linePictureCache[line] = cached;
       _evictLinePictureIfNeeded();
     }
 
     canvas.save();
-    canvas.translate(
-      offset.dx - originPhase.dx,
-      offset.dy - originPhase.dy,
-    );
+    canvas.translate(offset.dx, offset.dy);
     canvas.drawPicture(picture);
     canvas.restore();
-  }
-
-  Offset _devicePixelPhase(Offset offset) {
-    if (_devicePixelRatio <= 0) return Offset.zero;
-
-    double phase(double value) {
-      final deviceValue = value * _devicePixelRatio;
-      return (deviceValue - deviceValue.floor()) / _devicePixelRatio;
-    }
-
-    return Offset(phase(offset.dx), phase(offset.dy));
   }
 
   void _evictLinePictureIfNeeded() {
     while (_linePictureCacheEntryCount > _maximumLinePictureCacheSize) {
       final oldestLine = _linePictureCache.keys.first;
-      final cached = _linePictureCache[oldestLine]!;
-      final oldestPhase = cached.pictures.keys.first;
-      cached.pictures.remove(oldestPhase)?.dispose();
+      _linePictureCache.remove(oldestLine)?.dispose();
       _linePictureCacheEntryCount--;
-      if (cached.pictures.isEmpty) {
-        _linePictureCache.remove(oldestLine);
-      }
     }
   }
 
@@ -360,6 +338,9 @@ class TerminalPainter {
 
       final charWidth = cellData.content >> CellContent.widthShift;
       final cellOffset = offset.translate(i * cellWidth, 0);
+      final flags = highlight == null
+          ? null
+          : (cellData.flags | highlight.addFlags) & ~highlight.removeFlags;
 
       if (paintBackground) {
         paintCellBackground(
@@ -368,9 +349,7 @@ class TerminalPainter {
           cellData,
           foregroundOverride: foregroundOverride,
           backgroundOverride: backgroundOverride,
-          flagsOverride: highlight == null
-              ? null
-              : (cellData.flags | highlight.addFlags) & ~highlight.removeFlags,
+          flagsOverride: flags,
         );
       }
       if (paintForeground) {
@@ -380,9 +359,7 @@ class TerminalPainter {
           cellData,
           foregroundOverride: foregroundOverride,
           backgroundOverride: backgroundOverride,
-          flagsOverride: highlight == null
-              ? null
-              : (cellData.flags | highlight.addFlags) & ~highlight.removeFlags,
+          flagsOverride: flags,
         );
       }
 
@@ -408,6 +385,154 @@ class TerminalPainter {
       if (paintForeground) paintCellForeground(canvas, cellOffset, cellData);
       if (cellData.content >> CellContent.widthShift == 2) i++;
     }
+  }
+
+  /// Underline overlay for one painted row.
+  ///
+  /// iTerm2-style: a web link is underlined only while the modifier is held
+  /// *and* the pointer is on it ([armedLink]). Links whose scheme has no
+  /// handler (file:, ssh:, …) are drawn dashed all the time and turn solid
+  /// while armed. Mobile ([underlineAllWebLinks]) draws web links without an
+  /// armed pointer.
+  void paintLinkDecorations(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line, {
+    int lineIndex = -1,
+    int? armedLineIndex,
+    bool underlineAllWebLinks = false,
+    bool underlineFileLinks = false,
+    TerminalHyperlink? armedLink,
+  }) {
+    final decorations = resolveLinkDecorations(
+      line,
+      lineIndex: lineIndex,
+      armedLineIndex: armedLineIndex,
+      underlineAllWebLinks: underlineAllWebLinks,
+      underlineFileLinks: underlineFileLinks,
+      armedLink: armedLink,
+    );
+    if (decorations.isEmpty) {
+      return;
+    }
+    final cellWidth = _cellSize.width;
+    final underlineY = offset.dy + _cellSize.height - 1;
+    final cellData = CellData.empty();
+    for (final decoration in decorations) {
+      line.getCellData(decoration.startColumn, cellData);
+      _paintUnderlineStroke(
+        canvas,
+        offset.dx + decoration.startColumn * cellWidth,
+        underlineY,
+        (decoration.endColumn - decoration.startColumn) * cellWidth,
+        resolveForegroundColor(cellData.foreground),
+        dashed: decoration.dashed,
+      );
+    }
+  }
+
+  /// Ranges of [line] that should show an underline right now.
+  @visibleForTesting
+  List<({int startColumn, int endColumn, bool dashed})>
+      resolveLinkDecorations(
+    BufferLine line, {
+    int lineIndex = -1,
+    int? armedLineIndex,
+    bool underlineAllWebLinks = false,
+    bool underlineFileLinks = false,
+    TerminalHyperlink? armedLink,
+  }) {
+    if (!underlineAllWebLinks && !underlineFileLinks && armedLink == null) {
+      return const [];
+    }
+    // Plain-text URLs are only searched when the armed link is a web link on
+    // this very row, so hovering stays bounded to one line per frame.
+    final includePlainUrls = underlineAllWebLinks ||
+        (armedLink != null &&
+            armedLink.hasVisibleAffordance &&
+            (armedLineIndex == null || armedLineIndex == lineIndex));
+    if (!line.hasLinks && !includePlainUrls) {
+      return const [];
+    }
+    final spans = _linkSpansCached(line, includePlainUrls: includePlainUrls);
+    if (spans.isEmpty) {
+      return const [];
+    }
+    final decorations = <({int startColumn, int endColumn, bool dashed})>[];
+    for (final span in spans) {
+      final armed = armedLink != null && span.link == armedLink;
+      final bool dashed;
+      if (span.link.hasVisibleAffordance) {
+        if (!armed && !underlineAllWebLinks) {
+          continue;
+        }
+        dashed = false;
+      } else {
+        if (!underlineFileLinks) {
+          continue;
+        }
+        dashed = !armed;
+      }
+      decorations.add((
+        startColumn: span.startColumn,
+        endColumn: span.endColumn,
+        dashed: dashed,
+      ));
+    }
+    return decorations;
+  }
+
+  void _paintUnderlineStroke(
+    Canvas canvas,
+    double left,
+    double y,
+    double width,
+    Color color, {
+    required bool dashed,
+  }) {
+    if (width <= 0) {
+      return;
+    }
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1;
+    final end = left + width;
+    if (!dashed) {
+      canvas.drawLine(Offset(left, y), Offset(left + width, y), paint);
+      return;
+    }
+    const dash = 3.0;
+    const gap = 2.0;
+    var x = left;
+    while (x < end) {
+      final segmentEnd = x + dash > end ? end : x + dash;
+      canvas.drawLine(Offset(x, y), Offset(segmentEnd, y), paint);
+      x = segmentEnd + gap;
+    }
+  }
+
+  final _linkSpanCache = <BufferLine, _CachedLinkSpans>{};
+  static const _maximumLinkSpanCacheSize = 512;
+
+  /// Link spans are reused per (line, revision) so drawing the overlay every
+  /// frame never rescans cells or runs the URL pattern again.
+  List<TerminalLinkSpan> _linkSpansCached(
+    BufferLine line, {
+    required bool includePlainUrls,
+  }) {
+    final cached = _linkSpanCache[line];
+    if (cached != null &&
+        cached.revision == line.revision &&
+        (cached.includePlainUrls || !includePlainUrls)) {
+      return cached.spans;
+    }
+    final spans = linkSpansInLine(line, includePlainUrls: includePlainUrls);
+    _linkSpanCache[line] =
+        _CachedLinkSpans(line.revision, includePlainUrls, spans);
+    while (_linkSpanCache.length > _maximumLinkSpanCacheSize) {
+      _linkSpanCache.remove(_linkSpanCache.keys.first);
+    }
+    return spans;
   }
 
   @pragma('vm:prefer-inline')
@@ -722,12 +847,18 @@ class _CachedLinePictures {
   final int highlightRevision;
   final TerminalHighlightSource? highlightSource;
   final int highlightLineIndex;
-  final pictures = <Offset, ui.Picture>{};
+  ui.Picture? picture;
 
   void dispose() {
-    for (final picture in pictures.values) {
-      picture.dispose();
-    }
-    pictures.clear();
+    picture?.dispose();
+    picture = null;
   }
+}
+
+class _CachedLinkSpans {
+  _CachedLinkSpans(this.revision, this.includePlainUrls, this.spans);
+
+  final int revision;
+  final bool includePlainUrls;
+  final List<TerminalLinkSpan> spans;
 }

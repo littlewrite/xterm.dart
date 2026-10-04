@@ -110,7 +110,12 @@ class Buffer {
     codePoint = charset.translate(codePoint);
 
     final cellWidth = unicodeV11.wcwidth(codePoint);
-    if (_cursorX >= terminal.viewWidth) {
+    // Wrap _before_ writing when the char does not fit in the remaining cells:
+    // a width-2 char must never be split across the right margin, otherwise its
+    // left half stays in the last column and its placeholder lands on the next
+    // line. xterm.js does the same check up front (InputHandler.print).
+    if (_cursorX >= terminal.viewWidth ||
+        _cursorX + cellWidth > terminal.viewWidth) {
       if (terminal.autoWrapMode) {
         currentLine.isWrapped = true;
       }
@@ -119,6 +124,12 @@ class Buffer {
     }
 
     final line = currentLine;
+    // Writing over the right half of a wide char (`\b` then a char, readline
+    // redraws, `\b \b` erase, ...) must clear the left half too, or the old
+    // glyph and the new one end up sharing the same two cells.
+    if (cellWidth != 0 && _cursorX > 0 && line.getWidth(_cursorX - 1) == 2) {
+      line.eraseCell(_cursorX - 1, terminal.cursor);
+    }
     line.setCell(_cursorX, codePoint, cellWidth, terminal.cursor);
 
     if (_cursorX < viewWidth) {
