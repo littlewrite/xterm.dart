@@ -33,6 +33,16 @@ class CustomTextEdit extends StatefulWidget {
   final void Function(TextRange composing)? onComposingChanged;
   final bool autofocus;
   final bool readOnly;
+
+  /// Whether this widget may raise the platform keyboard by opening a text
+  /// input connection.
+  ///
+  /// When `false` the widget stays in the tree — it still owns the focus node,
+  /// the hardware key path and the selection toolbar — but never opens a
+  /// connection, so no soft keyboard appears. This lets a host keep the
+  /// selection toolbar working while deliberately using only a hardware
+  /// keyboard.
+  final bool inputConnectionEnabled;
   final TextInputType inputType;
   final TextInputAction inputAction;
   final Brightness keyboardAppearance;
@@ -88,6 +98,7 @@ class CustomTextEdit extends StatefulWidget {
     this.onComposingChanged,
     this.autofocus = false,
     this.readOnly = false,
+    this.inputConnectionEnabled = true,
     this.inputType = TextInputType.text,
     this.inputAction = TextInputAction.done,
     this.keyboardAppearance = Brightness.light,
@@ -114,6 +125,16 @@ class CustomTextEditState extends State<CustomTextEdit>
   final ContextMenuController _menuController = ContextMenuController();
   final ClipboardStatusNotifier _clipboardStatus = ClipboardStatusNotifier();
   TextSelectionToolbarAnchors? _toolbarAnchors;
+
+  /// The rect the last [showToolbar] was asked to anchor to, kept only when that
+  /// request was dropped for want of buttons.
+  ///
+  /// [EditableText.getEditableButtonItems] builds nothing at all while the
+  /// clipboard status is [ClipboardStatus.unknown], and [showToolbar] only kicks
+  /// off the (asynchronous) status check a few lines before it reads it. So the
+  /// first request after this state is created always comes back empty; without
+  /// replaying it once the status is known, the menu never appears at all.
+  Rect? _pendingToolbarRect;
   Rect _caretRect = Rect.zero;
 
   @visibleForTesting
@@ -204,6 +225,7 @@ class CustomTextEditState extends State<CustomTextEdit>
     // If relevant properties change, and we have an active connection,
     // we might need to re-create the connection with the new configuration.
     if (widget.readOnly != oldWidget.readOnly ||
+        widget.inputConnectionEnabled != oldWidget.inputConnectionEnabled ||
         widget.inputType != oldWidget.inputType ||
         widget.inputAction != oldWidget.inputAction ||
         widget.keyboardAppearance != oldWidget.keyboardAppearance ||
@@ -211,6 +233,10 @@ class CustomTextEditState extends State<CustomTextEdit>
       if (hasInputConnection) {
         _closeInputConnectionIfNeeded();
         _openInputConnection(); // This will use the new widget properties
+      } else if (_shouldCreateInputConnection) {
+        // One of the properties above turned the connection back on — e.g.
+        // inputConnectionEnabled went from false to true while still focused.
+        _openInputConnection();
       }
     } else if (!_shouldCreateInputConnection) {
       // If we shouldn't have a connection (e.g., became readOnly), close it.
@@ -392,8 +418,11 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   void _onFocusChange() {
     _openOrCloseInputConnectionIfNeeded();
-    if (!widget.focusNode.hasFocus && _menuController.isShown) {
-      _menuController.remove();
+    if (!widget.focusNode.hasFocus) {
+      // hideToolbar (not _menuController.remove) also drops the remembered
+      // pending request, so a clipboard status arriving after the focus loss
+      // cannot replay the menu onto an unfocused widget.
+      hideToolbar();
     }
   }
 
@@ -402,7 +431,17 @@ class CustomTextEditState extends State<CustomTextEdit>
     // Only process when not composing text
     if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
         _currentEditingState.composing.isCollapsed) {
-      return widget.onKeyEvent(focusNode, event);
+      final result = widget.onKeyEvent(focusNode, event);
+      // With no input connection there is no IME to turn key presses into text,
+      // so insert the character ourselves. This covers the hardware-only case.
+      if (!widget.inputConnectionEnabled &&
+          result == KeyEventResult.ignored &&
+          event.character != null &&
+          event.character!.isNotEmpty) {
+        widget.onInsert(event.character!);
+        return KeyEventResult.handled;
+      }
+      return result;
     }
     // Let other handlers process the event if composing or not a key down/repeat event.
     return KeyEventResult.skipRemainingHandlers;
@@ -418,7 +457,9 @@ class CustomTextEditState extends State<CustomTextEdit>
   }
 
   bool get _shouldCreateInputConnection =>
-      !widget.readOnly && (kIsWeb || widget.focusNode.hasFocus);
+      widget.inputConnectionEnabled &&
+      !widget.readOnly &&
+      (kIsWeb || widget.focusNode.hasFocus);
 
   void _openInputConnection() {
     if (!_shouldCreateInputConnection || !mounted) {
@@ -713,6 +754,7 @@ class CustomTextEditState extends State<CustomTextEdit>
       _menuController.remove();
     }
     _toolbarAnchors = null;
+    _pendingToolbarRect = null;
     // If text handles are being managed by this widget, hide them too.
     // EditableText manages its own handles.
   }
@@ -774,10 +816,15 @@ class CustomTextEditState extends State<CustomTextEdit>
     final List<ContextMenuButtonItem> initialItems =
         _buildContextMenuButtonItems();
     if (initialItems.isEmpty) {
+      // Nothing to show yet — most likely the clipboard status is still
+      // unknown. Remember the anchor so _handleClipboardStatusChanged can
+      // replay the request instead of dropping it on the floor.
       _toolbarAnchors = null;
+      _pendingToolbarRect = anchorRect;
       return;
     }
 
+    _pendingToolbarRect = null;
     _menuController.show(
       context: context,
       contextMenuBuilder: (BuildContext context) {
@@ -801,6 +848,13 @@ class CustomTextEditState extends State<CustomTextEdit>
     }
     if (_menuController.isShown) {
       _menuController.markNeedsBuild();
+    } else {
+      final Rect? pending = _pendingToolbarRect;
+      if (pending != null) {
+        // An earlier request found no buttons because the clipboard status had
+        // not arrived yet. It has now, so ask again.
+        showToolbar(globalSelectionRect: pending);
+      }
     }
     setState(() {});
   }

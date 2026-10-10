@@ -11,6 +11,8 @@ import 'package:xterm/xterm.dart';
 
 enum _DragHandleType { none, start, end }
 
+enum _MagnifierSource { longPress, dragHandle }
+
 // Tuned for responsive edge-selection scrolling without flooding the app.
 const Duration _kSelectionAutoScrollInterval = Duration(milliseconds: 70);
 
@@ -31,7 +33,7 @@ class TerminalGestureHandler extends StatefulWidget {
     this.readOnly = false,
     this.viewOffset = Offset.zero,
     this.showToolbar = true,
-    this.selectionInteractionMode = TerminalSelectionInteractionMode.adaptive,
+    this.showMagnifier = true,
     this.cursorColor = Colors.cyan,
     this.scrollController,
   });
@@ -55,7 +57,7 @@ class TerminalGestureHandler extends StatefulWidget {
   final bool readOnly;
   final Offset viewOffset;
   final bool showToolbar;
-  final TerminalSelectionInteractionMode selectionInteractionMode;
+  final bool showMagnifier;
   final Color cursorColor;
   final ScrollController? scrollController;
 
@@ -68,7 +70,6 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   RenderTerminal get renderTerminal => terminalView.renderTerminal;
 
   BufferRangeLine? _selectedRange;
-  CellOffset? _longPressInitialCellOffset;
   late double _originTextSize = terminalView.widget.textStyle.fontSize;
 
   // 拖杆相关状态
@@ -77,9 +78,13 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   bool _isDragHandleReady = false; // 拖杆是否准备就绪（点击检测到拖杆）
 
   // 优化的容忍度设置
-  static const double _handleTouchRadius = 32.0; // 增加拖杆触摸区域半径
   static const double _selectionTolerance = 20.0; // 点击选区附近的容忍度
   static const Duration _tapTolerance = Duration(milliseconds: 150); // 点击时间容忍度
+
+  // Flutter's 22/26 is tuned for a one-line TextField, too close for terminal rows.
+  static const double _magnifierRowClearance = 48.0;
+
+  static const double _magnifierEdgePadding = 8.0;
 
   // 防抖相关
   DateTime? _lastTapTime;
@@ -96,6 +101,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   bool _suppressNextTapUp = false;
   bool _mouseDragWasHandledByTerminal = false;
   bool _mouseDownWasHandledByTerminal = false;
+  bool _mousePressReported = false;
   TerminalHyperlink? _claimedLink;
   Offset? _linkPointerDownPosition;
   bool _linkSuppressedPtyDown = false;
@@ -130,6 +136,18 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   ValueListenable<bool>? _scrollActivityNotifier;
   bool _selectionHandlesVisible = false;
 
+  Offset? _magnifierFocalPoint;
+
+  // Don't reuse _isMouseDeviceDown: _clearSelection resets it on long-press start,
+  // which would misclassify a mouse long press as touch.
+  PointerDeviceKind? _activePointerKind;
+
+  BufferRangeLine? _longPressAnchorRange;
+
+  CellOffset? _longPressMoveCell;
+
+  _MagnifierSource? _magnifierSource;
+
   bool get _shouldShowHandles =>
       widget.showToolbar &&
       _selectionHandlesVisible &&
@@ -139,22 +157,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   @visibleForTesting
   bool get debugShowsSelectionHandles => _shouldShowHandles;
 
-  bool get _usesTouchSelectionUi =>
-      widget.selectionInteractionMode ==
-          TerminalSelectionInteractionMode.adaptive ||
-      widget.selectionInteractionMode ==
-          TerminalSelectionInteractionMode.touchContextMenu;
-
-  bool _shouldUseTouchSelectionUiForPointer(PointerDeviceKind? kind) {
-    if (!_usesTouchSelectionUi) {
-      return false;
-    }
-    if (widget.selectionInteractionMode ==
-        TerminalSelectionInteractionMode.touchContextMenu) {
-      return true;
-    }
-    return kind == PointerDeviceKind.touch;
-  }
+  bool get _isTouchInteraction =>
+      _activePointerKind == PointerDeviceKind.touch;
 
   bool get _isViewportScrolling => _scrollActivityNotifier?.value ?? false;
 
@@ -172,10 +176,17 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     Widget content = widget.child ?? const SizedBox.shrink();
 
     final List<Widget> handles = _buildSelectionHandles();
-    if (handles.isNotEmpty) {
+    final Widget? magnifier = _buildMagnifier();
+    if (handles.isNotEmpty || magnifier != null) {
       content = Stack(
         clipBehavior: Clip.none,
-        children: <Widget>[content, ...handles],
+        children: <Widget>[
+          content,
+          ...handles,
+          // Must stay after the handles: a BackdropFilter can only magnify what
+          // was already painted, so the highlight and handles get magnified too.
+          if (magnifier != null) magnifier,
+        ],
       );
     }
 
@@ -198,6 +209,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         onLongPressStart: _onLongPressStart,
         onLongPressMoveUpdate: _onLongPressMoveUpdate,
         onLongPressEnd: _onLongPressEnd,
+        onLongPressCancel: () {
+          _hideMagnifier(_MagnifierSource.longPress);
+          _stopSelectionAutoScroll();
+          // This gesture never reaches _onLongPressEnd, so clear the anchor
+          // here too; otherwise the next long press extends from it.
+          _longPressAnchorRange = null;
+          _longPressMoveCell = null;
+        },
       ),
     );
   }
@@ -240,6 +259,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
   void _onPointerDown(PointerDownEvent event) {
     _trackedPointers[event.pointer] = event.localPosition;
+    _activePointerKind = event.kind;
 
     if (_isPointerKindMouse(event.kind)) {
       _isMouseDeviceDown = true;
@@ -247,6 +267,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _mouseButton = _mouseButtonFor(event.buttons);
       _mouseDragWasHandledByTerminal = false;
       _mouseDownWasHandledByTerminal = false;
+      _mousePressReported = false;
       _mouseSelectionBase = renderTerminal.getCellOffset(
         event.localPosition,
       );
@@ -254,6 +275,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
           renderTerminal.createSelectionAnchor(_mouseSelectionBase!);
       _isMouseSelectionInProgress = false;
       _resetDragHandleState();
+      _maybeReportMousePress(event.localPosition);
     } else {
       // 触摸设备：检查是否点击了拖杆
       if (_shouldShowHandles) {
@@ -274,11 +296,11 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       if (!_isDraggingHandle) {
         // 从准备状态进入拖动状态
         _isDraggingHandle = true;
-        _longPressInitialCellOffset = null;
         if (widget.showToolbar) {
           widget.terminalView.hideSelectionToolbar();
         }
         HapticFeedback.selectionClick();
+        _showMagnifier(event.localPosition, _MagnifierSource.dragHandle);
       }
       _handleDragUpdate(event.localPosition);
       return;
@@ -361,7 +383,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       }
 
       if (_isMouseSelectionInProgress) {
-        if (_mouseDownWasHandledByTerminal) {
+        if (_mouseDownSentToPty) {
           renderTerminal.mouseEvent(
             _mouseButton,
             TerminalMouseButtonState.up,
@@ -380,14 +402,38 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     if (_trackedPointers.length < 2) {
       _zoomInitialDistance = null;
     }
+    if (_trackedPointers.isEmpty) {
+      // The auto-scroll timer has no event to stop it; left running it keeps
+      // writing wheel events to the PTY.
+      _stopSelectionAutoScroll();
+    }
   }
 
   void _onPointerCancel(PointerCancelEvent event) {
     _trackedPointers.remove(event.pointer);
     _zoomInitialDistance = null;
-    // 按下已经补发给程序，但这次手势再也不会收到抬起：标记清掉，别让它
-    // 挂到下一次抬手上去。
-    _linkPressHandedBackToPty = false;
+    // Another finger is still down, so this cancel isn't from the dragging one.
+    if (_trackedPointers.isNotEmpty) {
+      return;
+    }
+    _hideMagnifier();
+    // The gesture is over but no pointer-up will follow. If the PTY was told
+    // the button went down (link hand-back, early mouse press, or a forwarded
+    // drag), hand it the release now so the button does not stay pressed.
+    if (_linkPressHandedBackToPty) {
+      _linkPressHandedBackToPty = false;
+      renderTerminal.mouseEvent(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.up,
+        event.localPosition,
+      );
+    } else if (_mouseDownSentToPty) {
+      renderTerminal.mouseEvent(
+        _mouseButton,
+        TerminalMouseButtonState.up,
+        event.localPosition,
+      );
+    }
     _resetInteractionState();
   }
 
@@ -477,6 +523,14 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       if (nextRange == null || nextRange.isCollapsed) {
         _selectionHandlesVisible = false;
       }
+    }
+
+    if (nextRange == null || nextRange.isCollapsed) {
+      // The range the handles were anchored to is gone (controller cleared,
+      // switched to an unsupported range, or a different controller was
+      // swapped in). Drop the drag state so _handleDragUpdate cannot read a
+      // stale _selectedRange.
+      _resetDragHandleState();
     }
 
     if (!widget.showToolbar ||
@@ -588,31 +642,156 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     );
   }
 
+  // ---- Selection magnifier ----
+
+  bool get _magnifierEnabled =>
+      widget.showMagnifier && _isTouchInteraction;
+
+  void _showMagnifier(Offset localPosition, _MagnifierSource source) {
+    if (!_magnifierEnabled) {
+      return;
+    }
+    setState(() {
+      _magnifierFocalPoint = localPosition;
+      _magnifierSource = source;
+    });
+  }
+
+  void _updateMagnifier(Offset localPosition) {
+    if (_magnifierFocalPoint == null || _magnifierFocalPoint == localPosition) {
+      return;
+    }
+    setState(() => _magnifierFocalPoint = localPosition);
+  }
+
+  void _hideMagnifier([_MagnifierSource? source]) {
+    if (_magnifierFocalPoint == null ||
+        (source != null && _magnifierSource != source)) {
+      return;
+    }
+    setState(() {
+      _magnifierFocalPoint = null;
+      _magnifierSource = null;
+    });
+  }
+
+  Widget? _buildMagnifier() {
+    final focalPoint = _magnifierFocalPoint;
+    if (focalPoint == null) {
+      return null;
+    }
+    if (!widget.showMagnifier) {
+      return null;
+    }
+
+    final viewport = renderTerminal.hasSize ? renderTerminal.size : Size.zero;
+    if (viewport.isEmpty) {
+      return null;
+    }
+
+    final cellOffset = renderTerminal.getCellOffset(focalPoint);
+    final rowCenterY =
+        renderTerminal.getOffset(CellOffset(0, cellOffset.y)).dy +
+            renderTerminal.cellSize.height / 2;
+
+    // Material lens on every platform: CupertinoMagnifier never magnifies (no
+    // magnificationScale, stays 1.0x; flutter/flutter#155275).
+    // ignore: invalid_use_of_visible_for_testing_member
+    const size = Magnifier.kDefaultMagnifierSize;
+    // ignore: invalid_use_of_visible_for_testing_member
+    const focalBiasBase = Magnifier.kStandardVerticalFocalPointShift;
+
+    if (viewport.width < size.width + _magnifierEdgePadding * 2 ||
+        viewport.height < size.height + _magnifierEdgePadding * 2) {
+      return null;
+    }
+
+    var top = rowCenterY - _magnifierRowClearance - size.height;
+    if (top < _magnifierEdgePadding) {
+      top = rowCenterY + _magnifierRowClearance;
+    }
+    top = clampDouble(
+      top,
+      _magnifierEdgePadding,
+      viewport.height - size.height - _magnifierEdgePadding,
+    );
+
+    final left = clampDouble(
+      focalPoint.dx - size.width / 2,
+      _magnifierEdgePadding,
+      viewport.width - size.width - _magnifierEdgePadding,
+    );
+
+    final center = Offset(left + size.width / 2, top + size.height / 2);
+
+    // Magnifier adds its own "lift above the focal point" bias; cancel it or the
+    // focal point drifts.
+    final focalBias = Offset(0, focalBiasBase + size.height / 2);
+    final focalPointOffset =
+        Offset(focalPoint.dx - center.dx, rowCenterY - center.dy) - focalBias;
+
+    return Positioned(
+      left: left,
+      top: top,
+      // _RenderMagnification is not a repaint boundary, so without this every
+      // pointer move repaints the handles and the Stack they sit in too.
+      child: RepaintBoundary(
+        child: IgnorePointer(
+          child: Magnifier(
+            shadows: _magnifierShadows(),
+            additionalFocalPointOffset: focalPointOffset,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Halo is the inverted terminal background (light on dark, dark on light);
+  /// the built-in shadow is too faint to separate the lens.
+  List<BoxShadow> _magnifierShadows() {
+    final Color backdrop = terminalView.widget.theme.background;
+    final Color halo = Color.fromARGB(
+      255,
+      255 - backdrop.red,
+      255 - backdrop.green,
+      255 - backdrop.blue,
+    );
+    return <BoxShadow>[
+      BoxShadow(
+        color: halo.withOpacity(0.35),
+        blurRadius: 14,
+        // _DonutClip sizes its clip from spreadRadius; too small clips the blur.
+        spreadRadius: 3,
+      ),
+    ];
+  }
+
   _SelectionGeometry? _selectionGeometry(BufferRangeLine range) {
     final BufferRangeLine normalized = range.normalized;
     final Size cellSize = renderTerminal.cellSize;
     final Offset startTopLeft = renderTerminal.getOffset(normalized.begin);
     final Offset startAnchor = startTopLeft + Offset(0, cellSize.height);
 
-    final Offset endTopLeft = renderTerminal.getOffset(normalized.end);
     final Offset endBottomRight =
-        endTopLeft + Offset(cellSize.width, cellSize.height);
-    final Offset endAnchor = endBottomRight;
+        renderTerminal.getOffset(_lastSelectedCell(normalized.end)) +
+            Offset(cellSize.width, cellSize.height);
 
     return _SelectionGeometry(
       localRect: Rect.fromPoints(startTopLeft, endBottomRight),
       startAnchor: startAnchor,
-      endAnchor: endAnchor,
+      endAnchor: endBottomRight,
     );
   }
 
   bool _selectionContains(BufferRangeLine range, CellOffset offset) {
-    return range.normalized.contains(offset);
+    // end is exclusive; BufferRangeLine.contains is inclusive.
+    final BufferRangeLine normalized = range.normalized;
+    return !offset.isBefore(normalized.begin) && offset.isBefore(normalized.end);
   }
 
   BufferRangeLine? _controllerRangeAsLine(BufferRange selection) {
     if (selection is BufferRangeLine) {
-      return _inclusiveControllerRange(selection);
+      return selection.normalized;
     }
     if (selection.isCollapsed) {
       return BufferRangeLine(selection.begin, selection.begin);
@@ -620,25 +799,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     return null;
   }
 
-  BufferRangeLine _inclusiveControllerRange(BufferRangeLine range) {
-    final BufferRangeLine normalized = range.normalized;
-    if (normalized.isCollapsed) {
-      return normalized;
-    }
-    final bool shouldAdjust;
-    if (normalized.end.y == normalized.begin.y) {
-      shouldAdjust = normalized.end.x >= normalized.begin.x;
-    } else {
-      shouldAdjust = normalized.end.x >= normalized.begin.x;
-    }
-    if (!shouldAdjust) {
-      return normalized;
-    }
-    final CellOffset inclusiveEnd = _exclusiveToInclusive(normalized.end);
-    return BufferRangeLine(normalized.begin, inclusiveEnd);
-  }
-
-  CellOffset _exclusiveToInclusive(CellOffset exclusiveEnd) {
+  /// Controller ranges end exclusive; handles and rects need the last selected
+  /// cell. Only call for non-empty ranges.
+  CellOffset _lastSelectedCell(CellOffset exclusiveEnd) {
     if (exclusiveEnd.x > 0) {
       return CellOffset(exclusiveEnd.x - 1, exclusiveEnd.y);
     }
@@ -680,12 +843,24 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         visualType,
         lineHeight,
       );
-      final Rect hitRect = Rect.fromLTWH(
+      final Rect drawnRect = Rect.fromLTWH(
         anchor.dx - handleAnchor.dx,
         anchor.dy - handleAnchor.dy,
         handleSize.width,
         handleSize.height,
-      ).inflate(_handleTouchRadius);
+      );
+      // Grow the drawn handle to the platform's minimum touch target rather
+      // than inflating it by a fixed radius on every side. The drawn handle is
+      // small — Material is 22x22, Cupertino 12 x line height — so a fixed 32px
+      // inflation left a single handle claiming roughly 76x94px. A tap on blank
+      // area inside that blob counted as grabbing a handle, and a grabbed
+      // handle deliberately does nothing on tap-up, so the selection could not
+      // be dismissed by tapping away from it.
+      final Rect hitRect = Rect.fromCenter(
+        center: drawnRect.center,
+        width: math.max(drawnRect.width, kMinInteractiveDimension),
+        height: math.max(drawnRect.height, kMinInteractiveDimension),
+      );
 
       if (!hitRect.contains(localPosition)) {
         return;
@@ -765,6 +940,16 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     return HardwareKeyboard.instance.isShiftPressed;
   }
 
+  /// Whether the PTY was actually told the mouse button went down during this
+  /// gesture. The press can be handed over at pointer-down
+  /// ([_mousePressReported]), at tap-down ([_mouseDownWasHandledByTerminal]), or
+  /// by the first forwarded drag motion ([_mouseDragWasHandledByTerminal]);
+  /// whichever fired, the matching release must still be sent exactly once.
+  bool get _mouseDownSentToPty =>
+      _mousePressReported ||
+      _mouseDownWasHandledByTerminal ||
+      _mouseDragWasHandledByTerminal;
+
   TerminalMouseButton _mouseButtonFor(int buttons) {
     if ((buttons & kSecondaryMouseButton) != 0) {
       return TerminalMouseButton.right;
@@ -775,14 +960,33 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     return TerminalMouseButton.left;
   }
 
+  /// A fast drag loses the gesture arena before the tap recognizer fires, so
+  /// [_tapDown] never runs and the program would see motion, and a release, for
+  /// a button it was never told was down. Hand the press over at pointer-down.
+  void _maybeReportMousePress(Offset localPosition) {
+    if (!_shouldSendTapEvent ||
+        _shouldForceLocalMouseSelection ||
+        _isNearSelection(localPosition) ||
+        widget.linkAtPosition?.call(localPosition) != null) {
+      return;
+    }
+    _mousePressReported = renderTerminal.mouseEvent(
+      _mouseButton,
+      TerminalMouseButtonState.down,
+      localPosition,
+    );
+  }
+
   bool _tapDown(
     GestureTapDownCallback? callback,
     TapDownDetails details,
     TerminalMouseButton button, {
     bool forceCallback = false,
   }) {
-    var handled = false;
-    if (_shouldSendTapEvent &&
+    // For a mouse this already went out from _onPointerDown.
+    var handled = _mousePressReported;
+    if (!handled &&
+        _shouldSendTapEvent &&
         !_shouldForceLocalMouseSelection &&
         !_isNearSelection(details.localPosition)) {
       handled = renderTerminal.mouseEvent(
@@ -844,8 +1048,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
       _isMouseSelectionInProgress = true;
       _selectionHandlesVisible = false;
-      _longPressInitialCellOffset = null;
-      _resetDragHandleState();
+        _resetDragHandleState();
 
       if (widget.showToolbar) {
         widget.terminalView.hideSelectionToolbar();
@@ -886,6 +1089,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     _isMouseSelectionInProgress = false;
     _mouseDragWasHandledByTerminal = false;
     _mouseDownWasHandledByTerminal = false;
+    _mousePressReported = false;
     _mouseSelectionBase = null;
     _mouseSelectionBaseAnchor?.dispose();
     _mouseSelectionBaseAnchor = null;
@@ -1028,14 +1232,18 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     final BufferRangeLine range = _selectedRange!.normalized;
     _activeDragHandle = dragHandle;
     _isDragHandleReady = true;
-    _dragHandleFixedPoint =
-        dragHandle == _DragHandleType.start ? range.end : range.begin;
+    _dragHandleFixedPoint = dragHandle == _DragHandleType.start
+        ? _lastSelectedCell(range.end)
+        : range.begin;
 
     // 提供轻微的触觉反馈表示检测到拖杆
     HapticFeedback.lightImpact();
   }
 
   void _finishHandleDrag() {
+    _hideMagnifier(_MagnifierSource.dragHandle);
+    _stopSelectionAutoScroll();
+
     if (_activeDragHandle == _DragHandleType.none) {
       return;
     }
@@ -1165,13 +1373,11 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   /// controller via [renderTerminal.selectCharacters] or
   /// [renderTerminal.selectBufferRange] before calling this.
   void _commitSelection(BufferRangeLine range, {Offset? scrollPosition}) {
-    final previousRange = _selectedRange;
-    if (previousRange != range) {
+    final BufferRangeLine nextRange = range.normalized;
+    if (_selectedRange != nextRange) {
       setState(() {
-        _selectedRange = range;
+        _selectedRange = nextRange;
       });
-    } else {
-      _selectedRange = range;
     }
     if (scrollPosition != null) {
       if (terminalView.autoScrollSelection(scrollPosition)) {
@@ -1197,7 +1403,10 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
           return;
         }
         try {
-          terminalView.autoScrollSelection(pending);
+          // Stop once the finger leaves the edge; nothing else stops this timer.
+          if (!terminalView.autoScrollSelection(pending)) {
+            _stopSelectionAutoScroll();
+          }
         } catch (error, stackTrace) {
           FlutterError.reportError(FlutterErrorDetails(
             exception: error,
@@ -1230,7 +1439,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   void _resetInteractionState() {
     _resetMouseSelectionState();
     _resetDragHandleState();
-    _longPressInitialCellOffset = null;
+    _longPressAnchorRange = null;
+    _longPressMoveCell = null;
     _suppressNextTapUp = false;
     _trackedPointers.clear();
     _zoomInitialDistance = null;
@@ -1258,7 +1468,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
 
     final cellOffset = renderTerminal.getCellOffset(details.localPosition);
     final usesTouchSelectionUi =
-        _shouldUseTouchSelectionUiForPointer(details.kind);
+        _isTouchInteraction;
 
     final wordRange = renderTerminal.selectWord(cellOffset);
     if (wordRange != null) {
@@ -1282,12 +1492,21 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   void _handleDragUpdate(Offset localPosition) {
     if (_dragHandleFixedPoint == null) return;
 
+    _updateMagnifier(localPosition);
+
     final currentCellOffset = renderTerminal.getCellOffset(localPosition);
 
     // 防止拖动到相同位置
-    final currentHandleEnd = _activeDragHandle == _DragHandleType.start
-        ? _selectedRange?.begin
-        : _selectedRange?.end;
+    final BufferRangeLine? handleRange = _selectedRange?.normalized;
+    if (handleRange == null) {
+      // Selection was invalidated mid-drag; _syncSelectionFromController owns
+      // the reset, this is just a belt-and-suspenders guard.
+      _resetDragHandleState();
+      return;
+    }
+    final CellOffset currentHandleEnd = _activeDragHandle == _DragHandleType.start
+        ? handleRange.begin
+        : _lastSelectedCell(handleRange.end);
     if (currentCellOffset == currentHandleEnd) {
       return;
     }
@@ -1349,28 +1568,16 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     // 执行原有的长按逻辑 - 直接选中单词
     _clearSelection();
 
+    _showMagnifier(details.localPosition, _MagnifierSource.longPress);
+
     final longPressCellOffset = renderTerminal.getCellOffset(
       details.localPosition,
     );
 
-    // 直接选中单词而非折叠选区（符合 Android 原生行为）
-    final wordRange = renderTerminal.selectWord(longPressCellOffset);
-    if (wordRange != null) {
-      _commitSelection(wordRange);
-      _selectionHandlesVisible = true;
-
-      // 立即显示工具栏
-      if (widget.showToolbar && !wordRange.isCollapsed) {
-        final Rect? selectionRect = _currentSelectionGlobalRect();
-        if (selectionRect != null) {
-          widget.terminalView.showSelectionToolbar(selectionRect);
-        }
-      }
+    if (_isTouchInteraction) {
+      _beginTouchLongPressSelection(longPressCellOffset);
     } else {
-      // 如果无法选中单词，回退到选中单个字符
-      _longPressInitialCellOffset = longPressCellOffset;
-      _commitSelection(renderTerminal.selectCharacters(longPressCellOffset));
-      _selectionHandlesVisible = true;
+      _beginMouseLongPressSelection(longPressCellOffset);
     }
 
     // 重置拖杆状态
@@ -1380,48 +1587,84 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     HapticFeedback.lightImpact();
   }
 
+  void _beginTouchLongPressSelection(CellOffset cellOffset) {
+    final anchor = _wordOrCellAt(cellOffset);
+    _longPressAnchorRange = anchor;
+    _longPressMoveCell = null;
+    _commitSelection(anchor);
+    _selectionHandlesVisible = true;
+  }
+
+  void _beginMouseLongPressSelection(CellOffset cellOffset) {
+    _commitSelection(_wordOrCellAt(cellOffset));
+    _selectionHandlesVisible = false;
+  }
+
+  BufferRangeLine _wordOrCellAt(CellOffset cellOffset) {
+    return renderTerminal.selectWord(cellOffset) ??
+        renderTerminal.selectCharacters(cellOffset, cellOffset);
+  }
+
   void _onLongPressMoveUpdate(LongPressMoveUpdateDetails details) {
+    _updateMagnifier(details.localPosition);
+
     // 如果在拖杆模式，不处理长按移动
     if (_isDragHandleReady || _isDraggingHandle) {
       return;
     }
 
-    // 处理传统的长按拖动选择（仅用于初始化选区）
-    if (_longPressInitialCellOffset == null) {
+    final anchor = _longPressAnchorRange;
+    if (anchor == null) {
       return;
     }
 
+    final normalized = anchor.normalized;
     final currentCellOffset = renderTerminal.getCellOffset(
       details.localPosition,
     );
 
-    // 防止无效更新
-    if (currentCellOffset == _longPressInitialCellOffset) {
+    if (currentCellOffset == _longPressMoveCell) {
       return;
     }
+    _longPressMoveCell = currentCellOffset;
 
-    _commitSelection(
-      renderTerminal.selectCharacters(
-        _longPressInitialCellOffset!,
+    final BufferRangeLine applied;
+    // normalized.end is exclusive, so the first cell past the selection is
+    // exactly (end). isBefore(end) stays true for every cell inside the
+    // selection, so this only fires once the finger leaves it.
+    if (!currentCellOffset.isBefore(normalized.end)) {
+      // selectCharacters, not (x + 1): wide glyphs fold x+1 back to the start.
+      applied = renderTerminal.selectCharacters(
+        normalized.begin,
         currentCellOffset,
-      ),
-      scrollPosition: details.localPosition,
-    );
+      );
+    } else if (currentCellOffset.isBefore(normalized.begin)) {
+      applied = renderTerminal.selectBufferRange(
+        BufferRangeLine(currentCellOffset, normalized.end),
+      );
+    } else {
+      applied = renderTerminal.selectBufferRange(normalized);
+    }
+
+    _commitSelection(applied, scrollPosition: details.localPosition);
   }
 
   void _onLongPressEnd(LongPressEndDetails details) {
-    // 长按结束只处理初始选区创建的情况
-    if (_longPressInitialCellOffset != null) {
-      _longPressInitialCellOffset = null;
-      _selectionHandlesVisible = true;
+    _hideMagnifier(_MagnifierSource.longPress);
+    _stopSelectionAutoScroll();
 
-      if (widget.showToolbar &&
-          _selectedRange != null &&
-          !_selectedRange!.isCollapsed) {
-        final Rect? selectionRect = _currentSelectionGlobalRect();
-        if (selectionRect != null) {
-          widget.terminalView.showSelectionToolbar(selectionRect);
-        }
+    if (_longPressAnchorRange == null) {
+      return;
+    }
+    _longPressAnchorRange = null;
+    _selectionHandlesVisible = true;
+
+    if (widget.showToolbar &&
+        _selectedRange != null &&
+        !_selectedRange!.isCollapsed) {
+      final Rect? selectionRect = _currentSelectionGlobalRect();
+      if (selectionRect != null) {
+        widget.terminalView.showSelectionToolbar(selectionRect);
       }
     }
   }

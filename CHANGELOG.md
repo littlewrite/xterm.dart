@@ -1,29 +1,42 @@
 ## Unreleased
-* **Breaking:** remove the selection-handle animation API — `SelectionAnimation`,
-  `SelectionAnimationType`, and `TerminalController.selectionAnimation`. The
-  animation drove identity tweens that no widget ever consumed, so it had no
-  visual effect; it only scheduled a repaint every frame.
-* Deprecate `TerminalController`'s `vsync` parameter. It existed solely to drive
-  that animation and is now unused. It is kept only so existing call sites keep
-  compiling — drop the argument, the parameter will be removed later.
-* **Breaking:** `TerminalViewState` no longer mixes in `TickerProviderStateMixin`
-  and is therefore no longer a `TickerProvider`. This was only needed to pass
-  the widget's own state as the `vsync` argument above; keep a plain
-  `TickerProviderStateMixin` on your own state if you need one.
+* **Breaking:** remove the selection-handle animation API (`SelectionAnimation`,
+  `SelectionAnimationType`, `TerminalController.selectionAnimation`) and drop
+  the `TickerProviderStateMixin` from `TerminalViewState` — it no longer is a
+  `TickerProvider`, so add your own mixin if you need one. `TerminalController`'s
+  now-unused `vsync` parameter is deprecated but kept so call sites compile.
+* **Breaking:** remove `TerminalSelectionInteractionMode` and
+  `TerminalView.selectionInteractionMode`. The selection UI follows the pointer
+  kind, not this switch.
 * Keep selection drag handles anchored when the buffer mutates without a new
-  selection (streaming output, scrollback trim, `clear`). Handle positions are
-  now re-derived from the live anchors the painter uses.
-* Add paint-only terminal highlight overlays with per-line invalidation,
-  preserving the terminal's original ANSI cell styles.
-* Cache compiled highlight grammars and limit visible-line parsing work.
-* Fix highlight cache invalidation for source replacement, line reindexing,
-  inverse cells, and freshly parsed lines.
-* Keep composing text and IME caret geometry in sync when terminal styles or
-  composition anchors change.
-* Match Windows Terminal clipboard shortcuts on Windows while preserving
-  `Ctrl+C` as terminal input when no selection is active.
-* Preserve terminal control keys in Linux desktop shortcuts.
-* Encode Alt-modified letters with their actual character case.
+  selection (streaming output, scrollback trim, `clear`); positions are
+  re-derived from the live anchors the painter uses.
+* Add paint-only terminal highlights with per-line invalidation, cached
+  grammars, and correct invalidation on writes; keep IME composing text and
+  caret geometry in sync.
+* Match Windows Terminal clipboard shortcuts on Windows while keeping `Ctrl+C`
+  as terminal input without a selection, preserve Linux control keys, and encode
+  Alt letters with their actual case.
+* Add a long-press selection magnifier that follows the finger, sits clear of
+  the touched row, and clamps inside the viewport (`showMagnifier` opts out).
+  Every platform now gets the same 1.25x Material lens — Cupertino never
+  magnified (flutter/flutter#155275) — tinged with the inverted background and
+  given its own repaint boundary.
+* Report the mouse press on pointer-down instead of at tap-up, so a fast drag no
+  longer sends motion and a release for a button the program was never told was
+  down (vim/htop desync). The matching release is now sent even when the gesture
+  is cancelled.
+* `readOnly` now blocks all terminal input, not just IME — hardware keys are
+  ignored too.
+* Fix the selection toolbar: replay a request dropped while the clipboard status
+  was still `unknown`, keep it reachable under `hardwareKeyboardOnly`, and
+  shrink the handle hit rect to the platform's minimum touch target so it cannot
+  swallow dismissal taps.
+* Fix selection dragging: drop the handle state when the controller selection is
+  cleared or replaced mid-drag (was a null-check crash), extend a long-press
+  selection onto the first cell past it, and clear the long-press anchor when
+  the gesture is cancelled.
+* Clear a pending toolbar request when the view loses focus.
+* Regenerate the stale `htop` and `colors` goldens (antialiasing-level noise).
 
 ## [4.0.0] - 2024-02-27
 * Update for Flutter 3.19 [#190]. Thanks [@domesticmouse].

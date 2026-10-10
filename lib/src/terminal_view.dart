@@ -18,12 +18,10 @@ import 'package:xterm/src/ui/cursor_type.dart';
 import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/src/ui/input_map.dart';
-import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/scroll_handler.dart';
-import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/shortcut/actions.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
@@ -92,7 +90,7 @@ class TerminalView extends StatefulWidget {
     this.hideScrollBar = true,
     this.viewOffset = Offset.zero,
     this.showToolbar = true,
-    this.selectionInteractionMode = TerminalSelectionInteractionMode.adaptive,
+    this.showMagnifier = true,
     this.enableSuggestions = true,
     this.scrollBehavior,
     this.toolbarBuilder,
@@ -233,9 +231,7 @@ class TerminalView extends StatefulWidget {
 
   final bool showToolbar;
 
-  /// Controls whether selection UI should follow the legacy desktop behavior
-  /// or the mobile-friendly "touch shows menu, mouse uses right click" mode.
-  final TerminalSelectionInteractionMode selectionInteractionMode;
+  final bool showMagnifier;
 
   /// If this is false, some Chinese Android will open safe keyboard.
   final bool enableSuggestions;
@@ -579,54 +575,47 @@ class TerminalViewState extends State<TerminalView>
       child: child,
     );
 
-    if (!widget.hardwareKeyboardOnly) {
-      child = CustomTextEdit(
-        key: _customTextEditKey,
-        focusNode: _focusNode,
-        autofocus: widget.autofocus,
-        inputType: widget.keyboardType,
-        keyboardAppearance: widget.keyboardAppearance,
-        deleteDetection: widget.deleteDetection,
-        enableSuggestions: widget.enableSuggestions,
-        shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
-        onInsert: _onInsert,
-        onDelete: () {
-          _scrollToBottom();
-          widget.terminal.keyInput(TerminalKey.backspace);
+    // hardwareKeyboardOnly means "never raise the soft keyboard", not "no
+    // text-editing widget". The selection toolbar lives in CustomTextEdit, so
+    // dropping the widget would make showToolbar silently do nothing — and the
+    // host has no way to tell that from a toolbar the user dismissed.
+    child = CustomTextEdit(
+      key: _customTextEditKey,
+      focusNode: _focusNode,
+      autofocus: widget.autofocus,
+      inputConnectionEnabled: !widget.hardwareKeyboardOnly,
+      inputType: widget.keyboardType,
+      keyboardAppearance: widget.keyboardAppearance,
+      deleteDetection: widget.deleteDetection,
+      enableSuggestions: widget.enableSuggestions,
+      shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
+      onInsert: _onInsert,
+      onDelete: () {
+        _scrollToBottom();
+        widget.terminal.keyInput(TerminalKey.backspace);
+        _updateCursorBlink(resetVisible: true);
+      },
+      onComposing: _onComposing,
+      onAction: (action) {
+        _scrollToBottom();
+        // Android sends TextInputAction.newline when the user presses the virtual keyboard's enter key.
+        if (action == TextInputAction.done ||
+            action == TextInputAction.newline) {
+          widget.terminal.keyInput(TerminalKey.enter);
           _updateCursorBlink(resetVisible: true);
-        },
-        onComposing: _onComposing,
-        onAction: (action) {
-          _scrollToBottom();
-          // Android sends TextInputAction.newline when the user presses the virtual keyboard's enter key.
-          if (action == TextInputAction.done ||
-              action == TextInputAction.newline) {
-            widget.terminal.keyInput(TerminalKey.enter);
-            _updateCursorBlink(resetVisible: true);
-          }
-        },
-        onKeyEvent: _handleKeyEvent,
-        onInputConnectionChange: _onInputConnectionChange,
-        readOnly: widget.readOnly,
-        toolbarBuilder: widget.toolbarBuilder,
-        hasSelection: () => _controller.selection?.isCollapsed == false,
-        getSelectedText: () => renderTerminal.selectedText ?? '',
-        onCopied: widget.onCopied,
-        onSelectAll: widget.onSelectAll ?? () => renderTerminal.selectAll(),
-        onPaste: widget.onPaste,
-        child: child,
-      );
-    } else if (!widget.readOnly) {
-      // Only listen for key input from a hardware keyboard.
-      child = CustomKeyboardListener(
-        child: child,
-        focusNode: _focusNode,
-        autofocus: widget.autofocus,
-        onInsert: _onInsert,
-        onComposing: _onComposing,
-        onKeyEvent: _handleKeyEvent,
-      );
-    }
+        }
+      },
+      onKeyEvent: _handleKeyEvent,
+      onInputConnectionChange: _onInputConnectionChange,
+      readOnly: widget.readOnly,
+      toolbarBuilder: widget.toolbarBuilder,
+      hasSelection: () => _controller.selection?.isCollapsed == false,
+      getSelectedText: () => renderTerminal.selectedText ?? '',
+      onCopied: widget.onCopied,
+      onSelectAll: widget.onSelectAll ?? () => renderTerminal.selectAll(),
+      onPaste: widget.onPaste,
+      child: child,
+    );
 
     child = TerminalActions(
       terminal: widget.terminal,
@@ -638,7 +627,7 @@ class TerminalViewState extends State<TerminalView>
     child = TerminalGestureHandler(
       viewOffset: widget.viewOffset,
       showToolbar: widget.showToolbar,
-      selectionInteractionMode: widget.selectionInteractionMode,
+      showMagnifier: widget.showMagnifier,
       terminalView: this,
       terminalController: _controller,
       onTapUp: _onTapUp,
@@ -1028,6 +1017,9 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _onInsert(String text) {
+    if (widget.readOnly) {
+      return;
+    }
     final key = charToTerminalKey(text);
 
     // On mobile platforms there is no guarantee that virtual keyboard will
@@ -1085,6 +1077,13 @@ class TerminalViewState extends State<TerminalView>
     }
 
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+
+    // A read-only view accepts no terminal input. Shortcuts (copy, select all,
+    // paste) and the host's onKeyEvent already ran above, so only the
+    // key-to-PTY forwarding is blocked here.
+    if (widget.readOnly) {
       return KeyEventResult.ignored;
     }
 
