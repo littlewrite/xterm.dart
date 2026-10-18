@@ -37,6 +37,22 @@
   the gesture is cancelled.
 * Clear a pending toolbar request when the view loses focus.
 * Regenerate the stale `htop` and `colors` goldens (antialiasing-level noise).
+* Cache rendered line Pictures by content instead of `BufferLine` identity:
+  repeated rows share one recording, while a redraw that only moves revisions
+  reuses its Pictures. Highlight overlays key on their resolved spans, and the
+  paint path reuses its cell and background scratch objects.
+* **Breaking:** `TerminalView.keyboardType` now defaults to
+  `TextInputType.text`, not `TextInputType.emailAddress`, to leave IME
+  composition available. Pass the old value explicitly to keep it.
+* Add `Terminal.writeBytes` for chunked UTF-8 input, with `flushBytes` at end of
+  stream. Split characters stay intact; invalid bytes become U+FFFD.
+* Support synchronized output (DEC private mode 2026): while a program brackets
+  a redraw with `CSI ? 2026 h` … `CSI ? 2026 l`, the view keeps its last content
+  frame. A one-second watchdog releases a program that never does.
+* Support SGR 5 text blink, with `TerminalView.textBlink` to turn it off. Only
+  blinking rows switch between two cached Pictures; screens without SGR 5 run
+  no timer.
+* DECRQM (`CSI ? Ps $ p`) now reports modes 1, 6, 12, 25 and 2026 as well.
 
 ## [4.0.0] - 2024-02-27
 * Update for Flutter 3.19 [#190]. Thanks [@domesticmouse].

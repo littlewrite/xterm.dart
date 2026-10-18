@@ -8,7 +8,7 @@ import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/themes.dart';
 
-/// N5 gate profile (perf-plan-v2).
+/// Gate profile: static / scroll-output / full 三者的 μs 与 builds 对比。
 ///
 /// After N4a, is scroll-output / tail-f still expensive enough to justify a
 /// whole-viewport scroll Picture reuse path?
@@ -132,9 +132,16 @@ void main() {
 
     final fullM = measure(
       advance: (frame, render, terminal, owner) {
+        // Every row of every frame is content no other row or frame produces,
+        // so nothing is served from the picture cache: this is the all-miss
+        // bound the gate is about. A pattern sampled from a shorter cycle would
+        // be shared between rows and stop measuring it.
         final buf = StringBuffer('\x1b[H');
-        for (var i = 0; i < cols * rows; i++) {
-          buf.writeCharCode(33 + (frame * 7 + i) % 90);
+        for (var row = 0; row < rows; row++) {
+          final label = '$frame.$row ';
+          buf
+            ..write(label)
+            ..write('x' * (cols - label.length));
         }
         terminal.write(buf.toString());
       },

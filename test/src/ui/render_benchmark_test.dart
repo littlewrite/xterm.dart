@@ -9,9 +9,9 @@ import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/themes.dart';
 
-/// Headless 渲染性能 benchmark（perf-plan-v2 批 N0）。
+/// Headless 渲染性能 benchmark。
 ///
-/// 测量目标：Dart 侧每次 [RenderTerminal.paint] 的 CPU 成本，以及可选的
+/// 测量目标：Dart 侧每次 [RenderTerminal.paint] 的 CPU 成本，以及
 /// [TerminalPainter.linePictureBuildCount]。
 ///
 /// 不测量：Skia/Impeller 光栅化、合成器 bitmap cache、真机 CPU%。
@@ -19,7 +19,11 @@ import 'package:xterm/src/ui/themes.dart';
 /// 运行：
 ///   fvm flutter test test/src/ui/render_benchmark_test.dart
 ///
-/// 数字写入 docs/perf-plan-v2.md §5.4。对比必须同一机器、同命令。
+/// 对比必须同一机器、同命令，且**按场景单独跑**（`--plain-name "<场景名>"`）。
+/// 整个文件一起跑时，前面的场景会按自己录制了多少个 Picture 把绘制路径 JIT
+/// 预热到不同程度，于是后面便宜场景的 μs 随代码版本一起漂移：曾量到
+/// sparse-typing 在一个版本里 +39%，而同一份代码单独跑只差 1.7%。单独跑时
+/// 每个场景各自预热，数字才可比。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -131,6 +135,12 @@ void main() {
       );
       report('full-screen-refresh', us, builds);
       expect(us, greaterThan(0.0));
+      expect(
+        builds,
+        lessThan(rows * 10),
+        reason: 'content caching must keep full-screen picture builds well '
+            'below one per row and frame (got $builds)',
+      );
     });
 
     test('sparse-typing', () {
@@ -177,6 +187,36 @@ void main() {
       expect(us, greaterThan(0.0));
     });
 
+    test('redraw-same-screen', () {
+      // TUI 每帧把自己的屏幕从头重画一遍（清屏 + 重写同样的文字）：cell 被
+      // 重写（revision 动了）但屏幕看起来一模一样。picture 按内容缓存时，
+      // 第一帧之后不再录制任何一行。
+      final terminal = Terminal(maxLines: 1000);
+      final screen = StringBuffer();
+      for (var r = 0; r < rows; r++) {
+        if (r > 0) screen.write('\r\n');
+        // 比 cols 少一格：最后一格不留下待换行，整屏不会滚。
+        screen.write('row $r'.padRight(cols - 1));
+      }
+      final text = screen.toString();
+
+      final (us, builds) = measure(
+        setup: () => makeRender(terminal),
+        advanceInput: (frame, render, controller) {
+          terminal.write('\x1b[H\x1b[2J');
+          terminal.write(text);
+        },
+      );
+      report('redraw-same-screen', us, builds);
+      expect(us, greaterThan(0.0));
+      expect(
+        builds,
+        0,
+        reason: '每帧重画的还是同一屏内容，应当全部命中内容缓存 '
+            '(got $builds builds over 200 frames)',
+      );
+    });
+
     test('selection-drag', () {
       // 内容固定，每帧只改选区几何。N2：linePictureBuilds 在测量段应 ≈0
       //（始终 paintLine + selection rect，选区不进 line Picture key）。
@@ -206,8 +246,7 @@ void main() {
       expect(
         builds,
         lessThan(rows * 2),
-        reason:
-            'N2: selection-only frames must reuse paintLine cache '
+        reason: 'N2: selection-only frames must reuse paintLine cache '
             '(got $builds builds over 200 frames)',
       );
     });

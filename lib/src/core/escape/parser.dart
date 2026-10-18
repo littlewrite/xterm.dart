@@ -237,7 +237,8 @@ class EscapeParser {
 
   /// The last parsed [_Csi]. This is a mutable singletion by design to reduce
   /// object allocations.
-  final _csi = _Csi(finalByte: 0, params: [], separators: [], intermediates: []);
+  final _csi =
+      _Csi(finalByte: 0, params: [], separators: [], intermediates: []);
 
   /// Parse a CSI from the head of the queue. Return false if the CSI isn't
   /// complete. After a CSI is successfully parsed, [_csi] is updated.
@@ -1294,6 +1295,8 @@ class EscapeParser {
         return;
       case 2004:
         return handler.setBracketedPasteMode(enabled);
+      case 2026:
+        return handler.setSynchronizedOutputMode(enabled);
       default:
         return handler.setUnknownDecMode(mode, enabled);
     }

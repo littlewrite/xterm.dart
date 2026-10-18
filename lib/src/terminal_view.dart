@@ -70,12 +70,13 @@ class TerminalView extends StatefulWidget {
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
     this.mouseCursor = SystemMouseCursors.text,
-    this.keyboardType = TextInputType.emailAddress,
+    this.keyboardType = TextInputType.text,
     this.keyboardAppearance = Brightness.dark,
     this.cursorType = TerminalCursorType.block,
     this.cursorBlink = false,
     this.cursorBlinkMode = false,
     this.cursorBlinkInterval = const Duration(milliseconds: 530),
+    this.textBlink = true,
     this.alwaysShowCursor = false,
     this.deleteDetection = false,
     this.shortcuts,
@@ -157,7 +158,11 @@ class TerminalView extends StatefulWidget {
   final MouseCursor mouseCursor;
 
   /// The type of information for which to optimize the text input control.
-  /// [TextInputType.emailAddress] by default.
+  /// [TextInputType.text] by default.
+  ///
+  /// A terminal takes plain text, and [TextInputType.text] is what leaves a
+  /// platform IME free to compose — the other types ask for a specialised
+  /// keyboard, and some of them turn composition off.
   final TextInputType keyboardType;
 
   /// The appearance of the keyboard. [Brightness.dark] by default.
@@ -176,6 +181,13 @@ class TerminalView extends StatefulWidget {
 
   /// Interval used when [cursorBlink] is enabled.
   final Duration cursorBlinkInterval;
+
+  /// Whether text the program marks with SGR 5 blinks. [true] by default.
+  ///
+  /// Timers and re-recording only happen while a blinking cell is actually on
+  /// screen, so turning this off changes nothing for output that never uses the
+  /// attribute.
+  final bool textBlink;
 
   /// Whether to always show the cursor. This is useful for debugging.
   /// [false] by default.
@@ -266,7 +278,8 @@ class TerminalView extends StatefulWidget {
   /// it. [link] is null when the pointer leaves a link. Only fired for
   /// [TerminalLinkInteraction.modifier] while the modifier is held, and never
   /// on mobile.
-  final void Function(TerminalHyperlink? link, Offset localPosition)? onLinkHover;
+  final void Function(TerminalHyperlink? link, Offset localPosition)?
+      onLinkHover;
 
   @override
   State<TerminalView> createState() => TerminalViewState();
@@ -530,8 +543,8 @@ class TerminalViewState extends State<TerminalView>
                   textSize,
                   cursorBlinkVisible: _cursorBlinkVisible.value,
                   paintCursor: false,
-                  underlineAllWebLinks: widget.linkInteraction ==
-                      TerminalLinkInteraction.always,
+                  underlineAllWebLinks:
+                      widget.linkInteraction == TerminalLinkInteraction.always,
                   underlineFileLinks: widget.linkInteraction ==
                       TerminalLinkInteraction.modifier,
                   armedLink: _armedLink,
@@ -795,8 +808,7 @@ class TerminalViewState extends State<TerminalView>
         WidgetsBinding.instance.removeObserver(this);
       }
     }
-    _linkModifierPressed =
-        wantsModifierListener && _isLinkModifierPressed();
+    _linkModifierPressed = wantsModifierListener && _isLinkModifierPressed();
     _resetLinkHover();
   }
 
@@ -1640,6 +1652,7 @@ class TerminalViewState extends State<TerminalView>
       cursorBlinkEnabled: _cursorBlinkEnabled,
       cursorBlinkVisible: cursorBlinkVisible,
       alwaysShowCursor: widget.alwaysShowCursor,
+      textBlink: widget.textBlink,
       devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
       paintCursor: paintCursor,
       paintSelectionHandles: widget.showToolbar,
@@ -1682,6 +1695,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.underlineFileLinks,
     required this.armedLink,
     required this.armedLinkLine,
+    this.textBlink = true,
     this.onEditableRect,
   });
 
@@ -1717,6 +1731,8 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final bool paintCursor;
 
+  final bool textBlink;
+
   final bool paintSelectionHandles;
 
   final bool underlineAllWebLinks;
@@ -1749,6 +1765,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       devicePixelRatio: devicePixelRatio,
       paintCursor: paintCursor,
       paintSelectionHandles: paintSelectionHandles,
+      textBlinkEnabled: textBlink,
       onEditableRect: onEditableRect,
     );
     render
@@ -1779,6 +1796,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..devicePixelRatio = devicePixelRatio
       ..paintCursor = paintCursor
       ..paintSelectionHandles = paintSelectionHandles
+      ..textBlinkEnabled = textBlink
       ..underlineAllWebLinks = underlineAllWebLinks
       ..underlineFileLinks = underlineFileLinks
       ..armedLink = armedLink
@@ -2027,7 +2045,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
 
   /// Cursor visual identity used to gate overlay paints.
   ///
-  /// Fields (perf-plan-v2 §4 N1): editable cursor position, cell size, viewport
+  /// Fields: editable cursor position, cell size, viewport
   /// scroll pixels, show/paint flags, blink visible, type, focus, composing
   /// text, theme cursor color hash.
   Object? _cursorVisualFingerprint(RenderTerminal? renderTerminal) {
@@ -2060,8 +2078,7 @@ class _RenderTerminalCursorOverlay extends RenderBox {
 
   void _markNeedsPaintIfCursorVisualChanged() {
     final fingerprint = _cursorVisualFingerprint(_renderTerminal());
-    if (fingerprint != null &&
-        fingerprint == _lastCursorVisualFingerprint) {
+    if (fingerprint != null && fingerprint == _lastCursorVisualFingerprint) {
       return;
     }
     // Keep fingerprint in lock-step with a scheduled dirty so a no-op notify

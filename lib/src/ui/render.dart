@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' show max;
 import 'dart:ui';
 
@@ -29,16 +30,21 @@ import 'package:xterm/src/utils/unicode_v11.dart';
 typedef EditableRectCallback = void Function(
     Size editableSize, Matrix4 transform, Rect caretRect);
 
-/// Content-layer invalidation channels (perf-plan-v2 N3 / WT Invalidate*).
+/// Content-layer invalidation channels (WT Invalidate*).
 ///
 /// Cursor blink/position on the product path is handled by the cursor overlay
 /// (N1 fingerprint), not [TerminalInvalidation.cursor] on this layer.
 enum TerminalInvalidation {
   cursor,
   selection,
+
   /// Controller notified but selection geometry / highlights unchanged.
   selectionSkipped,
   content,
+
+  /// The SGR 5 blink phase flipped. Rows carrying the attribute draw their
+  /// other picture; every other row is a cache hit.
+  textBlink,
   chrome,
 }
 
@@ -65,6 +71,7 @@ class RenderTerminal extends RenderBox
     double devicePixelRatio = 1.0,
     bool paintCursor = true,
     bool paintSelectionHandles = true,
+    bool textBlinkEnabled = true,
     EditableRectCallback? onEditableRect,
     String? composingText,
   })  : _terminal = terminal,
@@ -80,6 +87,7 @@ class RenderTerminal extends RenderBox
         _highlightSource = highlightSource,
         _paintCursor = paintCursor,
         _paintSelectionHandles = paintSelectionHandles,
+        _textBlinkEnabled = textBlinkEnabled,
         _shouldReportEditableRect = onEditableRect != null,
         _onEditableRect = onEditableRect,
         _composingText = composingText,
@@ -109,6 +117,7 @@ class RenderTerminal extends RenderBox
     if (_terminal == terminal) return;
     if (attached) _terminal.removeListener(_onTerminalChange);
     _terminal = terminal;
+    _releaseSynchronizedOutput();
     _compositionAnchor?.dispose();
     _compositionAnchor = null;
     _compositionAnchorBuffer = null;
@@ -157,6 +166,7 @@ class RenderTerminal extends RenderBox
 
   set textStyle(TerminalStyle value) {
     if (value == _painter.textStyle) return;
+    _releaseSynchronizedOutput();
     _painter.textStyle = value;
     // Painter setter already clears line pictures; layout for new cell metrics.
     markNeedsLayout();
@@ -166,6 +176,7 @@ class RenderTerminal extends RenderBox
 
   set textScaler(TextScaler value) {
     if (value == _painter.textScaler) return;
+    _releaseSynchronizedOutput();
     _painter.textScaler = value;
     markNeedsLayout();
     _markComposingLayerNeedsPaint();
@@ -181,6 +192,7 @@ class RenderTerminal extends RenderBox
 
   set devicePixelRatio(double value) {
     if (value == _painter.devicePixelRatio) return;
+    _releaseSynchronizedOutput();
     _painter.devicePixelRatio = value;
     // devicePixelRatio also clears line pictures inside painter setter.
     invalidateChrome();
@@ -223,7 +235,7 @@ class RenderTerminal extends RenderBox
   set cursorBlinkVisible(bool value) {
     if (value == _cursorBlinkVisible) return;
     _cursorBlinkVisible = value;
-    // N1 (perf-plan-v2): blink is an overlay paint param (Ghostty blink_visible
+    // Blink is an overlay paint param (Ghostty blink_visible
     // / WT cursor mutation id). Never dirty the content layer for blink ticks.
     // When paintCursor is true (tests / legacy), still dirty so the main paint
     // path can hide/show the in-layer cursor.
@@ -235,6 +247,59 @@ class RenderTerminal extends RenderBox
     if (value == _alwaysShowCursor) return;
     _alwaysShowCursor = value;
     invalidateCursor();
+  }
+
+  bool _textBlinkEnabled;
+  set textBlinkEnabled(bool value) {
+    if (value == _textBlinkEnabled) return;
+    _textBlinkEnabled = value;
+    _syncTextBlink();
+  }
+
+  /// The visible half of the SGR 5 blink cycle, flipped by [_textBlinkTimer].
+  bool _textBlinkPhase = true;
+
+  Timer? _textBlinkTimer;
+
+  /// Half of xterm's 1 s blink period.
+  static const _textBlinkHalfPeriod = Duration(milliseconds: 530);
+
+  /// Runs the blink timer only while the last paint found an SGR 5 cell on
+  /// screen, so a terminal that never uses the attribute never runs a timer or
+  /// records a second picture. A blinking row keeps its pictures in the line
+  /// cache, so a flip re-records it once and every following flip is a hit.
+  void _syncTextBlink() {
+    if (_textBlinkEnabled && _painter.sawBlinkingText) {
+      _textBlinkTimer ??= Timer.periodic(
+        _textBlinkHalfPeriod,
+        (_) => _onTextBlinkTick(),
+      );
+      return;
+    }
+
+    _textBlinkTimer?.cancel();
+    _textBlinkTimer = null;
+    if (_textBlinkPhase) return;
+    _textBlinkPhase = true;
+    _painter.blinkVisible = true;
+    _debugNoteInvalidation(TerminalInvalidation.textBlink);
+    markNeedsPaint();
+  }
+
+  void _onTextBlinkTick() {
+    if (_contentHeld) return;
+    _textBlinkPhase = !_textBlinkPhase;
+    _painter.blinkVisible = _textBlinkPhase;
+    _debugNoteInvalidation(TerminalInvalidation.textBlink);
+    markNeedsPaint();
+  }
+
+  /// Whether the paint that just finished saw a blinking cell decides the timer,
+  /// but that can only be read once paint is over.
+  void _scheduleTextBlinkSync() {
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (attached) _syncTextBlink();
+    });
   }
 
   TerminalHighlightSource? _highlightSource;
@@ -298,6 +363,9 @@ class RenderTerminal extends RenderBox
     _armedLinkLine = value;
     markNeedsPaint();
   }
+
+  /// Reused by the per-frame selection foreground pass.
+  final _cellData = CellData.empty();
 
   EditableRectCallback? _onEditableRect;
   set onEditableRect(EditableRectCallback? value) {
@@ -430,7 +498,18 @@ class RenderTerminal extends RenderBox
                 (_compositionAnchor?.attached == true
                     ? _compositionAnchor!.offset
                     : null);
-    invalidateContent();
+    if (_terminal.synchronizedOutput) {
+      if (_synchronizedOutputTimedOut) {
+        // The watchdog already let this frame through. Do not take it again
+        // merely because the program keeps writing without releasing the mode.
+        invalidateContent();
+      } else {
+        _holdSynchronizedOutput();
+      }
+    } else {
+      _releaseSynchronizedOutput();
+      invalidateContent();
+    }
     // The composing layer is a repaint boundary, so terminal style changes
     // must invalidate it even when geometry stays unchanged.
     _markComposingLayerNeedsPaint();
@@ -438,6 +517,67 @@ class RenderTerminal extends RenderBox
     if (!_isComposingText || geometryChanged || compositionAnchorChanged) {
       _scheduleEditableRectUpdate();
     }
+  }
+
+  // --- Synchronized output (DEC private mode 2026) ----------------------
+
+  /// Releases a stuck hold after one second, like xterm.js.
+  static const _synchronizedOutputTimeout = Duration(seconds: 1);
+
+  bool _contentHeld = false;
+  bool _synchronizedOutputTimedOut = false;
+  Picture? _heldFrame;
+  Timer? _contentHoldTimeout;
+
+  /// Whether this render object is currently showing the held frame.
+  @visibleForTesting
+  bool get isHoldingSynchronizedOutput => _contentHeld;
+
+  /// Whether a frame Picture has been captured for the current hold.
+  @visibleForTesting
+  bool get hasHeldFrame => _heldFrame != null;
+
+  /// Number of times the held Picture was used to paint the content layer.
+  @visibleForTesting
+  int debugHeldFramePaintCount = 0;
+
+  /// Captures the current content and keeps it until release or watchdog.
+  /// The watchdog starts once and is not extended by later output.
+  void _holdSynchronizedOutput() {
+    if (_contentHeld || _synchronizedOutputTimedOut) return;
+    _contentHeld = true;
+    _captureHeldFrame();
+    _contentHoldTimeout = Timer(_synchronizedOutputTimeout, () {
+      _contentHoldTimeout = null;
+      _contentHeld = false;
+      _synchronizedOutputTimedOut = true;
+      _disposeHeldFrame();
+      if (attached) invalidateContent();
+    });
+  }
+
+  /// Drops the held frame; the caller decides when to repaint.
+  void _releaseSynchronizedOutput() {
+    _contentHoldTimeout?.cancel();
+    _contentHoldTimeout = null;
+    _synchronizedOutputTimedOut = false;
+    _contentHeld = false;
+    _disposeHeldFrame();
+  }
+
+  /// Records the current content layer as the frame a hold will show.
+  void _captureHeldFrame() {
+    if (!hasSize || size.isEmpty) return;
+    final recorder = PictureRecorder();
+    final canvas = Canvas(recorder);
+    _paintCanvas(canvas, Offset.zero);
+    _heldFrame?.dispose();
+    _heldFrame = recorder.endRecording();
+  }
+
+  void _disposeHeldFrame() {
+    _heldFrame?.dispose();
+    _heldFrame = null;
   }
 
   void _onControllerUpdate() {
@@ -504,6 +644,7 @@ class RenderTerminal extends RenderBox
   /// Clears line Picture cache then dirties content.
   void invalidateChrome() {
     _debugNoteInvalidation(TerminalInvalidation.chrome);
+    _releaseSynchronizedOutput();
     _painter.clearLinePictureCache();
     markNeedsPaint();
   }
@@ -563,6 +704,11 @@ class RenderTerminal extends RenderBox
 
   @override
   void dispose() {
+    _contentHoldTimeout?.cancel();
+    _contentHoldTimeout = null;
+    _disposeHeldFrame();
+    _textBlinkTimer?.cancel();
+    _textBlinkTimer = null;
     _compositionAnchor?.dispose();
     _releaseViewportAnchor();
     super.dispose();
@@ -575,6 +721,7 @@ class RenderTerminal extends RenderBox
 
   @override
   void systemFontsDidChange() {
+    _releaseSynchronizedOutput();
     _painter.clearFontCache();
     _markComposingLayerNeedsPaint();
     super.systemFontsDidChange();
@@ -1171,15 +1318,27 @@ class RenderTerminal extends RenderBox
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    _paint(context, offset);
+    final heldFrame = _heldFrame;
+    if (_contentHeld && heldFrame != null) {
+      debugHeldFramePaintCount++;
+      final canvas = context.canvas;
+      canvas.save();
+      canvas.translate(offset.dx, offset.dy);
+      canvas.drawPicture(heldFrame);
+      canvas.restore();
+    } else {
+      _paintCanvas(context.canvas, offset);
+    }
     context.paintChild(_composingLayer, offset);
   }
 
-  void _paint(PaintingContext context, Offset offset) {
-    final canvas = context.canvas;
-
+  void _paintCanvas(Canvas canvas, Offset offset) {
     final lines = _terminal.buffer.lines;
     final charHeight = _painter.cellSize.height;
+
+    // The rows painted below report whether anything on screen carries SGR 5,
+    // which decides whether the blink timer has anything to do.
+    _painter.beginBlinkScan();
 
     final firstLineOffset = _scrollOffset - _padding.top;
     final lastLineOffset = _scrollOffset + size.height + _padding.bottom;
@@ -1199,7 +1358,7 @@ class RenderTerminal extends RenderBox
     //      cell backgrounds do not stripe through translucent selection
     //   3) glyphs only in selected columns, with TerminalHighlightSpan overrides
     // Keep fingerprint in sync with what we actually painted (N3 gate).
-    final cellData = CellData.empty();
+    final cellData = _cellData;
     for (var i = effectFirstLine; i <= effectLastLine; i++) {
       final lineOffset = offset.translate(
           0, (i * charHeight + _lineOffset).truncateToDouble());
@@ -1255,6 +1414,8 @@ class RenderTerminal extends RenderBox
       effectFirstLine,
       effectLastLine,
     );
+
+    _scheduleTextBlinkSync();
   }
 
   /// Paints the text that is currently being composed in IME to [canvas] at
@@ -1492,8 +1653,8 @@ class RenderTerminal extends RenderBox
     }
 
     // 把目标行放到视口中部。
-    final target = ((line - visibleLines / 2) * cellHeight)
-        .clamp(0.0, _maxScrollExtent);
+    final target =
+        ((line - visibleLines / 2) * cellHeight).clamp(0.0, _maxScrollExtent);
     if ((target - currentScroll).abs() < 0.5) return;
     _jumpViewportTo(target);
   }

@@ -31,12 +31,26 @@ class TerminalPainter {
   /// cell no longer produces the same visual output. For example, when
   /// [_textStyle] is changed, or when the system font changes.
   final _paragraphCache = ParagraphCache(10240);
-  final _linePictureCache = <BufferLine, _CachedLinePictures>{};
+
+  /// Scratch objects for the synchronous per-line paint path.
+  final _cellScratch = CellData.empty();
+  final _backgroundPaint = Paint()..isAntiAlias = false;
+
+  /// Memoized content hash per line, invalidated by [BufferLine.revision].
+  final _lineContentCache = <BufferLine, _CachedLineContent>{};
+
+  /// Pictures keyed by content, so equal-looking rows share a recording.
+  final _linePictureCache = <int, ui.Picture>{};
+
   int _linePictureBuildCount = 0;
   int _linePictureCacheHitCount = 0;
-  int _linePictureCacheEntryCount = 0;
+  int _lineHashCount = 0;
 
+  /// Bounded by distinct contents; eviction may cause one later re-record.
   static const _maximumLinePictureCacheSize = 512;
+
+  /// Covers the viewport plus scrollback without retaining every line.
+  static const _maximumLineContentCacheSize = 1024;
 
   @visibleForTesting
   int get linePictureBuildCount => _linePictureBuildCount;
@@ -45,10 +59,31 @@ class TerminalPainter {
   @visibleForTesting
   int get linePictureCacheHitCount => _linePictureCacheHitCount;
 
+  /// Lines whose cells were hashed. An unchanged line must not be hashed again
+  /// on the next frame, however many frames paint it.
+  @visibleForTesting
+  int get lineHashCount => _lineHashCount;
+
   @visibleForTesting
   void resetLinePictureBuildCount() {
     _linePictureBuildCount = 0;
     _linePictureCacheHitCount = 0;
+    _lineHashCount = 0;
+  }
+
+  /// Whether blinking text is in the visible half of its cycle. While this is
+  /// false a cell carrying SGR 5 draws no glyph, and a row that holds one draws
+  /// the other of its two pictures. The render object drives it.
+  bool blinkVisible = true;
+
+  /// Whether any row painted since [beginBlinkScan] held an SGR 5 cell. The
+  /// render object runs a blink timer only while something on screen blinks, so
+  /// a screen with none pays neither the timer nor the extra picture.
+  bool get sawBlinkingText => _sawBlinkingText;
+  bool _sawBlinkingText = false;
+
+  void beginBlinkScan() {
+    _sawBlinkingText = false;
   }
 
   TerminalStyle get textStyle => _textStyle;
@@ -199,27 +234,29 @@ class TerminalPainter {
     // pictures on fractional devicePixelRatios (e.g. 125%/150% on Windows).
     // An explicit span list has no revision/identity contract. Avoid reusing
     // a cached picture unless a source can describe when it changed.
-    final cacheable = highlights == null;
-    var cached = cacheable ? _linePictureCache.remove(line) : null;
-    if (cached != null &&
-        (cached.revision != line.revision ||
-            cached.highlightRevision != highlightRevision ||
-            !identical(cached.highlightSource, highlightSource) ||
-            cached.highlightLineIndex != highlightLineIndex)) {
-      _linePictureCacheEntryCount--;
-      cached.dispose();
-      cached = null;
+    final content = _resolveLineContent(line);
+    if (content.hasBlink) {
+      _sawBlinkingText = true;
     }
 
-    final cachedPicture = cached?.picture;
-    if (cachedPicture != null) {
-      _linePictureCache[line] = cached!;
-      _linePictureCacheHitCount++;
-      canvas.save();
-      canvas.translate(offset.dx, offset.dy);
-      canvas.drawPicture(cachedPicture);
-      canvas.restore();
-      return;
+    final cacheable = highlights == null;
+    final cacheKey = cacheable
+        ? _linePictureKey(
+            content,
+            line,
+            highlightRevision: highlightRevision,
+            highlightSource: highlightSource,
+            highlightLineIndex: highlightLineIndex,
+          )
+        : 0;
+
+    if (cacheable) {
+      final cachedPicture = _linePictureCache[cacheKey];
+      if (cachedPicture != null) {
+        _linePictureCacheHitCount++;
+        _drawLinePicture(canvas, offset, cachedPicture);
+        return;
+      }
     }
 
     final recorder = ui.PictureRecorder();
@@ -237,38 +274,151 @@ class TerminalPainter {
     _linePictureBuildCount++;
 
     if (cacheable) {
-      cached ??= _CachedLinePictures(
-        line.revision,
-        highlightRevision,
-        highlightSource,
-        highlightLineIndex,
-      );
-      cached.picture = picture;
-      _linePictureCacheEntryCount++;
-      _linePictureCache[line] = cached;
+      _linePictureCache[cacheKey] = picture;
       _evictLinePictureIfNeeded();
     }
 
+    _drawLinePicture(canvas, offset, picture);
+  }
+
+  void _drawLinePicture(Canvas canvas, Offset offset, ui.Picture picture) {
     canvas.save();
     canvas.translate(offset.dx, offset.dy);
     canvas.drawPicture(picture);
     canvas.restore();
   }
 
+  /// The memoized content of [line]: its hash, and whether it carries SGR 5.
+  _CachedLineContent _resolveLineContent(BufferLine line) {
+    var content = _lineContentCache[line];
+    if (content == null) {
+      content = _CachedLineContent();
+      _lineContentCache[line] = content;
+      _evictLineContentIfNeeded();
+    }
+    if (content.revision != line.revision) {
+      _hashLine(line, content);
+    }
+    return content;
+  }
+
+  /// Key from cell content plus the overlay's resolved spans.
+  ///
+  /// Row index and source revision are deliberately excluded; only pixels
+  /// matter. SGR 5 adds the phase to the key, but only for a blinking row.
+  int _linePictureKey(
+    _CachedLineContent content,
+    BufferLine line, {
+    required int highlightRevision,
+    required TerminalHighlightSource? highlightSource,
+    required int highlightLineIndex,
+  }) {
+    var key = content.hash;
+
+    final source = highlightSource;
+    if (source != null) {
+      if (!content.overlayValid ||
+          content.overlayRevision != highlightRevision ||
+          !identical(content.overlaySource, source)) {
+        content
+          ..overlayRevision = highlightRevision
+          ..overlaySource = source
+          ..overlayValid = true
+          ..overlayHash = _hashSpans(
+            source.spansForLine(line, highlightLineIndex),
+          );
+      }
+      key = _mixKey(key, content.overlayHash);
+    }
+
+    if (content.hasBlink && !blinkVisible) {
+      key = _mixKey(key, _blinkHiddenSalt);
+    }
+    return key;
+  }
+
+  /// Combines two 30-bit hashes into one small-int key.
+  static int _mixKey(int content, int overlay) {
+    final high = (content >>> _laneBits) * _hashPrime & _hashMask;
+    final low = ((content & _hashMask) * _hashPrime + overlay) & _hashMask;
+    return (high << _laneBits) ^ low;
+  }
+
+  /// Hashes the fields that affect an overlay's pixels.
+  int _hashSpans(List<TerminalHighlightSpan> spans) {
+    var high = 0x2545f491 ^ spans.length;
+    var low = 0x9e3779b9;
+    for (final span in spans) {
+      high = (high * _hashPrime + span.startColumn) & _hashMask;
+      high = (high * _hashPrime + span.endColumn) & _hashMask;
+      high = (high * _hashPrime + span.addFlags) & _hashMask;
+      high = (high * _hashPrime + span.removeFlags) & _hashMask;
+      high =
+          (high * _hashPrime + (span.preserveAnsiColors ? 1 : 0)) & _hashMask;
+      low = (low * _hashPrime + (span.foreground?.hashCode ?? 0)) & _hashMask;
+      low = (low * _hashPrime + (span.background?.hashCode ?? 0)) & _hashMask;
+    }
+    return high * _hashPrime + low;
+  }
+
+  final _hashCell = CellData.empty();
+
+  /// Hashes the four cell words read by [_paintLineCellsPlain].
+  ///
+  /// Two 30-bit lanes keep the key a small int and the pass allocation-free.
+  /// The same pass also notes whether the row carries SGR 5.
+  void _hashLine(BufferLine line, _CachedLineContent content) {
+    _lineHashCount++;
+    var sawBlink = false;
+    var high = 0x1f123bb5 ^ line.length;
+    var low = 0x5f356495 ^ line.length;
+    final cell = _hashCell;
+    for (var i = 0; i < line.length; i++) {
+      line.getCellData(i, cell);
+      if (cell.flags & CellFlags.blink != 0) {
+        sawBlink = true;
+      }
+      high = (high * _hashPrime + cell.content) & _hashMask;
+      high = (high * _hashPrime + cell.foreground) & _hashMask;
+      low = (low * _hashPrime + cell.background) & _hashMask;
+      low = (low * _hashPrime + cell.flags) & _hashMask;
+    }
+    content
+      ..revision = line.revision
+      ..hash = high * _hashPrime + low
+      ..hasBlink = sawBlink
+      // A changed line must re-resolve its overlay.
+      ..overlayValid = false;
+  }
+
+  static const int _laneBits = 30;
+
+  /// 30 bits leaves room for one multiply and an add per cell word.
+  static const int _hashMask = (1 << _laneBits) - 1;
+
+  static const int _hashPrime = 0x01000193;
+
+  /// Salt for the hidden phase of a blinking row.
+  static const int _blinkHiddenSalt = 0x5bf03635;
+
   void _evictLinePictureIfNeeded() {
-    while (_linePictureCacheEntryCount > _maximumLinePictureCacheSize) {
-      final oldestLine = _linePictureCache.keys.first;
-      _linePictureCache.remove(oldestLine)?.dispose();
-      _linePictureCacheEntryCount--;
+    while (_linePictureCache.length > _maximumLinePictureCacheSize) {
+      final oldestKey = _linePictureCache.keys.first;
+      _linePictureCache.remove(oldestKey)?.dispose();
+    }
+  }
+
+  void _evictLineContentIfNeeded() {
+    while (_lineContentCache.length > _maximumLineContentCacheSize) {
+      _lineContentCache.remove(_lineContentCache.keys.first);
     }
   }
 
   void _clearLinePictureCache() {
-    for (final cached in _linePictureCache.values) {
-      cached.dispose();
+    for (final picture in _linePictureCache.values) {
+      picture.dispose();
     }
     _linePictureCache.clear();
-    _linePictureCacheEntryCount = 0;
   }
 
   /// Drop all cached line pictures (chrome invalidation: theme/font/highlight).
@@ -312,7 +462,7 @@ class TerminalPainter {
       );
       return;
     }
-    final cellData = CellData.empty();
+    final cellData = _cellScratch;
     final cellWidth = _cellSize.width;
     var highlightIndex = 0;
 
@@ -376,7 +526,7 @@ class TerminalPainter {
     bool paintBackground = true,
     bool paintForeground = true,
   }) {
-    final cellData = CellData.empty();
+    final cellData = _cellScratch;
     final cellWidth = _cellSize.width;
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
@@ -417,7 +567,7 @@ class TerminalPainter {
     }
     final cellWidth = _cellSize.width;
     final underlineY = offset.dy + _cellSize.height - 1;
-    final cellData = CellData.empty();
+    final cellData = _cellScratch;
     for (final decoration in decorations) {
       line.getCellData(decoration.startColumn, cellData);
       _paintUnderlineStroke(
@@ -433,8 +583,7 @@ class TerminalPainter {
 
   /// Ranges of [line] that should show an underline right now.
   @visibleForTesting
-  List<({int startColumn, int endColumn, bool dashed})>
-      resolveLinkDecorations(
+  List<({int startColumn, int endColumn, bool dashed})> resolveLinkDecorations(
     BufferLine line, {
     int lineIndex = -1,
     int? armedLineIndex,
@@ -619,6 +768,11 @@ class TerminalPainter {
     if (charCode == 0) return;
     final cellFlags = flagsOverride ?? cellData.flags;
 
+    // SGR 5 draws its glyph only in the visible half of the blink cycle. The
+    // cell's background is left alone, as xterm does: what blinks is the
+    // character, not the block behind it.
+    if (!blinkVisible && cellFlags & CellFlags.blink != 0) return;
+
     final glyphPaint = customGlyphPaint(
       cellData,
       foregroundOverride: foregroundOverride,
@@ -787,9 +941,7 @@ class TerminalPainter {
       color = resolveBackgroundColor(cellData.background);
     }
 
-    final paint = Paint()
-      ..color = color
-      ..isAntiAlias = false;
+    final paint = _backgroundPaint..color = color;
     final doubleWidth = cellData.content >> CellContent.widthShift == 2;
     final widthScale = doubleWidth ? 2 : 1;
     final size = Size(_cellSize.width * widthScale, _cellSize.height);
@@ -835,24 +987,21 @@ class TerminalPainter {
   }
 }
 
-class _CachedLinePictures {
-  _CachedLinePictures(
-    this.revision,
-    this.highlightRevision,
-    this.highlightSource,
-    this.highlightLineIndex,
-  );
+/// Cached hash and overlay state for one line.
+class _CachedLineContent {
+  /// A revision no [BufferLine] reports, so the first lookup misses.
+  int revision = -1;
 
-  final int revision;
-  final int highlightRevision;
-  final TerminalHighlightSource? highlightSource;
-  final int highlightLineIndex;
-  ui.Picture? picture;
+  int hash = 0;
 
-  void dispose() {
-    picture?.dispose();
-    picture = null;
-  }
+  /// Whether the row has an SGR 5 cell and therefore two pictures.
+  bool hasBlink = false;
+
+  /// Source/version for [overlayHash]; identity catches source switches.
+  int overlayRevision = 0;
+  TerminalHighlightSource? overlaySource;
+  bool overlayValid = false;
+  int overlayHash = 0;
 }
 
 class _CachedLinkSpans {

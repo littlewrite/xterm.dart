@@ -69,10 +69,9 @@ class _HomeState extends State<Home> {
       rows: terminal.viewHeight,
     );
 
-    pty.output
-        .cast<List<int>>()
-        .transform(Utf8Decoder())
-        .listen(terminal.write);
+    // The terminal decodes across reads, so split characters stay intact and
+    // malformed bytes cannot tear down the feed.
+    pty.output.listen(terminal.writeBytes, onDone: terminal.flushBytes);
 
     /// It's better for debugging the [CellOffset]
     for (var i = 1; i < 70; i++) {

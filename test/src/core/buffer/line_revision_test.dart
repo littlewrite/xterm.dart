@@ -5,7 +5,7 @@ import 'package:xterm/src/core/cursor.dart';
 import 'package:xterm/src/core/hyperlink.dart';
 import 'package:xterm/src/terminal.dart';
 
-/// N4a (perf-plan-v2): BufferLine.revision 与写路径一致性。
+/// BufferLine.revision 与写路径一致性。
 ///
 /// 不测 N4b 显式 dirty 区间 API。
 void main() {

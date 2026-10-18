@@ -9,7 +9,7 @@ import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/themes.dart';
 
-/// N1 (perf-plan-v2): 光标真隔离调度断言。
+/// 光标真隔离调度断言。
 ///
 /// headless μs 对 blink 隔离不敏感；本文件用 markNeedsPaint 计数证明：
 /// - paintCursor:false 时 blink 翻转 **不** dirty 主内容层

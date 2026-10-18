@@ -24,6 +24,7 @@ import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
+import 'package:xterm/src/utils/utf8_stream.dart';
 import 'package:xterm/src/ui/search_box.dart';
 
 /// [Terminal] is an interface to interact with command line applications. It
@@ -150,6 +151,9 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     allowCsiWindowResize: allowCsiWindowResize,
   );
 
+  /// Holds the bytes of a character split across two [writeBytes] calls.
+  final _decoder = Utf8StreamDecoder();
+
   final _emitter = const EscapeEmitter();
 
   late var _buffer = _mainBuffer;
@@ -211,6 +215,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   bool _altBufferMouseScrollMode = false;
 
   bool _bracketedPasteMode = false;
+
+  bool _synchronizedOutput = false;
 
   int _modifyOtherKeys = 0;
 
@@ -280,6 +286,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   bool get bracketedPasteMode => _bracketedPasteMode;
 
+  /// Synchronized output (DEC private mode 2026), set while a program brackets
+  /// a redraw with `CSI ? 2026 h` … `CSI ? 2026 l`.
+  ///
+  /// While it is set a view should keep showing the frame it has instead of
+  /// painting the redraw halfway through; [RenderTerminal] holds the current
+  /// content frame, and paints the new content anyway after a second so that a
+  /// program which never releases the mode cannot freeze the view.
+  bool get synchronizedOutput => _synchronizedOutput;
+
   @override
   int get modifyOtherKeys => _modifyOtherKeys;
 
@@ -309,6 +324,15 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// updates the states of the terminal and emits events such as [onBell] or
   /// [onTitleChange] when the escape sequences in [data] request it.
   void write(String data) {
+    // Bytes held back by writeBytes come before this text in stream order.
+    // Flushing them now keeps a later write from appearing ahead of them.
+    if (_decoder.hasPending) {
+      _writeParsed(_decoder.flush());
+    }
+    _writeParsed(data);
+  }
+
+  void _writeParsed(String data) {
     // 一次 write 过程中可能连续改动 buffer、cursor 和模式状态，
     // 这里先合并这些变更，避免解析过程中频繁 notifyListeners。
     _beginUpdateBatch();
@@ -317,6 +341,34 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     } finally {
       _endUpdateBatch();
     }
+  }
+
+  /// Writes UTF-8 [bytes] from the underlying program to the terminal, exactly
+  /// as [write] does with an already-decoded string.
+  ///
+  /// The bytes are decoded across calls, so a reader can hand over whatever it
+  /// read — 64 KiB at a time, or the three bytes that happen to be there — and
+  /// a multi-byte character split over two chunks still arrives whole. Bytes
+  /// that are not valid UTF-8 become U+FFFD.
+  ///
+  /// A character whose bytes are still held back waits for the next
+  /// [writeBytes]. A [write] in between first emits those held bytes as U+FFFD,
+  /// so text never overtakes bytes that arrived before it. At end of stream,
+  /// call [flushBytes] to emit a trailing incomplete sequence.
+  void writeBytes(List<int> bytes) {
+    final data = _decoder.decode(bytes);
+    if (data.isNotEmpty) _writeParsed(data);
+  }
+
+  /// Flushes bytes held by [writeBytes] when the input stream ends.
+  ///
+  /// An incomplete UTF-8 sequence at the end of the stream cannot become a
+  /// character, so it is emitted as U+FFFD. Calling this is only necessary when
+  /// the reader has no more bytes; a later [writeBytes] or [write] would flush
+  /// the held bytes as well.
+  void flushBytes() {
+    final data = _decoder.flush();
+    if (data.isNotEmpty) _writeParsed(data);
   }
 
   /// Sends a key event to the underlying program.
@@ -697,10 +749,18 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// 会以为发条 `CSI ? Ps h` 就能打开，而本终端根本不认这个模式。
   int _decModeReportValue(int mode) {
     switch (mode) {
+      case 1:
+        return _cursorKeysMode ? 1 : 2;
+      case 6:
+        return _originMode ? 1 : 2;
       case 7:
         return autoWrapMode ? 1 : 2;
       case 9:
         return _mouseMode == MouseMode.clickOnly ? 1 : 2;
+      case 12:
+        return _cursorBlinkMode ? 1 : 2;
+      case 25:
+        return _cursorVisibleMode ? 1 : 2;
       case 1002:
         return _mouseMode == MouseMode.upDownScrollDrag ? 1 : 2;
       case 1003:
@@ -715,6 +775,8 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
         return _mouseReportMode == MouseReportMode.urxvt ? 1 : 2;
       case 2004:
         return _bracketedPasteMode ? 1 : 2;
+      case 2026:
+        return _synchronizedOutput ? 1 : 2;
       default:
         return 0;
     }
@@ -953,6 +1015,11 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void setBracketedPasteMode(bool enabled) {
     _bracketedPasteMode = enabled;
+  }
+
+  @override
+  void setSynchronizedOutputMode(bool enabled) {
+    _synchronizedOutput = enabled;
   }
 
   @override

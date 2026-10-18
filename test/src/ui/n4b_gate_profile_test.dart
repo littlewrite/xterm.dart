@@ -8,7 +8,7 @@ import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/themes.dart';
 
-/// N4b gate profile (perf-plan-v2).
+/// Gate profile: 干净的可见行遍历值不值得一个显式的 dirty-range paint API。
 ///
 /// Question: after N4a, is **traversing clean rows** (cache-hit drawPicture)
 /// still expensive enough to justify an explicit dirty-range paint API?
@@ -120,8 +120,12 @@ void main() {
 
     final sparseM = measure(
       advance: (frame, terminal) {
-        // Keep dirty work on a visible row (home + one char).
-        terminal.write('\x1b[1;1H');
+        // Keep dirty work on a visible row (home + one char). The column moves
+        // so that no frame rewrites a line to what it already was: pictures
+        // are keyed by content, so a repeated char would reuse the picture
+        // from 90 frames ago and this gate would stop measuring the cost of a
+        // dirty line.
+        terminal.write('\x1b[1;${1 + frame % cols}H');
         terminal.write(String.fromCharCode(33 + frame % 90));
       },
     );
@@ -129,9 +133,16 @@ void main() {
 
     final fullM = measure(
       advance: (frame, terminal) {
+        // Every row of every frame is content no other row or frame produces,
+        // so nothing is served from the picture cache: this is the all-miss
+        // bound the gate is about. A pattern sampled from a shorter cycle would
+        // be shared between rows and stop measuring it.
         final buf = StringBuffer('\x1b[H');
-        for (var i = 0; i < cols * rows; i++) {
-          buf.writeCharCode(33 + (frame * 7 + i) % 90);
+        for (var row = 0; row < rows; row++) {
+          final label = '$frame.$row ';
+          buf
+            ..write(label)
+            ..write('x' * (cols - label.length));
         }
         terminal.write(buf.toString());
       },

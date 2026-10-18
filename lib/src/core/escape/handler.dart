@@ -161,6 +161,10 @@ abstract class EscapeHandler {
 
   void setBracketedPasteMode(bool enabled);
 
+  /// DEC private mode 2026: the program is redrawing and does not want the view
+  /// to paint until it says so.
+  void setSynchronizedOutputMode(bool enabled);
+
   void setModifyOtherKeys(int value);
 
   void setFormatOtherKeys(int value);

@@ -11,7 +11,7 @@ import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
 import 'package:xterm/src/ui/themes.dart';
 
-/// N3 (perf-plan-v2): typed invalidation 通道可读 + selection 几何 gate。
+/// Typed invalidation 通道可读 + selection 几何 gate。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 

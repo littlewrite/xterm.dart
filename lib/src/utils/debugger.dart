@@ -473,6 +473,11 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void setSynchronizedOutputMode(bool enabled) {
+    onCommand('setSynchronizedOutputMode($enabled)');
+  }
+
+  @override
   void setModifyOtherKeys(int value) {
     onCommand('setModifyOtherKeys($value)');
   }
@@ -677,7 +682,7 @@ String formatChunk(String chunk) {
   for (var i = 0; i < chunk.length; i++) {
     final char = chunk[i];
     final code = char.codeUnitAt(0);
-    
+
     if (code == 0x1b) {
       buffer.write('\\e');
     } else if (code == 0x07) {
@@ -703,7 +708,7 @@ String formatIntList(List<int> intList) {
   final buffer = StringBuffer();
   for (var i = 0; i < intList.length; i++) {
     final code = intList[i];
-    
+
     if (code == 0x1b) {
       buffer.write('\\e');
     } else if (code == 0x07) {
@@ -741,7 +746,7 @@ bool _isControlCode(int code) {
 String unescapeTerminalControl(String input) {
   final buffer = StringBuffer();
   int i = 0;
-  
+
   while (i < input.length) {
     if (input[i] == '\\') {
       if (i + 1 < input.length) {
@@ -794,6 +799,6 @@ String unescapeTerminalControl(String input) {
       i++;
     }
   }
-  
+
   return buffer.toString();
 }

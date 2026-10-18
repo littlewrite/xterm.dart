@@ -9,7 +9,7 @@ import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/themes.dart';
 
-/// N2 (perf-plan-v2): 选区 O1 — selection 几何变化不打爆 line Picture cache。
+/// 选区 O1 — selection 几何变化不打爆 line Picture cache。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
