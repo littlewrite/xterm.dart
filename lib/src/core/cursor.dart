@@ -14,11 +14,20 @@ class CursorStyle {
   /// every cell written until the program closes or replaces the link.
   TerminalHyperlink? hyperlink;
 
+  /// Underline style selected by `SGR 4:x`; 0 means no underline.
+  int underlineStyle;
+
+  /// Underline colour selected by `SGR 58`, encoded like foreground/background.
+  /// 0 means "use the foreground colour".
+  int underlineColor;
+
   CursorStyle({
     this.foreground = 0,
     this.background = 0,
     this.attrs = 0,
     this.hyperlink,
+    this.underlineStyle = 0,
+    this.underlineColor = 0,
   });
 
   static final empty = CursorStyle();
@@ -37,6 +46,32 @@ class CursorStyle {
 
   void setUnderline() {
     attrs |= CellAttr.underline;
+    // Plain `SGR 4` means a single underline. Without selecting the style here
+    // a previous `SGR 4:x` (curly, double, ...) would survive it.
+    underlineStyle = CellAttr.underlineStyleSingle;
+  }
+
+  /// `SGR 4:x` — selects the underline style and turns underlining on (or off
+  /// for style 0).
+  void setUnderlineStyle(int style) {
+    underlineStyle = style;
+    if (style == CellAttr.underlineStyleNone) {
+      attrs &= ~CellAttr.underline;
+    } else {
+      attrs |= CellAttr.underline;
+    }
+  }
+
+  void setUnderlineColor256(int color) {
+    underlineColor = color | CellColor.palette;
+  }
+
+  void setUnderlineColorRgb(int r, int g, int b) {
+    underlineColor = (r << 16) | (g << 8) | b | CellColor.rgb;
+  }
+
+  void resetUnderlineColor() {
+    underlineColor = 0;
   }
 
   void setBlink() {
@@ -69,6 +104,7 @@ class CursorStyle {
 
   void unsetUnderline() {
     attrs &= ~CellAttr.underline;
+    underlineStyle = CellAttr.underlineStyleNone;
   }
 
   void unsetBlink() {
@@ -137,6 +173,8 @@ class CursorStyle {
     foreground = 0;
     background = 0;
     attrs = 0;
+    underlineStyle = 0;
+    underlineColor = 0;
     // SGR reset must not close an OSC 8 link: only `OSC 8;;` does.
   }
 }

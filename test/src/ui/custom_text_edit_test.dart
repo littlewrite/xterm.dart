@@ -590,4 +590,202 @@ void main() {
     semantics.dispose();
     focusNode.dispose();
   });
+
+  testWidgets('does not write characters twice for one batch of updates', (
+    tester,
+  ) async {
+    final mounted = await _mount(tester);
+
+    // GTK computes each value from the text before the reset took effect.
+    for (final text in ['g', 'gi', 'git']) {
+      mounted.state.updateEditingValue(
+        TextEditingValue(
+          text: text,
+          selection: TextSelection.collapsed(offset: text.length),
+        ),
+      );
+    }
+
+    expect(mounted.inserted, ['g', 'i', 't']);
+
+    mounted.focusNode.dispose();
+  });
+
+  testWidgets('inserts an IME commit that extends the composition whole', (
+    tester,
+  ) async {
+    final mounted = await _mount(tester);
+
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'hel',
+        selection: TextSelection.collapsed(offset: 3),
+        composing: TextRange(start: 0, end: 3),
+      ),
+    );
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'hello',
+        selection: TextSelection.collapsed(offset: 5),
+      ),
+    );
+
+    // The composition was only previewed, so all of it is new input.
+    expect(mounted.inserted, ['hello']);
+
+    mounted.focusNode.dispose();
+  });
+
+  testWidgets('an IME write over the placeholder inserts all it wrote', (
+    tester,
+  ) async {
+    final mounted = await _mount(tester, deleteDetection: true);
+
+    // The IME replaced the placeholder instead of appending after it.
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'x',
+        selection: TextSelection.collapsed(offset: 1),
+      ),
+    );
+
+    expect(mounted.inserted, ['x']);
+
+    mounted.focusNode.dispose();
+  });
+
+  testWidgets('a composition starts a new batch of input', (tester) async {
+    final mounted = await _mount(tester);
+
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'a',
+        selection: TextSelection.collapsed(offset: 1),
+      ),
+    );
+    // Composition clears the batch state, so this commit is not trimmed
+    // against the unrelated `a` typed before it.
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'abc',
+        selection: TextSelection.collapsed(offset: 3),
+        composing: TextRange(start: 0, end: 3),
+      ),
+    );
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'abc',
+        selection: TextSelection.collapsed(offset: 3),
+      ),
+    );
+
+    expect(mounted.inserted, ['a', 'abc']);
+
+    mounted.focusNode.dispose();
+  });
+
+  testWidgets('a commit that replaces the placeholder keeps a leading space', (
+    tester,
+  ) async {
+    final mounted = await _mount(tester, deleteDetection: true);
+
+    // The IME replaced the two-space placeholder instead of appending to it.
+    // Matching the placeholder's first space must not eat the typed space.
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: ' x',
+        selection: TextSelection.collapsed(offset: 2),
+      ),
+    );
+
+    expect(mounted.inserted, [' x']);
+
+    mounted.focusNode.dispose();
+  });
+
+  testWidgets('an edit after the burst frame is inserted whole', (
+    tester,
+  ) async {
+    final mounted = await _mount(tester);
+
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'a',
+        selection: TextSelection.collapsed(offset: 1),
+      ),
+    );
+    // The frame boundary ends the burst: what follows starts with the same
+    // text by coincidence, not because it belongs to the same edit.
+    await tester.pump();
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'ab',
+        selection: TextSelection.collapsed(offset: 2),
+      ),
+    );
+
+    expect(mounted.inserted, ['a', 'ab']);
+
+    mounted.focusNode.dispose();
+  });
+
+  testWidgets('an unrelated value in the same frame is not trimmed', (
+    tester,
+  ) async {
+    final mounted = await _mount(tester);
+
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'a',
+        selection: TextSelection.collapsed(offset: 1),
+      ),
+    );
+    mounted.state.updateEditingValue(
+      const TextEditingValue(
+        text: 'xyz',
+        selection: TextSelection.collapsed(offset: 3),
+      ),
+    );
+
+    expect(mounted.inserted, ['a', 'xyz']);
+
+    mounted.focusNode.dispose();
+  });
+}
+
+Future<
+    ({
+      CustomTextEditState state,
+      List<String> inserted,
+      FocusNode focusNode,
+    })> _mount(WidgetTester tester, {bool deleteDetection = false}) async {
+  final focusNode = FocusNode();
+  final inserted = <String>[];
+
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Material(
+        child: CustomTextEdit(
+          focusNode: focusNode,
+          deleteDetection: deleteDetection,
+          onInsert: inserted.add,
+          onDelete: () {},
+          onComposing: (_) {},
+          onAction: (_) {},
+          onKeyEvent: (node, event) => KeyEventResult.ignored,
+          onInputConnectionChange: (connected) {},
+          child: const SizedBox.shrink(),
+        ),
+      ),
+    ),
+  );
+
+  focusNode.requestFocus();
+  await tester.pump();
+
+  final state = tester.state<CustomTextEditState>(
+    find.byType(CustomTextEdit),
+  );
+
+  return (state: state, inserted: inserted, focusNode: focusNode);
 }

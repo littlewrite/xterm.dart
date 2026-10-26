@@ -8,7 +8,7 @@ import 'package:xterm/src/core/hyperlink.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
 import 'package:xterm/src/utils/unicode_v11.dart';
 
-const _cellSize = 4;
+const _cellSize = 6;
 
 const _cellForeground = 0;
 
@@ -17,6 +17,10 @@ const _cellBackground = 1;
 const _cellAttributes = 2;
 
 const _cellContent = 3;
+
+const _cellUnderlineStyle = 4;
+
+const _cellUnderlineColor = 5;
 
 class BufferLine with IndexedItem {
   BufferLine(
@@ -67,6 +71,14 @@ class BufferLine with IndexedItem {
 
   int getContent(int index) {
     return _data[index * _cellSize + _cellContent];
+  }
+
+  int getUnderlineStyle(int index) {
+    return _data[index * _cellSize + _cellUnderlineStyle];
+  }
+
+  int getUnderlineColor(int index) {
+    return _data[index * _cellSize + _cellUnderlineColor];
   }
 
   /// Whether this line carries at least one OSC 8 hyperlink.
@@ -143,6 +155,8 @@ class BufferLine with IndexedItem {
     cellData.background = _data[offset + _cellBackground];
     cellData.flags = _data[offset + _cellAttributes];
     cellData.content = _data[offset + _cellContent];
+    cellData.underlineStyle = _data[offset + _cellUnderlineStyle];
+    cellData.underlineColor = _data[offset + _cellUnderlineColor];
   }
 
   /// Allocates a [CellData] snapshot of cell [index]. Read-only — never mutates
@@ -189,11 +203,12 @@ class BufferLine with IndexedItem {
   void setCell(int index, int char, int witdh, CursorStyle style) {
     final offset = index * _cellSize;
     final content = char | (witdh << CellContent.widthShift);
-    final dataUnchanged =
-        _data[offset + _cellForeground] == style.foreground &&
+    final dataUnchanged = _data[offset + _cellForeground] == style.foreground &&
         _data[offset + _cellBackground] == style.background &&
         _data[offset + _cellAttributes] == style.attrs &&
-        _data[offset + _cellContent] == content;
+        _data[offset + _cellContent] == content &&
+        _data[offset + _cellUnderlineStyle] == style.underlineStyle &&
+        _data[offset + _cellUnderlineColor] == style.underlineColor;
     final linkChanged = _assignLink(index, style.hyperlink);
     if (dataUnchanged && !linkChanged) {
       return;
@@ -202,6 +217,8 @@ class BufferLine with IndexedItem {
     _data[offset + _cellBackground] = style.background;
     _data[offset + _cellAttributes] = style.attrs;
     _data[offset + _cellContent] = content;
+    _data[offset + _cellUnderlineStyle] = style.underlineStyle;
+    _data[offset + _cellUnderlineColor] = style.underlineColor;
     _markDirty();
   }
 
@@ -209,9 +226,11 @@ class BufferLine with IndexedItem {
     final offset = index * _cellSize;
     final dataUnchanged =
         _data[offset + _cellForeground] == cellData.foreground &&
-        _data[offset + _cellBackground] == cellData.background &&
-        _data[offset + _cellAttributes] == cellData.flags &&
-        _data[offset + _cellContent] == cellData.content;
+            _data[offset + _cellBackground] == cellData.background &&
+            _data[offset + _cellAttributes] == cellData.flags &&
+            _data[offset + _cellContent] == cellData.content &&
+            _data[offset + _cellUnderlineStyle] == cellData.underlineStyle &&
+            _data[offset + _cellUnderlineColor] == cellData.underlineColor;
     // CellData carries no link: copying a cell this way drops its hyperlink.
     final linkChanged = _assignLink(index, null);
     if (dataUnchanged && !linkChanged) {
@@ -221,16 +240,19 @@ class BufferLine with IndexedItem {
     _data[offset + _cellBackground] = cellData.background;
     _data[offset + _cellAttributes] = cellData.flags;
     _data[offset + _cellContent] = cellData.content;
+    _data[offset + _cellUnderlineStyle] = cellData.underlineStyle;
+    _data[offset + _cellUnderlineColor] = cellData.underlineColor;
     _markDirty();
   }
 
   void eraseCell(int index, CursorStyle style) {
     final offset = index * _cellSize;
-    final dataUnchanged =
-        _data[offset + _cellForeground] == style.foreground &&
+    final dataUnchanged = _data[offset + _cellForeground] == style.foreground &&
         _data[offset + _cellBackground] == style.background &&
         _data[offset + _cellAttributes] == style.attrs &&
-        _data[offset + _cellContent] == 0;
+        _data[offset + _cellContent] == 0 &&
+        _data[offset + _cellUnderlineStyle] == style.underlineStyle &&
+        _data[offset + _cellUnderlineColor] == style.underlineColor;
     // Colors and attributes follow the cursor style, but the open OSC 8 link is
     // **not** stamped onto blank cells: a link on empty cells makes the erased
     // run clickable / underlined (`EL` then hover hits it). The open link lives
@@ -243,16 +265,19 @@ class BufferLine with IndexedItem {
     _data[offset + _cellBackground] = style.background;
     _data[offset + _cellAttributes] = style.attrs;
     _data[offset + _cellContent] = 0;
+    _data[offset + _cellUnderlineStyle] = style.underlineStyle;
+    _data[offset + _cellUnderlineColor] = style.underlineColor;
     _markDirty();
   }
 
   void resetCell(int index) {
     final offset = index * _cellSize;
-    final dataUnchanged =
-        _data[offset + _cellForeground] == 0 &&
+    final dataUnchanged = _data[offset + _cellForeground] == 0 &&
         _data[offset + _cellBackground] == 0 &&
         _data[offset + _cellAttributes] == 0 &&
-        _data[offset + _cellContent] == 0;
+        _data[offset + _cellContent] == 0 &&
+        _data[offset + _cellUnderlineStyle] == 0 &&
+        _data[offset + _cellUnderlineColor] == 0;
     final linkChanged = _assignLink(index, null);
     if (dataUnchanged && !linkChanged) {
       return;
@@ -261,6 +286,8 @@ class BufferLine with IndexedItem {
     _data[offset + _cellBackground] = 0;
     _data[offset + _cellAttributes] = 0;
     _data[offset + _cellContent] = 0;
+    _data[offset + _cellUnderlineStyle] = 0;
+    _data[offset + _cellUnderlineColor] = 0;
     _markDirty();
   }
 
@@ -272,10 +299,11 @@ class BufferLine with IndexedItem {
       eraseCell(start - 1, style);
     }
 
-    // reset cell one to the right if end is second cell of a wide char
-    // `end == 0` (EL 1 / ECH 0 with the cursor in column 0) would index -1.
-    if (end > 0 && end < _length && getWidth(end - 1) == 2) {
-      eraseCell(end - 1, style);
+    // A wide character is cleared as a unit. If the range ends on its head,
+    // the filler cell just outside the range would otherwise keep the old
+    // background (EL 1 / ED 1 / ECH 1 with the cursor on the head).
+    if (end > start && end < _length && getWidth(end - 1) == 2) {
+      eraseCell(end, style);
     }
 
     end = min(end, _length);
@@ -424,10 +452,10 @@ class BufferLine with IndexedItem {
   /// Returns the offset of the last cell that has content from the start of
   /// the line.
   int getTrimmedLength([int? cols]) {
-    final maxCols = _data.length ~/ _cellSize;
-
-    if (cols == null || cols > maxCols) {
-      cols = maxCols;
+    // The logical length is what the line actually occupies; the backing array
+    // is only a capacity and can still hold cells from before it was shrunk.
+    if (cols == null || cols > _length) {
+      cols = _length;
     }
 
     if (cols <= 0) {

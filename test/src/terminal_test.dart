@@ -756,13 +756,13 @@ void main() {
       expect(() => terminal.write('\x1b[1K'), returnsNormally);
     });
 
-    // The erase span is empty here, so nothing may be erased: the `end > 0`
-    // guard only stops the wide-char look-ahead from reading index -1.
-    test('EL 1 in column 0 keeps a wide char at the line start', () {
+    // EL 1 erases from the start of the line through the cursor, including the
+    // cell the cursor sits on; at column 0 that is the character under it.
+    test('EL 1 in column 0 erases the character under the cursor', () {
       final terminal = Terminal();
       terminal.write('切\r\x1b[1K');
 
-      expect(terminal.buffer.lines[0].getText(), '切');
+      expect(terminal.buffer.lines[0].getText(), isEmpty);
     });
 
     test('ED 1 (erase above + left) at the home position does not throw', () {
@@ -784,6 +784,420 @@ void main() {
       terminal.write('abc\x1b[1K');
 
       expect(terminal.buffer.lines[0].getText(), '');
+    });
+  });
+
+  group('cursor position report (CPR)', () {
+    test('answers 1-based at home', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add);
+
+      terminal.write('\x1b[6n');
+
+      expect(replies, ['\x1b[1;1R']);
+    });
+
+    test('answers the column after the last written character', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add);
+
+      terminal.write('ab\x1b[6n');
+
+      expect(replies, ['\x1b[1;3R']);
+    });
+
+    test('answers the drawn column when a wrap is pending', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add)..resize(10, 3);
+
+      terminal.write('${'x' * 10}\x1b[6n');
+
+      expect(replies, ['\x1b[1;10R']);
+    });
+
+    test('answers a 1-based row', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add);
+
+      terminal.write('\r\n\x1b[6n');
+
+      expect(replies, ['\x1b[2;1R']);
+    });
+  });
+
+  group('resize', () {
+    test('grows the buffer when the viewport is taller than maxLines', () {
+      final heights = <int>[];
+      final terminal = Terminal(
+        maxLines: 5,
+        onResize: (width, height, pixelWidth, pixelHeight) {
+          heights.add(height);
+        },
+      )..resize(20, 40);
+
+      expect(terminal.viewHeight, 40);
+      expect(terminal.buffer.maxLines, greaterThanOrEqualTo(40));
+      expect(terminal.buffer.lines.length, greaterThanOrEqualTo(40));
+      expect(terminal.buffer.scrollBack, 0);
+      expect(heights, [40]);
+    });
+
+    test('shrinking keeps the grown capacity', () {
+      final terminal = Terminal(maxLines: 5)..resize(20, 40);
+
+      terminal.resize(20, 10);
+
+      expect(terminal.viewHeight, 10);
+      expect(terminal.buffer.maxLines, greaterThanOrEqualTo(40));
+    });
+  });
+
+  group('backspace', () {
+    test('moves one column left', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add);
+
+      terminal.write('ab\x08\x1b[6n');
+
+      expect(replies, ['\x1b[1;2R']);
+    });
+
+    test('steps back from a pending wrap onto the last written column', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add)..resize(5, 3);
+
+      terminal.write('abcde\x08\x1b[6n');
+
+      expect(replies, ['\x1b[1;5R']);
+    });
+
+    test('steps onto the second half of a wide character', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add)..resize(10, 3);
+
+      // BS is column-based: from column 2 it lands on column 1, the filler
+      // cell of the wide character, as xterm and VTE do.
+      terminal.write('切\x08\x1b[6n');
+
+      expect(replies, ['\x1b[1;2R']);
+    });
+
+    test('two backspaces delete a wide character, not the one before it', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('A中\x08\x08X');
+
+      // The two BS steps land on the wide character's head, so X replaces 中
+      // and clears its filler. The A must survive.
+      expect(terminal.buffer.lines[0].getText(), 'AX');
+    });
+
+    test('writing on the filler clears the wide character head', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('A中\x08X');
+
+      // No orphaned left half and no hidden glyph: A, the cleared head, X.
+      expect(terminal.buffer.lines[0].getText(), 'A X');
+    });
+
+    test('does not cross a soft wrap at the left margin', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add)..resize(5, 3);
+
+      // 'abcde' fills the first row and wraps 'f' onto the next one. Reverse
+      // wraparound (DECSET 45) is off, so BS stops at column 0 of row 2.
+      terminal.write('abcdef\x08\x08\x1b[6n');
+
+      expect(replies, ['\x1b[2;1R']);
+    });
+
+    test('does not move above the top of the scroll region', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add)..resize(5, 5);
+
+      terminal.write('\x1b[2;5r'); // scroll region starts at row 2
+      terminal.write('\x1b[2;1H');
+      terminal.write('\x08\x1b[6n');
+
+      expect(replies, ['\x1b[2;1R']);
+    });
+  });
+
+  group('wide character erasure', () {
+    test('EL 1 clears the filler background', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[41m切\x1b[0m\r\x1b[1K');
+      final line = terminal.buffer.lines[0];
+
+      expect(line.getText(), '');
+      expect(line.getBackground(1), 0);
+    });
+
+    test('ED 1 clears the filler background', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[41m切\x1b[0m\r\x1b[1J');
+      final line = terminal.buffer.lines[0];
+
+      expect(line.getText(), '');
+      expect(line.getBackground(1), 0);
+    });
+
+    test('ECH over a wide character clears both halves', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[41m切\x1b[0m\r\x1b[1X');
+      final line = terminal.buffer.lines[0];
+
+      expect(line.getText(), '');
+      expect(line.getBackground(1), 0);
+    });
+  });
+
+  group('reset', () {
+    test('RIS notifies listeners after the write, not in the middle of it',
+        () async {
+      final terminal = Terminal();
+      final seenAltBuffer = <bool>[];
+      terminal.addListener(() {
+        seenAltBuffer.add(terminal.isUsingAltBuffer);
+      });
+
+      // Switch to the alternate buffer, then reset: a synchronous notify from
+      // softReset would expose the alternate buffer with a half-reset state.
+      terminal.write('\x1b[?1049h\x1bc');
+      expect(seenAltBuffer, isEmpty);
+
+      await Future<void>.delayed(Duration.zero);
+      expect(seenAltBuffer, [false]);
+    });
+
+    test('RIS clears the screen and homes the cursor', () {
+      final terminal = Terminal();
+
+      terminal.write('hello\x1bc');
+
+      expect(terminal.buffer.lines[0].getText(), '');
+      expect(terminal.buffer.cursorX, 0);
+      expect(terminal.buffer.cursorY, 0);
+    });
+
+    test('RIS clears the scrollback', () {
+      final terminal = Terminal(maxLines: 30)..resize(10, 5);
+
+      terminal.write('${'line\r\n' * 20}\x1bc');
+
+      expect(terminal.buffer.height, terminal.viewHeight);
+    });
+
+    test('RIS restores the default tab stops', () {
+      final terminal = Terminal()..resize(20, 5);
+
+      terminal.write('\x1b[3g'); // clear all tab stops
+      terminal.write('\x1bc');
+      terminal.write('\tX');
+
+      expect(terminal.buffer.lines[0].getCodePoint(8), 'X'.codeUnitAt(0));
+    });
+
+    test('RIS resets modes and moves back to the main buffer', () {
+      final terminal = Terminal();
+
+      terminal.write('\x1b[4h'); // insert mode
+      terminal.write('\x1b[?7l'); // auto-wrap off
+      terminal.write('\x1b[?1049h'); // alternate buffer
+      terminal.write('\x1bc');
+
+      expect(terminal.insertMode, isFalse);
+      expect(terminal.autoWrapMode, isTrue);
+      expect(terminal.isUsingAltBuffer, isFalse);
+    });
+
+    test('DECSTR keeps the screen and the cursor position', () {
+      final replies = <String>[];
+      final terminal = Terminal(onTerminalReply: replies.add);
+
+      terminal.write('abc\x1b[!p\x1b[6n');
+
+      expect(terminal.buffer.lines[0].getText(), 'abc');
+      expect(replies, ['\x1b[1;4R']);
+    });
+
+    test('DECSTR resets modes, rendition and margins', () {
+      final terminal = Terminal();
+
+      terminal.write('\x1b[4h'); // insert mode
+      terminal.write('\x1b[?7l'); // auto-wrap off
+      terminal.write('\x1b[2;3r'); // scroll region
+      terminal.write('\x1b[4m'); // underline
+      terminal.write('\x1b[!p');
+
+      expect(terminal.insertMode, isFalse);
+      expect(terminal.autoWrapMode, isTrue);
+      expect(terminal.buffer.marginTop, 0);
+      expect(terminal.buffer.marginBottom, terminal.viewHeight - 1);
+      terminal.write('x');
+      expect(terminal.cursor.attrs, 0);
+    });
+  });
+
+  group('underline styles', () {
+    test('SGR 4:x selects the style', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[4:3mA');
+      final line = terminal.buffer.lines[0];
+      expect(line.getUnderlineStyle(0), CellAttr.underlineStyleCurly);
+      expect(line.getAttributes(0) & CellAttr.underline, isNot(0));
+    });
+
+    test('SGR 4:0 turns underlining off', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[4:2m\x1b[4:0mA');
+      final line = terminal.buffer.lines[0];
+      expect(line.getUnderlineStyle(0), CellAttr.underlineStyleNone);
+      expect(line.getAttributes(0) & CellAttr.underline, 0);
+    });
+
+    test('SGR 4;5 selects single underline plus blink', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[4;5mA');
+      final line = terminal.buffer.lines[0];
+      expect(line.getAttributes(0) & CellAttr.underline, isNot(0));
+      expect(line.getAttributes(0) & CellAttr.blink, isNot(0));
+      expect(line.getUnderlineStyle(0), CellAttr.underlineStyleSingle);
+    });
+
+    test('plain SGR 4 downgrades an extended underline style', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[4:3mA\x1b[4mB');
+
+      expect(
+        terminal.buffer.lines[0].getUnderlineStyle(0),
+        CellAttr.underlineStyleCurly,
+      );
+      expect(
+        terminal.buffer.lines[0].getUnderlineStyle(1),
+        CellAttr.underlineStyleSingle,
+      );
+    });
+
+    test('DECSC restores the underline style and colour', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[4:3m\x1b[58:5:196m\x1b7\x1b[0m\x1b8A');
+      final line = terminal.buffer.lines[0];
+      expect(line.getAttributes(0) & CellAttr.underline, isNot(0));
+      expect(line.getUnderlineStyle(0), CellAttr.underlineStyleCurly);
+      expect(line.getUnderlineColor(0), 196 | CellColor.palette);
+    });
+
+    test('SGR 58 accepts an explicit colour-space parameter', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[4m\x1b[58:2:0:255:0:0mA');
+
+      expect(
+        terminal.buffer.lines[0].getUnderlineColor(0),
+        (0xFF << 16) | CellColor.rgb,
+      );
+    });
+
+    test('SGR 38 and 48 accept an explicit colour-space parameter', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[38:2:0:255:0:0m\x1b[48:2:0:0:0:255mX');
+      final line = terminal.buffer.lines[0];
+
+      expect(line.getForeground(0), (0xFF0000) | CellColor.rgb);
+      expect(line.getBackground(0), (0x0000FF) | CellColor.rgb);
+    });
+
+    test('SGR 58;5 sets the underline colour from the palette', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[4m\x1b[58:5:196mA');
+      expect(
+        terminal.buffer.lines[0].getUnderlineColor(0),
+        196 | CellColor.palette,
+      );
+    });
+
+    test(
+        'SGR 58;2 sets a true colour underline, with or without the empty '
+        'colour-space parameter', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[4m\x1b[58:2::255:0:0mA');
+      expect(
+        terminal.buffer.lines[0].getUnderlineColor(0),
+        (0xFF << 16) | CellColor.rgb,
+      );
+
+      terminal.write('\x1b[58;2;0;255;0mB');
+      expect(
+        terminal.buffer.lines[0].getUnderlineColor(1),
+        (0x00FF00 << 0) | CellColor.rgb,
+      );
+    });
+
+    test('SGR 59 and SGR 0 reset the underline colour', () {
+      final terminal = Terminal()..resize(10, 3);
+
+      terminal.write('\x1b[4m\x1b[58:5:9mA\x1b[59mB');
+
+      expect(terminal.buffer.lines[0].getUnderlineColor(0), isNot(0));
+      expect(terminal.buffer.lines[0].getUnderlineColor(1), 0);
+
+      terminal.write('\x1b[58:5:9m\x1b[0mC');
+      expect(terminal.buffer.lines[0].getUnderlineColor(2), 0);
+      expect(terminal.buffer.lines[0].getUnderlineStyle(2), 0);
+    });
+  });
+
+  group('paste', () {
+    test('strips escape sequences before they reach the program', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.paste('\x1b[2Jhi\x1b]0;title\x07');
+
+      expect(output.join(), 'hi');
+    });
+
+    test('keeps text, tabs and newlines', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.paste('a\tb\nc');
+
+      expect(output.join(), 'a\tb\nc');
+    });
+
+    test('wraps a sanitized paste in bracketed paste markers', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      terminal.write('\x1b[?2004h');
+      terminal.paste('\x1b[31mhi');
+
+      expect(output.last, '\x1b[200~hi\x1b[201~');
+    });
+
+    test('drops control characters other than TAB, LF and CR', () {
+      final output = <String>[];
+      final terminal = Terminal(onOutput: output.add);
+
+      // DEL is the erase character in a cooked terminal, so it must not be
+      // pasted as text either.
+      terminal.paste('a\x07b\x0cc\x7fd');
+
+      expect(output.join(), 'abcd');
     });
   });
 }

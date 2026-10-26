@@ -1,4 +1,5 @@
 import 'package:xterm/src/core/mouse/mode.dart';
+import 'package:xterm/src/core/program_status.dart';
 
 abstract class EscapeHandler {
   void writeChar(int char);
@@ -117,6 +118,14 @@ abstract class EscapeHandler {
 
   void unknownCSI(int finalByte);
 
+  /// `ESC c` Reset to Initial State (RIS): clear the screen and scrollback,
+  /// reset modes, rendition, charsets and tab stops.
+  void fullReset();
+
+  /// `CSI ! p` Soft Terminal Reset (DECSTR): reset modes and rendition but
+  /// keep what is on screen.
+  void softReset();
+
   /* Modes */
 
   void setInsertMode(bool enabled);
@@ -187,6 +196,18 @@ abstract class EscapeHandler {
 
   void setCursorUnderline();
 
+  /// `SGR 4:x` — selects the underline style; 0 turns underlining off.
+  void setCursorUnderlineStyle(int style);
+
+  /// `SGR 58;5;n` — underline colour from the 256-colour palette.
+  void setUnderlineColor256(int index);
+
+  /// `SGR 58;2;r;g;b` — underline colour as true colour.
+  void setUnderlineColorRgb(int r, int g, int b);
+
+  /// `SGR 59` — underline colour back to the foreground colour.
+  void resetUnderlineColor();
+
   void setCursorBlink();
 
   void setCursorInverse();
@@ -230,6 +251,13 @@ abstract class EscapeHandler {
   void unsupportedStyle(int param);
 
   /* OSC */
+
+  /// A program reporting its status: OSC 7501, OSC 9;4 progress, or an OSC 133
+  /// shell-integration mark.
+  void terminalStatus(TerminalStatusEvent event);
+
+  /// `OSC 7501 ; ?` — the program asks whether status reporting is supported.
+  void queryProgramStatus();
 
   /// OSC 8 hyperlink. [params] is the raw parameter list (only `id=` is
   /// defined by the spec); an empty [uri] closes the current hyperlink.

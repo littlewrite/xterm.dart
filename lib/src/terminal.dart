@@ -20,10 +20,12 @@ import 'package:xterm/src/core/mouse/button_state.dart';
 import 'package:xterm/src/core/mouse/handler.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/core/platform.dart';
+import 'package:xterm/src/core/program_status.dart';
 import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/circular_buffer.dart';
+import 'package:xterm/src/utils/escape_sanitizer.dart';
 import 'package:xterm/src/utils/utf8_stream.dart';
 import 'package:xterm/src/ui/search_box.dart';
 
@@ -111,6 +113,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// request, such as OSC 52.
   void Function(String selection, String data)? onClipboard;
 
+  /// What a program reports about itself: OSC 7501 state, OSC 9;4 progress and
+  /// OSC 133 shell-integration marks. The terminal keeps no records itself:
+  /// feed the events to a [ProgramStatusRecords].
+  ///
+  /// The support query (`OSC 7501 ; ?`) is answered only while this is set, so
+  /// programs do not send reports nothing reads.
+  void Function(TerminalStatusEvent event)? onStatus;
+
   /// Flag to toggle os specific behaviors.
   final TerminalTargetPlatform platform;
 
@@ -141,6 +151,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     this.mouseHandler = defaultMouseHandler,
     this.onPrivateOSC,
     this.onClipboard,
+    this.onStatus,
     this.reflowEnabled = true,
     this.allowCsiWindowResize = false,
     this.wordSeparators,
@@ -320,6 +331,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   bool reflowEnabled;
 
+  /// Control characters stripped from pasted text, apart from TAB, LF and CR.
+  /// DEL goes too: in a cooked terminal it is the erase character, so pasting
+  /// it would delete text instead of being inserted.
+  static final _pasteControlCharacters =
+      RegExp(r'[\x00-\x08\x0b\x0c\x0e-\x1b\x1c-\x1f\x7f]');
+
   /// Writes the data from the underlying program to the terminal. Calling this
   /// updates the states of the terminal and emits events such as [onBell] or
   /// [onTitleChange] when the escape sequences in [data] request it.
@@ -459,6 +476,20 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// See also:
   /// - [textInput]
   void paste(String text) {
+    if (text.isEmpty) {
+      return;
+    }
+
+    // A paste is text, not keystrokes: drop escape sequences so it cannot move
+    // the cursor, hide it, switch the character set, or open an unterminated
+    // string in the program being talked to. Control characters other than
+    // TAB, LF and CR go too (BEL, FF, SO/SI, ...).
+    text = stripEscapeSequences(text);
+    text = text.replaceAll(_pasteControlCharacters, '');
+    if (text.isEmpty) {
+      return;
+    }
+
     if (_bracketedPasteMode) {
       onOutput?.call(_emitter.bracketedPaste(text));
     } else {
@@ -508,6 +539,14 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   ]) {
     newWidth = max(newWidth, 1);
     newHeight = max(newHeight, 1);
+    // `maxLines` is a scrollback limit, not a limit on the screen. A host may
+    // make the view taller than the configured value; grow the line capacity
+    // rather than clamping the viewport (which would leave it partly blank and
+    // report the wrong size to the program).
+    if (newHeight > _mainBuffer.maxLines) {
+      _mainBuffer.ensureHeight(newHeight);
+      _altBuffer.ensureHeight(newHeight);
+    }
 
     if (cellPixelWidth != null &&
         cellPixelHeight != null &&
@@ -571,7 +610,7 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void backspaceReturn() {
-    _buffer.moveCursorX(-1);
+    _buffer.backspace();
   }
 
   @override
@@ -730,7 +769,12 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
 
   @override
   void sendCursorPosition() {
-    _reply(_emitter.cursorPosition(_buffer.cursorX, _buffer.cursorY));
+    _reply(
+      _emitter.cursorPosition(
+        _buffer.reportedCursorX,
+        _buffer.reportedCursorY,
+      ),
+    );
   }
 
   @override
@@ -930,6 +974,56 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     // no-op
   }
 
+  /* Reset */
+
+  /// `ESC c` Reset to Initial State (RIS).
+  ///
+  /// Everything a program can leave behind: modes, rendition, charsets, tab
+  /// stops, scroll margins and the scrollback. Both buffers are cleared and the
+  /// main buffer becomes active again, as a fresh terminal would be.
+  @override
+  void fullReset() {
+    softReset();
+    _precedingCodepoint = 0;
+    _modifyOtherKeys = 0;
+    _formatOtherKeys = 0;
+    _tabStops.reset();
+    _mainBuffer.reset();
+    _altBuffer.reset();
+    _buffer = _mainBuffer;
+    _cursorStyle.hyperlink = null;
+    onStatus?.call(const TerminalStatusReset());
+    _markPendingFlush();
+  }
+
+  /// `CSI ! p` Soft Terminal Reset (DECSTR).
+  ///
+  /// Resets modes, rendition, charsets and saved cursor state but keeps what is
+  /// on screen, the scrollback and the tab stops.
+  @override
+  void softReset() {
+    resetCursorStyle();
+    _mainBuffer.softReset();
+    _altBuffer.softReset();
+    _insertMode = false;
+    _lineFeedMode = false;
+    _cursorKeysMode = false;
+    _ansiMode = true;
+    _reverseDisplayMode = false;
+    _originMode = false;
+    _autoWrapMode = true;
+    _mouseMode = MouseMode.none;
+    _mouseReportMode = MouseReportMode.normal;
+    _cursorBlinkMode = false;
+    _cursorVisibleMode = true;
+    _appKeypadMode = false;
+    _reportFocusMode = false;
+    _altBufferMouseScrollMode = false;
+    _bracketedPasteMode = false;
+    _synchronizedOutput = false;
+    _markPendingFlush();
+  }
+
   /* DEC Private modes */
 
   @override
@@ -1062,6 +1156,26 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void setCursorUnderline() {
     _cursorStyle.setUnderline();
+  }
+
+  @override
+  void setCursorUnderlineStyle(int style) {
+    _cursorStyle.setUnderlineStyle(style);
+  }
+
+  @override
+  void setUnderlineColor256(int index) {
+    _cursorStyle.setUnderlineColor256(index);
+  }
+
+  @override
+  void setUnderlineColorRgb(int r, int g, int b) {
+    _cursorStyle.setUnderlineColorRgb(r, g, b);
+  }
+
+  @override
+  void resetUnderlineColor() {
+    _cursorStyle.resetUnderlineColor();
   }
 
   @override
@@ -1280,6 +1394,19 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void unknownOSC(String ps, List<String> pt) {
     onPrivateOSC?.call(ps, pt);
+  }
+
+  @override
+  void terminalStatus(TerminalStatusEvent event) {
+    onStatus?.call(event);
+  }
+
+  @override
+  void queryProgramStatus() {
+    if (onStatus == null) {
+      return;
+    }
+    _reply(ProgramStatusReport.queryReply);
   }
 
   static String? decodeOsc52Payload(String data) {

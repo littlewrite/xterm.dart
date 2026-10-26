@@ -83,6 +83,8 @@ class TerminalStyle {
     bool bold = false,
     bool italic = false,
     bool underline = false,
+    int underlineStyle = 0,
+    Color? underlineColor,
   }) {
     return TextStyle(
       fontSize: fontSize,
@@ -94,8 +96,26 @@ class TerminalStyle {
       fontWeight: bold ? FontWeight.bold : FontWeight.normal,
       fontStyle: italic ? FontStyle.italic : FontStyle.normal,
       decoration: underline ? TextDecoration.underline : TextDecoration.none,
+      decorationStyle: _decorationStyle(underlineStyle),
+      decorationColor: underline ? underlineColor : null,
       letterSpacing: letterSpacing,
     );
+  }
+
+  /// `SGR 4:x` maps onto the styles Flutter can draw.
+  static TextDecorationStyle _decorationStyle(int underlineStyle) {
+    switch (underlineStyle) {
+      case 2:
+        return TextDecorationStyle.double;
+      case 3:
+        return TextDecorationStyle.wavy;
+      case 4:
+        return TextDecorationStyle.dotted;
+      case 5:
+        return TextDecorationStyle.dashed;
+      default:
+        return TextDecorationStyle.solid;
+    }
   }
 
   TerminalStyle copyWith({

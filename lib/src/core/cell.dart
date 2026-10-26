@@ -6,6 +6,8 @@ class CellData {
     required this.background,
     required this.flags,
     required this.content,
+    this.underlineStyle = 0,
+    this.underlineColor = 0,
   });
 
   factory CellData.empty() {
@@ -14,6 +16,8 @@ class CellData {
       background: 0,
       flags: 0,
       content: 0,
+      underlineStyle: 0,
+      underlineColor: 0,
     );
   }
 
@@ -25,13 +29,27 @@ class CellData {
 
   int content;
 
+  /// Underline style: see [CellAttr.underlineStyleNone] and friends.
+  int underlineStyle;
+
+  /// Underline colour, encoded like foreground/background; 0 means "the
+  /// foreground colour".
+  int underlineColor;
+
   int getHash() {
-    return hashValues(foreground, background, flags, content);
+    return hashValues(
+      foreground,
+      background,
+      flags,
+      content,
+      underlineStyle,
+      underlineColor,
+    );
   }
 
   @override
   String toString() {
-    return 'CellData{foreground: $foreground, background: $background, flags: $flags, content: $content}';
+    return 'CellData{foreground: $foreground, background: $background, flags: $flags, content: $content, underlineStyle: $underlineStyle, underlineColor: $underlineColor}';
   }
 }
 
@@ -44,6 +62,14 @@ abstract class CellAttr {
   static const inverse = 1 << 5;
   static const invisible = 1 << 6;
   static const strikethrough = 1 << 7;
+
+  // Underline styles (`SGR 4:x`), stored in [CellData.underlineStyle].
+  static const underlineStyleNone = 0;
+  static const underlineStyleSingle = 1;
+  static const underlineStyleDouble = 2;
+  static const underlineStyleCurly = 3;
+  static const underlineStyleDotted = 4;
+  static const underlineStyleDashed = 5;
 }
 
 abstract class CellColor {

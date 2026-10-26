@@ -1,6 +1,7 @@
 import 'package:xterm/src/core/escape/handler.dart';
 import 'package:xterm/src/core/escape/parser.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
+import 'package:xterm/src/core/program_status.dart';
 import 'package:xterm/src/base/observable.dart';
 
 class TerminalCommand {
@@ -186,6 +187,16 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   @override
   void unknownCSI(int finalByte) {
     onCommand('unkownCSI(${String.fromCharCode(finalByte)})', error: true);
+  }
+
+  @override
+  void fullReset() {
+    onCommand('fullReset');
+  }
+
+  @override
+  void softReset() {
+    onCommand('softReset');
   }
 
   @override
@@ -520,6 +531,26 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 
   @override
+  void setCursorUnderlineStyle(int style) {
+    onCommand('setCursorUnderlineStyle($style)');
+  }
+
+  @override
+  void setUnderlineColor256(int index) {
+    onCommand('setUnderlineColor256($index)');
+  }
+
+  @override
+  void setUnderlineColorRgb(int r, int g, int b) {
+    onCommand('setUnderlineColorRgb($r, $g, $b)');
+  }
+
+  @override
+  void resetUnderlineColor() {
+    onCommand('resetUnderlineColor');
+  }
+
+  @override
   void setCursorBlink() {
     onCommand('setCursorBlink');
   }
@@ -649,6 +680,16 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   @override
   void unknownOSC(String code, List<String> args) {
     onCommand('unknownOSC($code, $args)', error: true);
+  }
+
+  @override
+  void terminalStatus(TerminalStatusEvent event) {
+    onCommand('terminalStatus($event)');
+  }
+
+  @override
+  void queryProgramStatus() {
+    onCommand('queryProgramStatus');
   }
 
   @override

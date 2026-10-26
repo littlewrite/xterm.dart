@@ -30,27 +30,86 @@ class TerminalPainter {
   /// The cached for cells in the terminal. Should be cleared when the same
   /// cell no longer produces the same visual output. For example, when
   /// [_textStyle] is changed, or when the system font changes.
-  final _paragraphCache = ParagraphCache(10240);
+  final _paragraphCache = ParagraphCache<_GlyphKey>(10240);
+
+  /// Laid out runs of cells. Smaller than [_paragraphCache] because each entry
+  /// covers many cells, and because a run's text is far less repetitive than a
+  /// single character.
+  ///
+  /// Not smaller than this, though: a screen of short differently coloured runs
+  /// has a working set in the low thousands and would thrash below it.
+  final _runCache = ParagraphCache<_RunKey>(2048);
+
+  /// Run kinds (the style flags) whose glyphs do not advance by exactly one
+  /// cell, found by measuring a run against the grid in [_flushRun].
+  /// Coalescing is abandoned for these until the font changes.
+  final _uncoalescableRuns = <int>{};
 
   /// Scratch objects for the synchronous per-line paint path.
   final _cellScratch = CellData.empty();
   final _backgroundPaint = Paint()..isAntiAlias = false;
 
+  /// Characters accumulated for the run being built by [_paintLineForegrounds].
+  final _runChars = <int>[];
+
   /// Memoized content hash per line, invalidated by [BufferLine.revision].
   final _lineContentCache = <BufferLine, _CachedLineContent>{};
 
   /// Pictures keyed by content, so equal-looking rows share a recording.
-  final _linePictureCache = <int, ui.Picture>{};
+  ///
+  /// The draw counts are kept alongside so a cache hit can report what
+  /// replaying the picture costs, which is what the benchmark measures.
+  final _linePictureCache = <int, _CachedLinePicture>{};
 
   int _linePictureBuildCount = 0;
   int _linePictureCacheHitCount = 0;
   int _lineHashCount = 0;
+
+  /// Cell draws issued by the painting paths, whether recorded into a line
+  /// picture now or replayed from one.
+  int _debugDrawParagraphCount = 0;
+  int _debugDrawBackgroundRectCount = 0;
 
   /// Bounded by distinct contents; eviction may cause one later re-record.
   static const _maximumLinePictureCacheSize = 512;
 
   /// Covers the viewport plus scrollback without retaining every line.
   static const _maximumLineContentCacheSize = 1024;
+
+  /// The flags that reach [TerminalStyle.toTextStyle] and so change the laid
+  /// out glyph. `faint` and `inverse` resolve into the colour instead, while
+  /// `blink` and `invisible` decide whether the cell is painted at all.
+  static const _layoutFlags =
+      CellFlags.bold | CellFlags.italic | CellFlags.underline;
+
+  /// Flags that change a run's painted output and therefore its cache key.
+  static const _runFlagsMask =
+      _layoutFlags | CellFlags.faint | CellFlags.inverse;
+
+  /// Turned off on runs, and only on runs. A ligature would draw two cells'
+  /// characters as one glyph of its own width, which puts the rest of the run
+  /// off its columns, and the terminal's own idea of the cursor column does
+  /// not change to match. Single glyphs have no neighbours to join with.
+  static const _noLigatures = [
+    FontFeature.disable('liga'),
+    FontFeature.disable('clig'),
+    FontFeature.disable('calt'),
+    FontFeature.disable('dlig'),
+  ];
+
+  /// How far a run may end up from where painting it cell by cell would have
+  /// put it, over the whole run, before it is rejected. Half a pixel, so no
+  /// character can land in a different column than it would have.
+  static const _gridTolerance = 0.5;
+
+  /// A test can lower this to exercise the cell-by-cell fallback on a font that
+  /// does not advance uniformly.
+  @visibleForTesting
+  double debugGridTolerance = _gridTolerance;
+
+  /// Number of styles coalescing has been abandoned for.
+  @visibleForTesting
+  int get debugUncoalescableRunCount => _uncoalescableRuns.length;
 
   @visibleForTesting
   int get linePictureBuildCount => _linePictureBuildCount;
@@ -71,10 +130,39 @@ class TerminalPainter {
     _lineHashCount = 0;
   }
 
+  /// Glyphs drawn by the last painting pass, counting both the cells recorded
+  /// into a line picture and the cells its replay draws.
+  @visibleForTesting
+  int get debugDrawParagraphCount => _debugDrawParagraphCount;
+
+  /// Background rects drawn, with the same recording/replay accounting as
+  /// [debugDrawParagraphCount].
+  @visibleForTesting
+  int get debugDrawBackgroundRectCount => _debugDrawBackgroundRectCount;
+
+  @visibleForTesting
+  void resetDebugDrawCounts() {
+    _debugDrawParagraphCount = 0;
+    _debugDrawBackgroundRectCount = 0;
+  }
+
   /// Whether blinking text is in the visible half of its cycle. While this is
   /// false a cell carrying SGR 5 draws no glyph, and a row that holds one draws
   /// the other of its two pictures. The render object drives it.
   bool blinkVisible = true;
+
+  /// Whether consecutive ASCII cells sharing a style are drawn as one
+  /// [Paragraph]. A font that does not advance ASCII by exactly one cell is
+  /// detected and falls back on its own; this switch is for a platform or font
+  /// that misbehaves in a way the width check cannot see.
+  bool get coalesceRuns => _coalesceRuns;
+  bool _coalesceRuns = true;
+  set coalesceRuns(bool value) {
+    if (value == _coalesceRuns) return;
+    _coalesceRuns = value;
+    // Recorded pictures carry the old painting mode.
+    _clearLinePictureCache();
+  }
 
   /// Whether any row painted since [beginBlinkScan] held an SGR 5 cell. The
   /// render object runs a blink timer only while something on screen blinks, so
@@ -92,8 +180,7 @@ class TerminalPainter {
     if (value == _textStyle) return;
     _textStyle = value;
     _cellSize = _measureCharSize();
-    _paragraphCache.clear();
-    _clearLinePictureCache();
+    _clearFontDependentCaches();
   }
 
   TextScaler get textScaler => _textScaler;
@@ -102,8 +189,7 @@ class TerminalPainter {
     if (value == _textScaler) return;
     _textScaler = value;
     _cellSize = _measureCharSize();
-    _paragraphCache.clear();
-    _clearLinePictureCache();
+    _clearFontDependentCaches();
   }
 
   TerminalTheme get theme => _theme;
@@ -113,6 +199,7 @@ class TerminalPainter {
     _theme = value;
     _colorPalette = PaletteBuilder(value).build();
     _paragraphCache.clear();
+    _runCache.clear();
     _clearLinePictureCache();
   }
 
@@ -139,7 +226,15 @@ class TerminalPainter {
   void clearFontCache() {
     CharMetricsCache.instance.clear();
     _cellSize = _measureCharSize();
+    _clearFontDependentCaches();
+  }
+
+  /// [_uncoalescableRuns] is a verdict about the *font*, so it survives a
+  /// theme change and only the font-dependent paths reset it.
+  void _clearFontDependentCaches() {
     _paragraphCache.clear();
+    _runCache.clear();
+    _uncoalescableRuns.clear();
     _clearLinePictureCache();
   }
 
@@ -251,14 +346,18 @@ class TerminalPainter {
         : 0;
 
     if (cacheable) {
-      final cachedPicture = _linePictureCache[cacheKey];
-      if (cachedPicture != null) {
+      final cached = _linePictureCache[cacheKey];
+      if (cached != null) {
         _linePictureCacheHitCount++;
-        _drawLinePicture(canvas, offset, cachedPicture);
+        _debugDrawParagraphCount += cached.paragraphs;
+        _debugDrawBackgroundRectCount += cached.backgroundRects;
+        _drawLinePicture(canvas, offset, cached.picture);
         return;
       }
     }
 
+    final paragraphsBefore = _debugDrawParagraphCount;
+    final backgroundRectsBefore = _debugDrawBackgroundRectCount;
     final recorder = ui.PictureRecorder();
     final recordingCanvas = Canvas(recorder);
     final resolvedHighlights = highlights ??
@@ -274,7 +373,11 @@ class TerminalPainter {
     _linePictureBuildCount++;
 
     if (cacheable) {
-      _linePictureCache[cacheKey] = picture;
+      _linePictureCache[cacheKey] = _CachedLinePicture(
+        picture,
+        _debugDrawParagraphCount - paragraphsBefore,
+        _debugDrawBackgroundRectCount - backgroundRectsBefore,
+      );
       _evictLinePictureIfNeeded();
     }
 
@@ -382,6 +485,8 @@ class TerminalPainter {
       high = (high * _hashPrime + cell.foreground) & _hashMask;
       low = (low * _hashPrime + cell.background) & _hashMask;
       low = (low * _hashPrime + cell.flags) & _hashMask;
+      high = (high * _hashPrime + cell.underlineStyle) & _hashMask;
+      low = (low * _hashPrime + cell.underlineColor) & _hashMask;
     }
     content
       ..revision = line.revision
@@ -404,7 +509,7 @@ class TerminalPainter {
   void _evictLinePictureIfNeeded() {
     while (_linePictureCache.length > _maximumLinePictureCacheSize) {
       final oldestKey = _linePictureCache.keys.first;
-      _linePictureCache.remove(oldestKey)?.dispose();
+      _linePictureCache.remove(oldestKey)?.picture.dispose();
     }
   }
 
@@ -415,8 +520,8 @@ class TerminalPainter {
   }
 
   void _clearLinePictureCache() {
-    for (final picture in _linePictureCache.values) {
-      picture.dispose();
+    for (final cached in _linePictureCache.values) {
+      cached.picture.dispose();
     }
     _linePictureCache.clear();
   }
@@ -526,15 +631,334 @@ class TerminalPainter {
     bool paintBackground = true,
     bool paintForeground = true,
   }) {
+    // Backgrounds first, then glyphs, each as maximal coalesced spans or runs.
+    // Drawing every background before any glyph (rather than interleaving them
+    // cell by cell) also keeps an overflowing italic or fallback glyph on top
+    // of its neighbour's background instead of underneath it.
+    if (paintBackground) _paintLineBackgroundsPlain(canvas, offset, line);
+    if (paintForeground) {
+      if (coalesceRuns) {
+        _paintLineForegroundsPlain(canvas, offset, line);
+      } else {
+        _paintLineForegroundsPerCell(canvas, offset, line);
+      }
+    }
+  }
+
+  /// The pre-coalescing glyph path, kept for [coalesceRuns] and as the
+  /// reference the run scanner must reproduce.
+  void _paintLineForegroundsPerCell(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line,
+  ) {
     final cellData = _cellScratch;
     final cellWidth = _cellSize.width;
     for (var i = 0; i < line.length; i++) {
       line.getCellData(i, cellData);
-      final cellOffset = offset.translate(i * cellWidth, 0);
-      if (paintBackground) paintCellBackground(canvas, cellOffset, cellData);
-      if (paintForeground) paintCellForeground(canvas, cellOffset, cellData);
+      paintCellForeground(
+        canvas,
+        offset.translate(i * cellWidth, 0),
+        cellData,
+      );
       if (cellData.content >> CellContent.widthShift == 2) i++;
     }
+  }
+
+  /// Fills each maximal span of cells sharing a background colour with one
+  /// rect.
+  ///
+  /// Cells are compared by the raw field their colour comes from rather than
+  /// by the resolved [Color], which keeps this from allocating one per cell.
+  /// The cost is that a span can split where it did not have to, since an
+  /// inverse cell and a plain one can resolve to the same colour by different
+  /// routes; that draws one extra rect and nothing else.
+  void _paintLineBackgroundsPlain(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line,
+  ) {
+    final cellWidth = _cellSize.width;
+    var spanStart = -1;
+    var spanSource = 0;
+    var spanInverse = false;
+    var spanColor = const Color(0x00000000);
+
+    void flush(int end) {
+      if (spanStart < 0) return;
+      _backgroundPaint.color = spanColor;
+      canvas.drawRect(
+        Rect.fromLTWH(
+          offset.dx + spanStart * cellWidth,
+          offset.dy,
+          // Exactly the cells' width: the paint is not anti-aliased, so
+          // adjacent rects share a device-pixel edge and no seam opens between
+          // them. Widening it would bleed into the next cell's background.
+          (end - spanStart) * cellWidth,
+          _cellSize.height,
+        ),
+        _backgroundPaint,
+      );
+      _debugDrawBackgroundRectCount++;
+      spanStart = -1;
+    }
+
+    for (var i = 0; i < line.length;) {
+      final content = line.getContent(i);
+      final cells = content >> CellContent.widthShift == 2 ? 2 : 1;
+      final flags = line.getAttributes(i);
+      final inverse = flags & CellFlags.inverse != 0;
+      final source = inverse ? line.getForeground(i) : line.getBackground(i);
+      final fills =
+          inverse || (source & CellColor.typeMask) != CellColor.normal;
+
+      if (spanStart >= 0) {
+        if (fills && inverse == spanInverse && source == spanSource) {
+          i += cells;
+          continue;
+        }
+        flush(i);
+      }
+
+      if (fills) {
+        spanStart = i;
+        spanSource = source;
+        spanInverse = inverse;
+        spanColor = inverse
+            ? resolveForegroundColor(source)
+            : resolveBackgroundColor(source);
+      }
+      i += cells;
+    }
+    flush(line.length);
+  }
+
+  /// Draws each maximal run of cells that can share one [Paragraph], and every
+  /// remaining cell on its own.
+  ///
+  /// A cell joins a run only if it is one column wide and ASCII printable:
+  /// those are the characters a monospace font is relied on to advance exactly
+  /// one cell for. Anything else — a wide character, a fallback font's glyph,
+  /// or the empty second half of a wide character — is drawn at its own
+  /// column, where its width cannot move its neighbours.
+  void _paintLineForegroundsPlain(
+    Canvas canvas,
+    Offset offset,
+    BufferLine line,
+  ) {
+    final cellWidth = _cellSize.width;
+    final cellData = _cellScratch;
+
+    var runStart = -1;
+    var runForeground = 0;
+    var runBackground = 0;
+    var runFlags = 0;
+    var runUnderlineStyle = 0;
+    var runUnderlineColor = 0;
+
+    void flush() {
+      if (runStart < 0) return;
+      _flushRun(
+        canvas,
+        offset,
+        line,
+        runStart,
+        runForeground,
+        runBackground,
+        runFlags,
+        runUnderlineStyle,
+        runUnderlineColor,
+      );
+      runStart = -1;
+      _runChars.clear();
+    }
+
+    for (var i = 0; i < line.length; i++) {
+      final content = line.getContent(i);
+      final charCode = content & CellContent.codepointMask;
+      final width = content >> CellContent.widthShift;
+
+      if (width == 2) {
+        flush();
+        line.getCellData(i, cellData);
+        paintCellForeground(
+          canvas,
+          offset.translate(i * cellWidth, 0),
+          cellData,
+        );
+        // The next cell is the empty second half of this character.
+        i++;
+        continue;
+      }
+
+      if (charCode == 0) {
+        flush();
+        continue;
+      }
+
+      final flags = line.getAttributes(i);
+      if (flags & CellFlags.invisible != 0 ||
+          (flags & CellFlags.blink != 0 && !blinkVisible)) {
+        flush();
+        continue;
+      }
+
+      final layoutFlags = flags & _layoutFlags;
+      final joinable = width == 1 &&
+          charCode >= 0x20 &&
+          charCode <= 0x7E &&
+          !_uncoalescableRuns.contains(layoutFlags);
+
+      if (!joinable) {
+        flush();
+        line.getCellData(i, cellData);
+        paintCellForeground(
+          canvas,
+          offset.translate(i * cellWidth, 0),
+          cellData,
+        );
+        continue;
+      }
+
+      final foreground = line.getForeground(i);
+      final inverse = flags & CellFlags.inverse != 0;
+      final background = inverse ? line.getBackground(i) : 0;
+      final visibleFlags = flags & _runFlagsMask;
+      final underlineStyle = line.getUnderlineStyle(i);
+      final underlineColor = line.getUnderlineColor(i);
+
+      if (runStart >= 0 &&
+          foreground == runForeground &&
+          background == runBackground &&
+          visibleFlags == runFlags &&
+          underlineStyle == runUnderlineStyle &&
+          underlineColor == runUnderlineColor) {
+        _runChars.add(_runChar(charCode, visibleFlags));
+        continue;
+      }
+
+      flush();
+      runStart = i;
+      runForeground = foreground;
+      runBackground = background;
+      runFlags = visibleFlags;
+      runUnderlineStyle = underlineStyle;
+      runUnderlineColor = underlineColor;
+      _runChars.add(_runChar(charCode, visibleFlags));
+    }
+
+    flush();
+  }
+
+  /// Draws the accumulated run, if any, and clears its buffer state.
+  void _flushRun(
+    Canvas canvas,
+    Offset lineOffset,
+    BufferLine line,
+    int start,
+    int foreground,
+    int background,
+    int flags,
+    int underlineStyle,
+    int underlineColor,
+  ) {
+    final count = _runChars.length;
+    if (count == 0) return;
+    final runOffset = lineOffset.translate(start * _cellSize.width, 0);
+
+    // A one-cell run gains nothing from a run-keyed paragraph; the per-cell
+    // cache already shares it with every identical cell on screen.
+    if (count == 1) {
+      line.getCellData(start, _cellScratch);
+      paintCellForeground(canvas, runOffset, _cellScratch);
+      return;
+    }
+
+    final text = String.fromCharCodes(_runChars);
+    final key = (
+      text,
+      foreground,
+      background,
+      flags,
+      underlineStyle,
+      underlineColor,
+    );
+    var paragraph = _runCache.getLayoutFromCache(key);
+
+    if (paragraph == null) {
+      paragraph = buildParagraph(
+        text,
+        _runTextStyle(
+          foreground,
+          background,
+          flags,
+          underlineStyle,
+          underlineColor,
+        ).copyWith(fontFeatures: _noLigatures),
+        _textScaler,
+      );
+
+      // The run assumes every character advanced by exactly one cell. If the
+      // font disagrees the glyphs would sit progressively further from their
+      // columns, so give up on this style and draw it cell by cell.
+      final expected = count * _cellSize.width;
+      if ((paragraph.maxIntrinsicWidth - expected).abs() > debugGridTolerance) {
+        paragraph.dispose();
+        _uncoalescableRuns.add(flags & _layoutFlags);
+
+        for (var i = 0; i < count; i++) {
+          line.getCellData(start + i, _cellScratch);
+          paintCellForeground(
+            canvas,
+            lineOffset.translate((start + i) * _cellSize.width, 0),
+            _cellScratch,
+          );
+        }
+        return;
+      }
+
+      _runCache.put(key, paragraph);
+    }
+
+    canvas.drawParagraph(paragraph, runOffset);
+    _debugDrawParagraphCount++;
+  }
+
+  TextStyle _runTextStyle(
+    int foreground,
+    int background,
+    int flags,
+    int underlineStyle,
+    int underlineColor,
+  ) {
+    var color = flags & CellFlags.inverse != 0
+        ? resolveBackgroundColor(background)
+        : resolveForegroundColor(foreground);
+    if (flags & CellFlags.faint != 0) {
+      color = color.withOpacity(0.5);
+    }
+    final underline = flags & CellFlags.underline != 0;
+    return _textStyle.toTextStyle(
+      color: color,
+      bold: flags & CellFlags.bold != 0,
+      italic: flags & CellFlags.italic != 0,
+      underline: underline,
+      underlineStyle: underlineStyle,
+      underlineColor: underline && underlineColor != 0
+          ? resolveForegroundColor(underlineColor)
+          : null,
+    );
+  }
+
+  /// Flutter does not draw an underline below a space unless it sits between
+  /// other regular characters. As a run has neighbours, only the underlined
+  /// spaces are substituted; the glyph is identical.
+  @pragma('vm:prefer-inline')
+  static int _runChar(int charCode, int flags) {
+    if (charCode == 0x20 && flags & CellFlags.underline != 0) {
+      return 0xA0;
+    }
+    return charCode;
   }
 
   /// Underline overlay for one painted row.
@@ -773,6 +1197,9 @@ class TerminalPainter {
     // character, not the block behind it.
     if (!blinkVisible && cellFlags & CellFlags.blink != 0) return;
 
+    // SGR 8 hides the character while keeping what it covers.
+    if (cellFlags & CellFlags.invisible != 0) return;
+
     final glyphPaint = customGlyphPaint(
       cellData,
       foregroundOverride: foregroundOverride,
@@ -791,16 +1218,17 @@ class TerminalPainter {
       return;
     }
 
-    var cacheKey = cellData.getHash() ^ _textScaler.hashCode;
-    if (foregroundOverride != null) {
-      cacheKey ^= foregroundOverride.hashCode;
-    }
-    if (backgroundOverride != null) {
-      cacheKey ^= backgroundOverride.hashCode;
-    }
-    if (flagsOverride != null) {
-      cacheKey ^= flagsOverride;
-    }
+    final cacheKey = (
+      cellData.content,
+      cellData.foreground,
+      cellData.background,
+      cellFlags,
+      cellData.underlineStyle,
+      cellData.underlineColor,
+      _textScaler.hashCode,
+      foregroundOverride,
+      backgroundOverride,
+    );
     var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
 
     if (paragraph == null) {
@@ -812,11 +1240,16 @@ class TerminalPainter {
         color = color.withOpacity(0.5);
       }
 
+      final underline = cellFlags & CellFlags.underline != 0;
       final style = _textStyle.toTextStyle(
         color: color,
         bold: cellFlags & CellFlags.bold != 0,
         italic: cellFlags & CellFlags.italic != 0,
-        underline: cellFlags & CellFlags.underline != 0,
+        underline: underline,
+        underlineStyle: cellData.underlineStyle,
+        underlineColor: underline && cellData.underlineColor != 0
+            ? resolveForegroundColor(cellData.underlineColor)
+            : null,
       );
 
       // Flutter does not draw an underline below a space which is not between
@@ -839,6 +1272,7 @@ class TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
+    _debugDrawParagraphCount++;
   }
 
   @visibleForTesting
@@ -946,6 +1380,7 @@ class TerminalPainter {
     final widthScale = doubleWidth ? 2 : 1;
     final size = Size(_cellSize.width * widthScale, _cellSize.height);
     canvas.drawRect(offset & size, paint);
+    _debugDrawBackgroundRectCount++;
   }
 
   /// Get the effective foreground color for a cell from information encoded in
@@ -985,6 +1420,49 @@ class TerminalPainter {
         return Color(colorValue | 0xFF000000);
     }
   }
+}
+
+/// Identifies one laid out glyph: the cell's raw fields and the overrides that
+/// reach the [TextStyle].
+///
+/// A record rather than a hashed int, so the components are compared
+/// structurally. A hashed key that collides hands back a [Paragraph] laid out
+/// for a different cell, and the terminal paints the wrong glyph: silently,
+/// and depending on what else happens to be in the LRU at that moment.
+typedef _GlyphKey = (
+  int content,
+  int foreground,
+  int background,
+  int flags,
+  int underlineStyle,
+  int underlineColor,
+  int textScalerHash,
+  Color? foregroundOverride,
+  Color? backgroundOverride,
+);
+
+/// Identifies a run of cells laid out as one [Paragraph].
+///
+/// [flags] holds only the flags that change the painted output; `blink` and
+/// `invisible` are resolved before a run is built. [background] is the cell's
+/// background only when `inverse` is set, because that is the only time it
+/// reaches the style.
+typedef _RunKey = (
+  String text,
+  int foreground,
+  int background,
+  int flags,
+  int underlineStyle,
+  int underlineColor,
+);
+
+/// A recorded line plus what replaying it costs.
+class _CachedLinePicture {
+  _CachedLinePicture(this.picture, this.paragraphs, this.backgroundRects);
+
+  final ui.Picture picture;
+  final int paragraphs;
+  final int backgroundRects;
 }
 
 /// Cached hash and overlay state for one line.

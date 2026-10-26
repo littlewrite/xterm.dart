@@ -14,7 +14,13 @@ import 'package:xterm/src/utils/unicode_v11.dart';
 class Buffer {
   final TerminalState terminal;
 
-  final int maxLines;
+  /// Maximum number of lines kept. It is never smaller than the viewport: the
+  /// line list doubles as the screen, so a capacity below `viewHeight` would
+  /// leave `scrollBack` negative and every viewport index out of range. A
+  /// viewport that later grows taller raises [ensureHeight] and with it this
+  /// value.
+  int get maxLines => _maxLines;
+  int _maxLines;
 
   final bool isAltBuffer;
 
@@ -24,10 +30,10 @@ class Buffer {
 
   Buffer(
     this.terminal, {
-    required this.maxLines,
+    required int maxLines,
     required this.isAltBuffer,
     this.wordSeparators,
-  }) {
+  }) : _maxLines = max(maxLines, terminal.viewHeight) {
     for (int i = 0; i < terminal.viewHeight; i++) {
       lines.push(_newEmptyLine());
     }
@@ -65,6 +71,17 @@ class Buffer {
   /// [viewHeight].
   int get height => lines.length;
 
+  /// Grows the line capacity so a viewport of [height] rows fits.
+  ///
+  /// The configured `maxLines` is a scrollback limit, not a limit on the
+  /// screen: a host may make the view taller than it. Growing the ring keeps
+  /// the lines, their order and their indices; only the capacity changes.
+  void ensureHeight(int height) {
+    if (height <= _maxLines) return;
+    _maxLines = height;
+    lines.maxLength = height;
+  }
+
   /// Horizontal position of the cursor relative to the top-left cornor of the
   /// screen, starting from 0.
   int get cursorX => _cursorX.clamp(0, terminal.viewWidth - 1);
@@ -72,6 +89,16 @@ class Buffer {
   /// Vertical position of the cursor relative to the top-left cornor of the
   /// screen, starting from 0.
   int get cursorY => _cursorY;
+
+  /// Cursor column as a program sees it in CPR replies (DSR 6), starting from
+  /// 1.
+  ///
+  /// A cursor parked past the last column (pending wrap) reports the last
+  /// column, because that is where it is drawn.
+  int get reportedCursorX => _cursorX >= viewWidth ? viewWidth : _cursorX + 1;
+
+  /// Cursor row as a program sees it in CPR replies (DSR 6), starting from 1.
+  int get reportedCursorY => _cursorY + 1;
 
   /// Index of the first line in the scroll region.
   int get marginTop => _marginTop;
@@ -130,6 +157,13 @@ class Buffer {
     if (cellWidth != 0 && _cursorX > 0 && line.getWidth(_cursorX - 1) == 2) {
       line.eraseCell(_cursorX - 1, terminal.cursor);
     }
+    // Writing over the *head* of a wide char with a narrower one must clear
+    // the filler cell to its right, or it stays behind as an orphan.
+    if (cellWidth == 1 &&
+        _cursorX + 1 < viewWidth &&
+        line.getWidth(_cursorX) == 2) {
+      line.eraseCell(_cursorX + 1, terminal.cursor);
+    }
     line.setCell(_cursorX, codePoint, cellWidth, terminal.cursor);
 
     if (_cursorX < viewWidth) {
@@ -158,15 +192,18 @@ class Buffer {
     return result;
   }
 
+  /// Moves the cursor one column left, the way a backspace (`BS`) does.
+  ///
+  /// This is column-based, like xterm and VTE: at the left margin `BS` does
+  /// nothing, and it does not skip the second cell of a wide character. The
+  /// cursor may rest there and a program that wants to delete a wide character
+  /// sends one `BS` per column (or uses cursor addressing). Reverse wraparound
+  /// (`DECSET 45`) is not implemented, so `BS` never crosses a soft wrap.
   void backspace() {
-    if (_cursorX == 0 && currentLine.isWrapped) {
-      currentLine.isWrapped = false;
-      moveCursor(viewWidth - 1, -1);
-    } else if (_cursorX == viewWidth) {
-      moveCursor(-2, 0);
-    } else {
-      moveCursor(-1, 0);
-    }
+    if (_cursorX <= 0) return;
+    // A cursor parked one past the last column (pending wrap) is drawn in the
+    // last column, so stepping back from it lands there.
+    _cursorX = min(_cursorX - 1, viewWidth - 1);
   }
 
   /// Erases the viewport from the cursor position to the end of the buffer,
@@ -213,7 +250,10 @@ class Buffer {
   /// cursor.
   void eraseLineToCursor() {
     currentLine.isWrapped = false;
-    currentLine.eraseRange(0, _cursorX, terminal.cursor);
+    // `eraseRange` ends are exclusive, so the cursor cell needs `+ 1`. Leaving
+    // it out let a redraw strand the character under the cursor.
+    currentLine.eraseRange(
+        0, _cursorX.clamp(0, viewWidth) + 1, terminal.cursor);
   }
 
   /// Erases the line at the current cursor position.
@@ -361,6 +401,8 @@ class Buffer {
     _savedCursorStyle.foreground = terminal.cursor.foreground;
     _savedCursorStyle.background = terminal.cursor.background;
     _savedCursorStyle.attrs = terminal.cursor.attrs;
+    _savedCursorStyle.underlineStyle = terminal.cursor.underlineStyle;
+    _savedCursorStyle.underlineColor = terminal.cursor.underlineColor;
     charset.save();
   }
 
@@ -371,6 +413,8 @@ class Buffer {
     terminal.cursor.foreground = _savedCursorStyle.foreground;
     terminal.cursor.background = _savedCursorStyle.background;
     terminal.cursor.attrs = _savedCursorStyle.attrs;
+    terminal.cursor.underlineStyle = _savedCursorStyle.underlineStyle;
+    terminal.cursor.underlineColor = _savedCursorStyle.underlineColor;
     charset.restore();
   }
 
@@ -413,6 +457,26 @@ class Buffer {
     for (int i = 0; i < viewHeight; i++) {
       lines.push(_newEmptyLine());
     }
+  }
+
+  /// Soft-resets state associated with this buffer without clearing content.
+  ///
+  /// The cursor itself keeps its position: a soft reset resets what has been
+  /// *saved*, not where the program is currently writing.
+  void softReset() {
+    resetVerticalMargins();
+    _savedCursorX = 0;
+    _savedCursorY = 0;
+    _savedCursorStyle.reset();
+    charset.reset();
+  }
+
+  /// Resets this buffer to its initial state.
+  void reset() {
+    clear();
+    softReset();
+    _cursorX = 0;
+    _cursorY = 0;
   }
 
   void insertBlankChars(int count) {

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
 import 'package:xterm/src/ui/shortcut/actions.dart';
@@ -147,6 +148,17 @@ class CustomTextEditState extends State<CustomTextEdit>
   Size? _lastSentEditableSize;
   Matrix4? _lastSentEditableTransform;
   Rect? _lastSentCaretRect;
+
+  /// Text the last value of the current input burst delivered.
+  ///
+  /// GTK (Linux) sends several `updateEditingValue`s for one burst of keys,
+  /// each computed from the text before our reset took effect (`g`, `gi`,
+  /// `git`). Sending each value whole writes the earlier characters again
+  /// ("giit"), so only the part past this text is new input.
+  String _insertedText = '';
+
+  /// Whether the post-frame callback that ends the current burst is pending.
+  bool _insertedTextFlushScheduled = false;
 
   @override
   void initState() {
@@ -328,17 +340,24 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   void _showCaretOnScreen() {
     if (_caretRect == Rect.zero) return;
-    final renderBox = context.findRenderObject() as RenderBox?;
-    if (renderBox == null || !renderBox.hasSize) return;
-    final scrollableState = Scrollable.maybeOf(context);
-    if (scrollableState == null) return;
-    scrollableState.position.ensureVisible(
-      renderBox,
-      alignment: 0.5,
-      duration: const Duration(milliseconds: 150),
-      curve: Curves.ease,
-      alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
-    );
+    // After the frame, not now: the input method can call in mid-layout, and
+    // `ensureVisible` walks up through ancestors that may not be laid out yet.
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final renderBox = context.findRenderObject() as RenderBox?;
+      if (renderBox == null || !renderBox.attached || !renderBox.hasSize) {
+        return;
+      }
+      final scrollableState = Scrollable.maybeOf(context);
+      if (scrollableState == null) return;
+      scrollableState.position.ensureVisible(
+        renderBox,
+        alignment: 0.5,
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.ease,
+        alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
+      );
+    });
   }
 
   @override
@@ -493,6 +512,7 @@ class CustomTextEditState extends State<CustomTextEdit>
     _resetEditableGeometryCache();
     _connection!.show();
     _connection!.setEditingState(_currentEditingState);
+    _clearInsertedText();
     _syncEditableGeometry();
     widget.onInputConnectionChange(true);
   }
@@ -502,6 +522,7 @@ class CustomTextEditState extends State<CustomTextEdit>
       _connection!.close();
       _connection = null;
       _resetEditableGeometryCache();
+      _clearInsertedText();
       widget.onInputConnectionChange(false);
     }
   }
@@ -520,15 +541,7 @@ class CustomTextEditState extends State<CustomTextEdit>
         )
       : TextEditingValue.empty;
 
-  String _extractCommittedText(String text) {
-    if (widget.deleteDetection && text.startsWith(_initEditingState.text)) {
-      return text.substring(_initEditingState.text.length);
-    }
-    return text;
-  }
-
-  String get _semanticsValue =>
-      _extractCommittedText(_currentEditingState.text);
+  String get _semanticsValue => _typed(_currentEditingState.text);
 
   // Ensure _currentEditingState is initialized before _openInputConnection might use it.
   late var _currentEditingState = TextEditingValue.empty;
@@ -569,6 +582,9 @@ class CustomTextEditState extends State<CustomTextEdit>
         _currentEditingState.text,
       );
       widget.onComposing(composingText);
+      // A composition is only previewed, never sent: nothing before it can be
+      // a prefix of what a later commit delivers.
+      _clearInsertedText();
       return;
     }
 
@@ -579,7 +595,7 @@ class CustomTextEditState extends State<CustomTextEdit>
     // ended. A listener may reset the platform IME connection, which must not
     // re-enter this client while it still contains the committed value.
     if (composingJustCommitted) {
-      final committedText = _extractCommittedText(_currentEditingState.text);
+      final committedText = _typed(_currentEditingState.text);
 
       if (committedText.isNotEmpty) {
         widget.onInsert(committedText);
@@ -588,6 +604,9 @@ class CustomTextEditState extends State<CustomTextEdit>
       _connection?.setEditingState(_currentEditingState);
       _showCaretOnScreen();
       widget.onComposing(null);
+      // The composition was never sent, so the commit cannot be a duplicate of
+      // anything before it.
+      _clearInsertedText();
       return;
     }
 
@@ -596,54 +615,24 @@ class CustomTextEditState extends State<CustomTextEdit>
     final int initTextLength = _initEditingState.text.length;
 
     bool textChanged = false;
-    if (widget.deleteDetection) {
-      // Specific logic for delete detection using initial placeholder characters
-      if (currentText.length < previousText.length &&
-          previousText ==
-              _initEditingState
-                  .text && // Deletion happened from the initial state
-          currentText.startsWith(
-            _initEditingState.text.substring(0, initTextLength - 1),
-          )) {
-        // Check if one char was removed
-        if (!_consumeImeDeleteSuppression()) {
-          widget.onDelete();
-          textChanged = true;
-        }
-      } else if (currentText.length > initTextLength &&
-          currentText.startsWith(_initEditingState.text)) {
-        final String textDelta = currentText.substring(initTextLength);
-        if (textDelta.isNotEmpty) {
-          widget.onInsert(textDelta);
-          textChanged = true;
-        }
-      } else if (currentText.length > previousText.length &&
-          previousText == _initEditingState.text) {
-        // Catch case where init text was empty and then text was added
-        final String textDelta = currentText.substring(initTextLength);
-        if (textDelta.isNotEmpty) {
-          widget.onInsert(textDelta);
-          textChanged = true;
-        }
+    final String typed = _typed(currentText);
+    if (typed.isNotEmpty) {
+      textChanged = _insertTyped(typed);
+    } else if (widget.deleteDetection) {
+      // Only placeholder left, and less of it: a backspace.
+      if (currentText.length < initTextLength &&
+          previousText == _initEditingState.text &&
+          !_consumeImeDeleteSuppression()) {
+        widget.onDelete();
+        textChanged = true;
+        _clearInsertedText();
       }
-    } else {
-      // Generic insert/delete logic
-      if (currentText.length < previousText.length) {
-        // This is a simplification. For robust deletion detection without the
-        // deleteDetection trick, a diff algorithm or more context is needed.
-        // Assuming any reduction when not composing is a delete.
-        if (!_consumeImeDeleteSuppression()) {
-          widget.onDelete();
-          textChanged = true;
-        }
-      } else if (currentText.length > previousText.length) {
-        // Assumes text is appended. More complex changes (e.g. replacing selection)
-        // are handled by setting textEditingValue directly.
-        final String textDelta = currentText.substring(previousText.length);
-        if (textDelta.isNotEmpty) {
-          widget.onInsert(textDelta);
-          textChanged = true;
-        }
+    } else if (currentText.length < previousText.length) {
+      // The IME dropped characters from text we already sent: a backspace.
+      if (!_consumeImeDeleteSuppression()) {
+        widget.onDelete();
+        textChanged = true;
+        _clearInsertedText();
       }
     }
 
@@ -658,6 +647,68 @@ class CustomTextEditState extends State<CustomTextEdit>
     _showCaretOnScreen();
   }
 
+  /// What a finished (not composing) update typed.
+  ///
+  /// A composition is only previewed and the buffer resets to the placeholder
+  /// after every commit, so everything past the placeholder is new input —
+  /// wherever the IME wrote it, and however long it is.
+  String _typed(String currentText) {
+    final initialText = _initEditingState.text;
+    if (initialText.isEmpty) {
+      return currentText;
+    }
+    if (currentText.startsWith(initialText)) {
+      return currentText.substring(initialText.length);
+    }
+    if (initialText.startsWith(currentText)) {
+      // The placeholder itself was shortened: a backspace, not input.
+      return '';
+    }
+    // The IME replaced the placeholder. Everything it wrote is input, even
+    // when the first character matches the placeholder: a common prefix would
+    // eat a leading space the user typed.
+    return currentText;
+  }
+
+  /// Adds [typed] to the terminal, dropping the part the previous value of the
+  /// same input burst already delivered (see [_insertedText]).
+  bool _insertTyped(String typed) {
+    var delta = typed;
+    final pending = _insertedText;
+    if (pending.isNotEmpty &&
+        typed.length > pending.length &&
+        typed.startsWith(pending)) {
+      delta = typed.substring(pending.length);
+    }
+    _rememberInsertedText(typed);
+    if (delta.isEmpty) {
+      return false;
+    }
+    widget.onInsert(delta);
+    return true;
+  }
+
+  /// Keeps [typed] as the burst prefix until the frame ends.
+  ///
+  /// The frame boundary separates one burst from a later edit that merely
+  /// starts with the same text.
+  void _rememberInsertedText(String typed) {
+    _insertedText = typed;
+    if (_insertedTextFlushScheduled) return;
+    _insertedTextFlushScheduled = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _insertedTextFlushScheduled = false;
+      _clearInsertedText();
+    });
+    // An input update alone does not necessarily schedule a frame; without one
+    // the burst would never close.
+    SchedulerBinding.instance.ensureVisualUpdate();
+  }
+
+  void _clearInsertedText() {
+    _insertedText = '';
+  }
+
   @override
   void performAction(TextInputAction action) {
     widget.onAction(action);
@@ -665,11 +716,12 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   @override
   void insertContent(KeyboardInsertedContent content) {
-    // Handle rich content insertion if needed
-    // For a terminal, this might involve converting to text or specific escape codes
-    if (content.data != null) {
-      widget.onInsert(utf8.decode(content.data!));
-    }
+    // Text only. A keyboard inserts stickers and GIFs this way too, whose
+    // bytes are an image a terminal cannot show and not UTF-8 at all: decoding
+    // them threw.
+    final data = content.data;
+    if (data == null || !content.mimeType.startsWith('text/')) return;
+    widget.onInsert(utf8.decode(data, allowMalformed: true));
   }
 
   @override
@@ -688,6 +740,7 @@ class CustomTextEditState extends State<CustomTextEdit>
       _connection = null;
     }
     _resetEditableGeometryCache();
+    _clearInsertedText();
     widget.onInputConnectionChange(false);
   }
 

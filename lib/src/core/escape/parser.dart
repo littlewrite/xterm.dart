@@ -1,5 +1,6 @@
 import 'package:xterm/src/core/color.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
+import 'package:xterm/src/core/program_status.dart';
 import 'package:xterm/src/core/escape/handler.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/byte_consumer.dart';
@@ -118,7 +119,7 @@ class EscapeParser {
     'M'.charCode: _escHandleReverseIndex,
     'P'.charCode: _escHandleDcs,
     '_'.charCode: _escHandleApc,
-    // 'c'.charCode: _unsupportedHandler,
+    'c'.charCode: _escHandleFullReset,
     // '#'.charCode: _unsupportedHandler,
     '('.charCode: _escHandleDesignateCharset0, //  SCS - G0
     ')'.charCode: _escHandleDesignateCharset1, //  SCS - G1
@@ -127,6 +128,14 @@ class EscapeParser {
     '='.charCode: _escHandleSetAppKeypadMode,
     '>'.charCode: _escHandleResetAppKeypadMode,
   });
+
+  /// `ESC c` Reset to Initial State (RIS)
+  ///
+  /// https://terminalguide.namepad.de/seq/a_esc_c/
+  bool _escHandleFullReset() {
+    handler.fullReset();
+    return true;
+  }
 
   /// `ESC 7` Save Cursor (DECSC)
   ///
@@ -444,6 +453,24 @@ class EscapeParser {
     }
   }
 
+  /// Reads the RGB components of a colon-form extended colour group.
+  ///
+  /// The colour-space subparameter is optional, which changes the group's
+  /// length: `38:2::r:g:b` and `38:2:r:g:b` hold five parameters, while
+  /// `38:2:0:r:g:b` holds six. Empty subparameters are dropped while parsing,
+  /// so the length is the only way to tell whether the first number is a
+  /// colour space or red.
+  (int, int, int)? _extendedColorRgb(
+    int start,
+    int groupEnd,
+    List<int> params,
+  ) {
+    final usesColorSpace = groupEnd - start + 1 >= 6;
+    final base = usesColorSpace ? start + 3 : start + 2;
+    if (base + 2 > groupEnd) return null;
+    return (params[base], params[base + 1], params[base + 2]);
+  }
+
   /// `ESC [ ... m` CSI final byte `m`
   ///
   /// Handles both SGR and xterm modifyOtherKeys resources that share the same
@@ -494,6 +521,8 @@ class EscapeParser {
         case 4:
           if (groupEnd > i && params[i + 1] == 0) {
             handler.unsetCursorUnderline();
+          } else if (groupEnd > i) {
+            handler.setCursorUnderlineStyle(params[i + 1].clamp(1, 5));
           } else {
             handler.setCursorUnderline();
           }
@@ -587,18 +616,15 @@ class EscapeParser {
             final mode = params[i + 1];
             switch (mode) {
               case 2:
-                if (groupEnd >= i + 4) {
-                  final r = params[i + 2];
-                  final g = params[i + 3];
-                  final b = params[i + 4];
-                  handler.setForegroundColorRgb(r, g, b);
+                final rgb = _extendedColorRgb(i, groupEnd, params);
+                if (rgb != null) {
+                  handler.setForegroundColorRgb(rgb.$1, rgb.$2, rgb.$3);
                 }
                 i = groupEnd + 1;
                 continue;
               case 5:
                 if (groupEnd >= i + 2) {
-                  final index = params[i + 2];
-                  handler.setForegroundColor256(index);
+                  handler.setForegroundColor256(params[i + 2]);
                 }
                 i = groupEnd + 1;
                 continue;
@@ -678,18 +704,15 @@ class EscapeParser {
             final mode = params[i + 1];
             switch (mode) {
               case 2:
-                if (groupEnd >= i + 4) {
-                  final r = params[i + 2];
-                  final g = params[i + 3];
-                  final b = params[i + 4];
-                  handler.setBackgroundColorRgb(r, g, b);
+                final rgb = _extendedColorRgb(i, groupEnd, params);
+                if (rgb != null) {
+                  handler.setBackgroundColorRgb(rgb.$1, rgb.$2, rgb.$3);
                 }
                 i = groupEnd + 1;
                 continue;
               case 5:
                 if (groupEnd >= i + 2) {
-                  final index = params[i + 2];
-                  handler.setBackgroundColor256(index);
+                  handler.setBackgroundColor256(params[i + 2]);
                 }
                 i = groupEnd + 1;
                 continue;
@@ -729,6 +752,63 @@ class EscapeParser {
           continue;
         case 49:
           handler.resetBackground();
+          i = groupEnd + 1;
+          continue;
+
+        // SGR 58 — underline colour. Colon-separated subparameters are the
+        // standard form (`58:2::r:g:b`); the semicolon form is accepted too.
+        case 58:
+          if (groupEnd > i) {
+            if (i + 1 < params.length) {
+              switch (params[i + 1]) {
+                case 2:
+                  final rgb = _extendedColorRgb(i, groupEnd, params);
+                  if (rgb != null) {
+                    handler.setUnderlineColorRgb(rgb.$1, rgb.$2, rgb.$3);
+                  }
+                  break;
+                case 5:
+                  if (groupEnd >= i + 2) {
+                    handler.setUnderlineColor256(params[i + 2]);
+                  }
+                  break;
+              }
+            }
+            i = groupEnd + 1;
+            continue;
+          } else {
+            if (i + 1 >= params.length) {
+              i = params.length;
+              continue;
+            }
+            switch (params[i + 1]) {
+              case 2:
+                if (i + 4 >= params.length) {
+                  i = params.length;
+                  continue;
+                }
+                handler.setUnderlineColorRgb(
+                  params[i + 2],
+                  params[i + 3],
+                  params[i + 4],
+                );
+                i += 5;
+                continue;
+              case 5:
+                if (i + 2 >= params.length) {
+                  i = params.length;
+                  continue;
+                }
+                handler.setUnderlineColor256(params[i + 2]);
+                i += 3;
+                continue;
+            }
+            i += 2;
+            continue;
+          }
+
+        case 59:
+          handler.resetUnderlineColor();
           i = groupEnd + 1;
           continue;
 
@@ -860,6 +940,13 @@ class EscapeParser {
   ///
   /// `$` 是要认的中间字节：少了它，`CSI ? 2027 p` 这类别的序列会被当成查询吃掉。
   void _csiHandleRequestMode() {
+    // `CSI ! p` Soft Terminal Reset (DECSTR).
+    if (_csi.intermediates.length == 1 &&
+        _csi.intermediates.first == Ascii.exclamationMark) {
+      handler.softReset();
+      return;
+    }
+
     if (_csi.prefix != Ascii.questionMark) {
       return;
     }
@@ -1345,6 +1432,23 @@ class EscapeParser {
           handler.setClipboard(selectionId, data);
           return true;
       }
+    }
+
+    // Program status: OSC 7501 (Program Status Protocol), OSC 9;4 (progress)
+    // and OSC 133 (shell integration marks).
+    final oscArgs = _osc.sublist(1);
+    if (_osc[0] == ProgramStatusReport.oscCode) {
+      if (ProgramStatusReport.isQuery(oscArgs)) {
+        handler.queryProgramStatus();
+      } else if (ProgramStatusReport.parse(oscArgs) case final report?) {
+        handler.terminalStatus(report);
+      }
+      // A refused report is dropped whole, as the spec requires.
+      return true;
+    }
+    if (TerminalStatusEvent.fromOsc(_osc[0], oscArgs) case final event?) {
+      handler.terminalStatus(event);
+      return true;
     }
 
     // Private extensions

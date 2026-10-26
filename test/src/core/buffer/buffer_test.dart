@@ -429,7 +429,7 @@ void main() {
       final terminal = Terminal();
       terminal.resize(4, 3);
       terminal.write('切');
-      terminal.write('\bx');
+      terminal.write('\x1b[1Dx');
 
       final line = terminal.buffer.lines[0];
       expect(line.getWidth(0), 0, reason: 'left half must not survive');
@@ -437,7 +437,36 @@ void main() {
       expect(line.getCodePoint(1), 'x'.codeUnitAt(0));
     });
 
-    test('overwriting the right half with a wide char clears the left half', () {
+    test('backspace is column-based, and writing clears the other half', () {
+      final terminal = Terminal();
+      terminal.resize(4, 3);
+      terminal.write('切');
+      // One BS lands on the wide character's second cell, as in xterm. Writing
+      // there clears the head it belonged to.
+      terminal.write('\bx');
+
+      final line = terminal.buffer.lines[0];
+      expect(terminal.buffer.cursorX, 2);
+      expect(line.getCodePoint(0), 0);
+      expect(line.getWidth(0), 0, reason: 'head must not survive');
+      expect(line.getCodePoint(1), 'x'.codeUnitAt(0));
+    });
+
+    test('two backspaces land on the head and write over the character', () {
+      final terminal = Terminal();
+      terminal.resize(4, 3);
+      terminal.write('切');
+      terminal.write('\b\bx');
+
+      final line = terminal.buffer.lines[0];
+      expect(terminal.buffer.cursorX, 1);
+      expect(line.getCodePoint(0), 'x'.codeUnitAt(0));
+      expect(line.getWidth(0), 1);
+      expect(line.getWidth(1), 0, reason: 'filler must not survive');
+    });
+
+    test('overwriting the right half with a wide char clears the left half',
+        () {
       final terminal = Terminal();
       terminal.resize(4, 3);
       terminal.write('切');

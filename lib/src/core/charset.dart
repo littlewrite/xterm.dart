@@ -45,6 +45,15 @@ class Charset {
     _currentIndex = _savedIndex;
     _updateCache();
   }
+
+  /// Returns the charset to its initial state: no designation, G0 active.
+  void reset() {
+    _charsetMap = {};
+    _currentIndex = 0;
+    _savedCharsetMap = {};
+    _savedIndex = 0;
+    _updateCache();
+  }
 }
 
 const decSpecGraphics = <int, int>{
