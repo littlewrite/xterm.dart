@@ -539,6 +539,55 @@ void main() {
     focusNode.dispose();
   });
 
+  testWidgets('paste prefers onPasteText over onInsert', (tester) async {
+    final focusNode = FocusNode();
+    final inserted = <String>[];
+    final pasted = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.getData') {
+          return <String, dynamic>{'text': 'a\x1b[2Jb'};
+        }
+        return null;
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: CustomTextEdit(
+            focusNode: focusNode,
+            onInsert: inserted.add,
+            onPasteText: pasted.add,
+            onDelete: () {},
+            onComposing: (_) {},
+            onAction: (_) {},
+            onKeyEvent: (node, event) => KeyEventResult.ignored,
+            onInputConnectionChange: (connected) {},
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    final state = tester.state<CustomTextEditState>(
+      find.byType(CustomTextEdit),
+    );
+
+    await state.pasteText(SelectionChangedCause.toolbar);
+    await tester.pump();
+
+    // Raw clipboard text goes to the host so Terminal.paste can sanitize it
+    // and apply bracketed-paste wrapping.
+    expect(pasted, ['a\x1b[2Jb']);
+    expect(inserted, isEmpty);
+
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null);
+    focusNode.dispose();
+  });
+
   testWidgets('exposes setText semantics action for accessibility text input', (
     tester,
   ) async {
@@ -597,7 +646,7 @@ void main() {
     final mounted = await _mount(tester);
 
     // GTK computes each value from the text before the reset took effect.
-    for (final text in ['g', 'gi', 'git']) {
+    for (final text in ['g', 'gi', 'gi', 'git']) {
       mounted.state.updateEditingValue(
         TextEditingValue(
           text: text,
@@ -607,6 +656,27 @@ void main() {
     }
 
     expect(mounted.inserted, ['g', 'i', 't']);
+
+    mounted.focusNode.dispose();
+  });
+
+  testWidgets('a repeated or shortened burst value is not written again', (
+    tester,
+  ) async {
+    final mounted = await _mount(tester);
+
+    for (final text in ['ab', 'ab', 'a']) {
+      mounted.state.updateEditingValue(
+        TextEditingValue(
+          text: text,
+          selection: TextSelection.collapsed(offset: text.length),
+        ),
+      );
+    }
+
+    // The shrink is a backspace this layer does not mirror, but it must not
+    // insert the already-delivered text a second time.
+    expect(mounted.inserted, ['ab']);
 
     mounted.focusNode.dispose();
   });

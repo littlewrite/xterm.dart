@@ -15,7 +15,8 @@
 /// Escape strings (`OSC`, `DCS`, `SOS`, `PM`, `APC`) are dropped up to their
 /// terminator, `BEL` or `ST` (`ESC \`). A paste with an unterminated string
 /// stops at the next `ESC` or C0 control instead of eating the rest of the
-/// paste.
+/// paste. The 8-bit C1 forms of these introducers (`0x9b` CSI, `0x9d` OSC, ...)
+/// are dropped the same way.
 String stripEscapeSequences(String text) {
   // Escaping bytes are all ASCII, so scanning UTF-16 code units is safe: a
   // surrogate pair (0xD800-0xDFFF) can never look like one.
@@ -23,6 +24,13 @@ String stripEscapeSequences(String text) {
 
   for (var i = 0; i < text.length;) {
     final lead = text.codeUnitAt(i);
+    // 8-bit C1 controls are ECMA-48 introducers too (U+009B CSI, U+009D OSC,
+    // ...). They are not ESC and are outside the C0 range stripped by
+    // Terminal.paste, so drop them here before they reach the program.
+    if (lead >= 0x80 && lead <= 0x9f) {
+      i = _skipC1(text, i);
+      continue;
+    }
     if (lead != 0x1b) {
       buffer.writeCharCode(lead);
       i++;
@@ -66,7 +74,13 @@ String stripEscapeSequences(String text) {
 
     // Single-shift character selection: ESC ( , ESC ) , ESC * , ESC +
     if (intro == 0x28 || intro == 0x29 || intro == 0x2a || intro == 0x2b) {
-      i = i + 2 < text.length ? i + 3 : text.length;
+      var j = i + 2;
+      if (j < text.length) {
+        // Skip the designation as a code point, not a code unit: a malformed
+        // pair must not leak a lone surrogate into the paste.
+        j += _isSurrogatePairAt(text, j) ? 2 : 1;
+      }
+      i = j;
       continue;
     }
 
@@ -101,6 +115,42 @@ bool _isCsiIntermediate(int codeUnit) => codeUnit >= 0x20 && codeUnit <= 0x2f;
 
 bool _isCsiFinal(int codeUnit) => codeUnit >= 0x40 && codeUnit <= 0x7e;
 
+bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+
+bool _isLowSurrogate(int codeUnit) => codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+
+bool _isSurrogatePairAt(String text, int index) =>
+    _isHighSurrogate(text.codeUnitAt(index)) &&
+    index + 1 < text.length &&
+    _isLowSurrogate(text.codeUnitAt(index + 1));
+
+/// Drops one 8-bit C1 control sequence. CSI (`0x9b`) consumes its parameters
+/// and final byte; the string introducers consume up to `BEL` or `ST`;
+/// everything else is a single control byte.
+int _skipC1(String text, int index) {
+  final lead = text.codeUnitAt(index);
+  if (lead == 0x9b) {
+    var j = index + 1;
+    while (j < text.length &&
+        (_isCsiParameter(text.codeUnitAt(j)) ||
+            _isCsiIntermediate(text.codeUnitAt(j)))) {
+      j++;
+    }
+    if (j < text.length && _isCsiFinal(text.codeUnitAt(j))) {
+      return j + 1;
+    }
+    return j;
+  }
+  if (lead == 0x9d ||
+      lead == 0x90 ||
+      lead == 0x98 ||
+      lead == 0x9e ||
+      lead == 0x9f) {
+    return _skipString(text, index + 1);
+  }
+  return index + 1;
+}
+
 /// Returns the index just past the escape string that starts before [start]:
 /// past its `BEL` or `ST` terminator, or, when it is never terminated, just
 /// past its introducer, at the next `ESC` or C0 control.
@@ -108,6 +158,7 @@ int _skipString(String text, int start) {
   for (var i = start; i < text.length; i++) {
     final codeUnit = text.codeUnitAt(i);
     if (codeUnit == 0x07) return i + 1; // BEL
+    if (codeUnit == 0x9c) return i + 1; // 8-bit ST
     if (codeUnit == 0x1b) {
       if (i + 1 < text.length && text.codeUnitAt(i + 1) == 0x5c) {
         return i + 2; // ST: ESC \

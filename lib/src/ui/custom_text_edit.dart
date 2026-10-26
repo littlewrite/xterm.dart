@@ -84,6 +84,12 @@ class CustomTextEdit extends StatefulWidget {
   /// Callback to paste text from clipboard to terminal.
   final void Function()? onPaste;
 
+  /// Receives raw clipboard text when the host does not provide [onPaste].
+  ///
+  /// TerminalView routes this through `Terminal.paste` so the sanitizer and
+  /// bracketed-paste wrapping apply to the normal Ctrl+V path.
+  final ValueChanged<String>? onPasteText;
+
   CustomTextEdit({
     super.key,
     required this.child,
@@ -113,6 +119,7 @@ class CustomTextEdit extends StatefulWidget {
     this.onCopied,
     this.onSelectAll,
     this.onPaste,
+    this.onPasteText,
   });
 
   final ValueChanged<bool> onInputConnectionChange;
@@ -673,11 +680,16 @@ class CustomTextEditState extends State<CustomTextEdit>
   /// Adds [typed] to the terminal, dropping the part the previous value of the
   /// same input burst already delivered (see [_insertedText]).
   bool _insertTyped(String typed) {
-    var delta = typed;
     final pending = _insertedText;
-    if (pending.isNotEmpty &&
-        typed.length > pending.length &&
-        typed.startsWith(pending)) {
+    if (pending.isNotEmpty && pending.startsWith(typed)) {
+      // A repeated or shortened cumulative value: the burst already delivered
+      // this text. A shrink is a backspace this layer cannot mirror, but it
+      // must not be inserted a second time.
+      _rememberInsertedText(typed);
+      return false;
+    }
+    var delta = typed;
+    if (pending.isNotEmpty && typed.startsWith(pending)) {
       delta = typed.substring(pending.length);
     }
     _rememberInsertedText(typed);
@@ -1012,7 +1024,12 @@ class CustomTextEditState extends State<CustomTextEdit>
       return;
     }
 
-    widget.onInsert(data.text!);
+    final pasteText = widget.onPasteText;
+    if (pasteText != null) {
+      pasteText(data.text!);
+    } else {
+      widget.onInsert(data.text!);
+    }
 
     // 重置 IME 编辑状态，保持与终端的同步
     textEditingValue = _initEditingState.copyWith();

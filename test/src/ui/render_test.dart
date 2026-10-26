@@ -337,7 +337,8 @@ void main() {
       painter.cellSize.height.ceil(),
     );
     final byteData = await image.toByteData(
-      format: ui.ImageByteFormat.rawRgba,
+      // rawRgba is premultiplied; the selection colour is translucent.
+      format: ui.ImageByteFormat.rawStraightRgba,
     );
 
     expect(byteData, isNotNull);
@@ -427,6 +428,182 @@ void main() {
     controller.dispose();
   });
 
+  test('RenderTerminal re-samples the IME origin only on composition events',
+      () {
+    final terminal = Terminal();
+    final controller = TerminalController();
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    terminal.write('\x1b[2;3H');
+    render.composingText = 'n';
+    final origin = render.compositionOriginOffset;
+
+    // TUI output moves the paint cursor between keystrokes. Windows Terminal
+    // answers the IME from the live cursor only when the IME asks, so the
+    // frozen preedit must not follow the repaint.
+    terminal.write('\x1b[8;12H');
+    expect(render.compositionOriginOffset, origin);
+    expect(
+      render.editableCursorOffset,
+      RenderTerminal.resolveComposingEndOffset(
+        startOffset: origin,
+        text: 'n',
+        viewWidth: terminal.viewWidth,
+        cellSize: render.cellSize,
+      ),
+    );
+
+    // The next composition update re-samples the live cursor.
+    render.composingText = 'ni';
+    expect(render.compositionOriginOffset, render.cursorOffset);
+    expect(render.compositionOriginOffset, isNot(origin));
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal keeps the IME candidate rect at the composition origin',
+      () {
+    final terminal = Terminal();
+    final controller = TerminalController();
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    terminal.write('\x1b[2;3H');
+    render.composingText = 'ni';
+    final origin = render.compositionOriginOffset;
+    final rect = render.debugImeCaretRect;
+
+    expect(rect.left, origin.dx);
+    expect(rect.top, origin.dy);
+    expect(rect.width, 0);
+    expect(rect.height, render.cellSize.height);
+
+    // PTY output between keystrokes must not move the candidate window.
+    terminal.write('\x1b[8;12H');
+    expect(render.debugImeCaretRect, rect);
+
+    // The next IME event re-samples the live cursor.
+    render.composingText = 'nih';
+    expect(render.debugImeCaretRect.left, render.cursorOffset.dx);
+    expect(render.debugImeCaretRect, isNot(rect));
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal projects the composition origin through the viewport',
+      () {
+    final terminal = Terminal();
+    final controller = TerminalController();
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    terminal.write('\x1b[2;3H');
+    render.composingText = 'n';
+    final top = render.compositionOriginOffset;
+
+    final scrolled = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.fixed(3 * render.cellSize.height),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+    scrolled.composingText = 'n';
+
+    expect(
+      scrolled.compositionOriginOffset.dy,
+      top.dy - 3 * render.cellSize.height,
+    );
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
+  test('RenderTerminal re-samples the origin when the terminal is replaced',
+      () {
+    final terminal = Terminal();
+    final controller = TerminalController();
+    final focusNode = FocusNode();
+    final render = RenderTerminal(
+      terminal: terminal,
+      controller: controller,
+      offset: ViewportOffset.zero(),
+      padding: EdgeInsets.zero,
+      autoResize: false,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+      theme: TerminalThemes.defaultTheme,
+      focusNode: focusNode,
+      cursorType: TerminalCursorType.block,
+      cursorBlinkEnabled: false,
+      cursorBlinkVisible: true,
+      alwaysShowCursor: false,
+    );
+
+    terminal.write('\x1b[13;7H');
+    render.composingText = 'n';
+    expect(render.compositionOriginOffset, isNot(Offset.zero));
+
+    render.terminal = Terminal();
+    expect(render.compositionOriginOffset, render.cursorOffset);
+
+    focusNode.dispose();
+    controller.dispose();
+  });
+
   test('RenderTerminal grows the frozen IME caret with composing text', () {
     final terminal = Terminal();
     final controller = TerminalController();
@@ -449,13 +626,13 @@ void main() {
 
     terminal.write('\x1b[2;3H');
     render.composingText = 'p';
-    final start = render.compositionAnchorOffset;
+    final start = render.compositionOriginOffset;
     final firstCaret = render.editableCursorOffset;
 
     render.composingText = 'pin';
     terminal.write('\x1b[20;20H');
 
-    expect(render.compositionAnchorOffset, start);
+    expect(render.compositionOriginOffset, start);
     expect(render.editableCursorOffset.dx, greaterThan(firstCaret.dx));
     expect(
       render.editableCursorOffset,
@@ -471,7 +648,7 @@ void main() {
     controller.dispose();
   });
 
-  test('RenderTerminal follows the composition anchor through reflow', () {
+  test('RenderTerminal follows the composition origin through reflow', () {
     final terminal = Terminal();
     final controller = TerminalController();
     final focusNode = FocusNode();
@@ -494,18 +671,20 @@ void main() {
     terminal.write(List.filled(80, 'a').join());
     terminal.write('\x1b[2;3H');
     render.composingText = 'pin';
-    final beforeResize = render.compositionAnchorOffset;
+    final beforeResize = render.compositionOriginOffset;
 
     terminal.resize(40, 24);
 
-    expect(render.compositionAnchorOffset, render.cursorOffset);
-    expect(render.compositionAnchorOffset.dy, isNot(beforeResize.dy));
+    expect(render.compositionOriginOffset, render.cursorOffset);
+    expect(render.compositionOriginOffset.dy, isNot(beforeResize.dy));
 
     focusNode.dispose();
     controller.dispose();
   });
 
-  test('RenderTerminal reanchors composition when switching buffers', () {
+  test(
+      'RenderTerminal re-samples the composition origin when switching buffers',
+      () {
     final terminal = Terminal();
     final controller = TerminalController();
     final focusNode = FocusNode();
@@ -527,12 +706,12 @@ void main() {
 
     terminal.write('\x1b[2;3H');
     render.composingText = 'pin';
-    final mainBufferOffset = render.compositionAnchorOffset;
+    final mainBufferOffset = render.compositionOriginOffset;
 
     terminal.write('\x1b[?1049h');
 
-    expect(render.compositionAnchorOffset, render.cursorOffset);
-    expect(render.compositionAnchorOffset, isNot(mainBufferOffset));
+    expect(render.compositionOriginOffset, render.cursorOffset);
+    expect(render.compositionOriginOffset, isNot(mainBufferOffset));
 
     focusNode.dispose();
     controller.dispose();

@@ -468,10 +468,7 @@ class ProgramStatusRecords with Observable {
 
   /// The process attached to the terminal exited.
   void processExited() {
-    final dropped = _dropTransient();
-    final hadCommand = _command?.running ?? false;
-    if (hadCommand) _command = null;
-    if (dropped || hadCommand) notifyListeners();
+    if (_dropTransient()) notifyListeners();
   }
 
   /// Removes everything, as a full reset does.
@@ -540,14 +537,20 @@ class ProgramStatusRecords with Observable {
     }
   }
 
-  /// Drops `working`, `blocked` and `idle` records and a progress bar that
-  /// did not fail: what only means something while its program runs.
+  /// Drops `working`, `blocked` and `idle` records, a progress bar that did
+  /// not fail, and a still-running command: what only means something while
+  /// its program runs. A missing OSC 133;D must not leave the running
+  /// indicator set forever after the next prompt.
   bool _dropTransient() {
     final before = _records.length;
     _records.removeWhere((_, record) => !record.state.persists);
     var changed = _records.length != before;
     if (_progress != null && _progress!.state != TerminalProgressState.error) {
       _progress = null;
+      changed = true;
+    }
+    if (_command?.running ?? false) {
+      _command = null;
       changed = true;
     }
     return changed;

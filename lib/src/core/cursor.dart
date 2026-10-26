@@ -63,7 +63,7 @@ class CursorStyle {
   }
 
   void setUnderlineColor256(int color) {
-    underlineColor = color | CellColor.palette;
+    underlineColor = _paletteIndex(color) | CellColor.palette;
   }
 
   void setUnderlineColorRgb(int r, int g, int b) {
@@ -142,7 +142,7 @@ class CursorStyle {
   }
 
   void setForegroundColor256(int color) {
-    foreground = color | CellColor.palette;
+    foreground = _paletteIndex(color) | CellColor.palette;
   }
 
   void setForegroundColorRgb(int r, int g, int b) {
@@ -158,7 +158,7 @@ class CursorStyle {
   }
 
   void setBackgroundColor256(int color) {
-    background = color | CellColor.palette;
+    background = _paletteIndex(color) | CellColor.palette;
   }
 
   void setBackgroundColorRgb(int r, int g, int b) {
@@ -178,6 +178,13 @@ class CursorStyle {
     // SGR reset must not close an OSC 8 link: only `OSC 8;;` does.
   }
 }
+
+/// Clamps an SGR 256-colour index to the palette the painter actually has.
+///
+/// The parser accepts arbitrary parameter values; without this, `SGR 38;5;300`
+/// stores 300 and the painter indexes a 256-entry list, throwing on every
+/// repaint for as long as the cell is on screen.
+int _paletteIndex(int color) => color.clamp(0, 255).toInt();
 
 class CursorPosition {
   int x;

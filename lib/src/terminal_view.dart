@@ -627,6 +627,7 @@ class TerminalViewState extends State<TerminalView>
       onCopied: widget.onCopied,
       onSelectAll: widget.onSelectAll ?? () => renderTerminal.selectAll(),
       onPaste: widget.onPaste,
+      onPasteText: _onPasteText,
       child: child,
     );
 
@@ -1043,6 +1044,16 @@ class TerminalViewState extends State<TerminalView>
       widget.terminal.textInput(text);
     }
 
+    _scrollToBottom();
+    _updateCursorBlink(resetVisible: true);
+  }
+
+  void _onPasteText(String text) {
+    if (widget.readOnly) {
+      return;
+    }
+    widget.terminal.paste(text);
+    _controller.clearSelection();
     _scrollToBottom();
     _updateCursorBlink(resetVisible: true);
   }

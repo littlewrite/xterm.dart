@@ -204,6 +204,15 @@ void main() {
       expect(records.command!.failed, isTrue);
     });
 
+    test('a prompt without D clears a still-running command', () {
+      final records = ProgramStatusRecords()
+        ..apply(const ShellMark(ShellMarkKind.commandExecuted));
+      expect(records.command!.running, isTrue);
+
+      records.apply(const ShellMark(ShellMarkKind.promptStart));
+      expect(records.command, isNull);
+    });
+
     test('a full reset removes everything', () {
       final records = ProgramStatusRecords()
         ..apply(report('state=done'))

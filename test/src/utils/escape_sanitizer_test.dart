@@ -46,5 +46,21 @@ void main() {
       // The OSC never ends; the newline must not be swallowed with it.
       expect(stripEscapeSequences('a\x1b]8;;https://x\nb'), 'a\nb');
     });
+
+    test('drops 8-bit C1 sequences', () {
+      expect(stripEscapeSequences('a\u009b2Jb'), 'ab');
+      expect(stripEscapeSequences('a\u009d0;title\u0007b'), 'ab');
+      expect(stripEscapeSequences('a\u009d0;title\u009cb'), 'ab');
+      expect(stripEscapeSequences('a\u0085b'), 'ab');
+    });
+
+    test('a charset designation does not split a surrogate pair', () {
+      final out = stripEscapeSequences('a\x1b(😀b');
+      expect(out, 'ab');
+      expect(
+        out.codeUnits.any((unit) => unit >= 0xd800 && unit <= 0xdfff),
+        isFalse,
+      );
+    });
   });
 }

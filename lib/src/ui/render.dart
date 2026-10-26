@@ -99,7 +99,7 @@ class RenderTerminal extends RenderBox
         ) {
     _composingLayer = _RenderComposingLayer(this);
     add(_composingLayer);
-    _syncCompositionAnchor();
+    if (_isComposingText) _captureCompositionOrigin();
     _syncTerminalGeometryCache();
   }
 
@@ -118,11 +118,12 @@ class RenderTerminal extends RenderBox
     if (attached) _terminal.removeListener(_onTerminalChange);
     _terminal = terminal;
     _releaseSynchronizedOutput();
-    _compositionAnchor?.dispose();
-    _compositionAnchor = null;
-    _compositionAnchorBuffer = null;
+    if (_isComposingText) {
+      _captureCompositionOrigin();
+    } else {
+      _clearCompositionOrigin();
+    }
     _releaseViewportAnchor();
-    _syncCompositionAnchor();
     if (attached) _terminal.addListener(_onTerminalChange);
     _resizeTerminalIfNeeded();
     markNeedsLayout();
@@ -380,14 +381,41 @@ class RenderTerminal extends RenderBox
   bool _shouldReportEditableRect;
 
   String? _composingText;
-  CellAnchor? _compositionAnchor;
-  Buffer? _compositionAnchorBuffer;
+
+  /// Buffer cell of the live PTY cursor when the IME last reported a
+  /// composition change.
+  ///
+  /// Windows Terminal answers the IME's position query with the live cursor on
+  /// demand (TSF `GetTextExt`) and never pushes terminal movement. Flutter only
+  /// pushes, so sample the live cursor at the IME's cadence — composition
+  /// start and each change of the preedit text — and hold that cell between
+  /// events. Storing a cell (rather than a screen offset or a [CellAnchor])
+  /// lets the projection follow scrolling, padding and cell metrics at read
+  /// time without following the line a TUI has rewritten.
+  CellOffset? _compositionCell;
+  int _compositionViewWidth = 0;
+  int _compositionViewHeight = 0;
+  Buffer? _compositionBuffer;
+  Size _compositionCellSize = Size.zero;
+
+  Paragraph? _composingParagraph;
+  String? _composingParagraphText;
+  TextStyle? _composingParagraphStyle;
+  TextScaler? _composingParagraphTextScaler;
+  double? _composingParagraphWidth;
+  double? _composingParagraphDx;
+  double? _composingParagraphCellHeight;
 
   set composingText(String? value) {
     if (value == _composingText) return;
     final wasComposing = _isComposingText;
     _composingText = value;
-    _syncCompositionAnchor();
+    if (_isComposingText) {
+      _captureCompositionOrigin();
+    } else {
+      _clearCompositionOrigin();
+      _disposeComposingParagraph();
+    }
     if (wasComposing != _isComposingText) {
       // Composing start/end can change cursor visibility on content layer
       // when paintCursor is true; always treat as content for safety.
@@ -403,20 +431,41 @@ class RenderTerminal extends RenderBox
 
   bool get isComposing => _isComposingText;
 
-  void _syncCompositionAnchor() {
-    if (!_isComposingText) {
-      _compositionAnchor?.dispose();
-      _compositionAnchor = null;
-      _compositionAnchorBuffer = null;
-      return;
-    }
-    if (_compositionAnchor == null ||
-        !_compositionAnchor!.attached ||
-        !identical(_compositionAnchorBuffer, _terminal.buffer)) {
-      _compositionAnchor?.dispose();
-      _compositionAnchor = _terminal.buffer.createAnchorFromCursor();
-      _compositionAnchorBuffer = _terminal.buffer;
-    }
+  void _captureCompositionOrigin() {
+    final buffer = _terminal.buffer;
+    _compositionCell = CellOffset(buffer.cursorX, buffer.absoluteCursorY);
+    _compositionViewWidth = _terminal.viewWidth;
+    _compositionViewHeight = _terminal.viewHeight;
+    _compositionBuffer = buffer;
+    _compositionCellSize = _painter.cellSize;
+  }
+
+  void _clearCompositionOrigin() {
+    _compositionCell = null;
+    _compositionViewWidth = 0;
+    _compositionViewHeight = 0;
+    _compositionBuffer = null;
+    _compositionCellSize = Size.zero;
+  }
+
+  /// Whether the stored origin cell was measured against a different
+  /// grid/buffer, so it must not be projected through the current metrics.
+  bool get _compositionLayoutChanged {
+    return _compositionViewWidth != _terminal.viewWidth ||
+        _compositionViewHeight != _terminal.viewHeight ||
+        !identical(_compositionBuffer, _terminal.buffer) ||
+        _compositionCellSize != _painter.cellSize;
+  }
+
+  void _disposeComposingParagraph() {
+    _composingParagraph?.dispose();
+    _composingParagraph = null;
+    _composingParagraphText = null;
+    _composingParagraphStyle = null;
+    _composingParagraphTextScaler = null;
+    _composingParagraphWidth = null;
+    _composingParagraphDx = null;
+    _composingParagraphCellHeight = null;
   }
 
   void _markComposingLayerNeedsPaint() {
@@ -487,17 +536,6 @@ class RenderTerminal extends RenderBox
       _syncTerminalGeometryCache();
       markNeedsLayout();
     }
-    final previousAnchor = _compositionAnchor?.attached == true
-        ? _compositionAnchor!.offset
-        : null;
-    final previousAnchorBuffer = _compositionAnchorBuffer;
-    _syncCompositionAnchor();
-    final compositionAnchorChanged =
-        previousAnchorBuffer != _compositionAnchorBuffer ||
-            previousAnchor !=
-                (_compositionAnchor?.attached == true
-                    ? _compositionAnchor!.offset
-                    : null);
     if (_terminal.synchronizedOutput) {
       if (_synchronizedOutputTimedOut) {
         // The watchdog already let this frame through. Do not take it again
@@ -510,11 +548,12 @@ class RenderTerminal extends RenderBox
       _releaseSynchronizedOutput();
       invalidateContent();
     }
-    // The composing layer is a repaint boundary, so terminal style changes
-    // must invalidate it even when geometry stays unchanged.
-    _markComposingLayerNeedsPaint();
-    // A re-anchored preedit caret must also move the platform candidate rect.
-    if (!_isComposingText || geometryChanged || compositionAnchorChanged) {
+    // Terminal output does not change the preedit's own pixels: the composing
+    // layer is a repaint boundary composited over the updated content. While
+    // composing, also do not push the platform rect — the PTY cursor is a
+    // paint cursor, and only IME events or layout changes may move the
+    // candidate window.
+    if (!_isComposingText) {
       _scheduleEditableRectUpdate();
     }
   }
@@ -709,7 +748,8 @@ class RenderTerminal extends RenderBox
     _disposeHeldFrame();
     _textBlinkTimer?.cancel();
     _textBlinkTimer = null;
-    _compositionAnchor?.dispose();
+    _clearCompositionOrigin();
+    _disposeComposingParagraph();
     _releaseViewportAnchor();
     super.dispose();
   }
@@ -754,6 +794,14 @@ class RenderTerminal extends RenderBox
 
     _lastLayoutCellHeight = _painter.cellSize.height;
     _syncTerminalGeometryCache();
+    // Resize, reflow, font changes and buffer switches settle here, after the
+    // scroll offset and viewport anchor have been corrected. Re-sample the
+    // preedit row only now, so the stored cell is never projected through
+    // metrics it was not measured with.
+    if (_isComposingText && _compositionLayoutChanged) {
+      _captureCompositionOrigin();
+      _composingLayer.markNeedsPaint();
+    }
     _scheduleEditableRectUpdate();
   }
 
@@ -1018,12 +1066,26 @@ class RenderTerminal extends RenderBox
       return cursorOffset & _painter.cellSize;
     }
 
-    return Rect.fromLTWH(
-      editableCursorOffset.dx,
-      editableCursorOffset.dy,
-      0,
-      _painter.cellSize.height,
-    );
+    // Windows Terminal's TSF provider answers GetTextExt at the composition
+    // cursor and ignores the preedit width (src/tsf/Implementation.cpp), so the
+    // candidate window stays at the composition start instead of crawling
+    // right with every pinyin letter and wrapping to the next row.
+    //
+    // Zero width also makes this differ from the non-composing cell rect, so
+    // CustomTextEdit sends a fresh position when composition starts; it skips
+    // rects that did not change.
+    final origin = compositionOriginOffset;
+    final cellHeight = _painter.cellSize.height;
+    var x = origin.dx;
+    var y = origin.dy;
+    // A wrapped preedit can put the end on screen while its origin is above
+    // the viewport. Never push a rect outside the widget: Android uses it to
+    // pan, and Windows places the candidate window relative to it.
+    if (hasSize && !size.isEmpty) {
+      x = x.clamp(0.0, size.width);
+      y = y.clamp(0.0, max(0.0, size.height - cellHeight));
+    }
+    return Rect.fromLTWH(x, y, 0, cellHeight);
   }
 
   @visibleForTesting
@@ -1274,26 +1336,37 @@ class RenderTerminal extends RenderBox
     );
   }
 
-  Offset get compositionAnchorOffset {
-    _syncCompositionAnchor();
-    final anchor = _compositionAnchor;
-    if (anchor == null || !anchor.attached) {
+  /// Where the preedit and the platform candidate rect originate.
+  ///
+  /// Frozen at the buffer cell the live cursor occupied on the last IME event,
+  /// so TUI repaints between keystrokes cannot drag it. Projecting the cell at
+  /// read time makes it follow scrolling, padding and reflow without following
+  /// the line the TUI rewrote. If a grid/buffer change made the stored cell
+  /// unusable, fall back to the live cursor until layout re-samples it.
+  Offset get compositionOriginOffset {
+    final cell = _compositionCell;
+    if (cell == null || _compositionLayoutChanged) {
       return cursorOffset;
     }
     return Offset(
-      anchor.x * _painter.cellSize.width,
-      anchor.y * _painter.cellSize.height + _lineOffset,
+      cell.x * _painter.cellSize.width,
+      cell.y * _painter.cellSize.height + _lineOffset,
     );
   }
 
-  /// IME caret: live PTY cursor, or the end of frozen preedit during composition.
+  /// Test access to the rect sent to the platform IME.
+  @visibleForTesting
+  Rect get debugImeCaretRect => _resolveImeCaretRect();
+
+  /// IME caret: live PTY cursor, or the end of the preedit from the frozen
+  /// origin during composition.
   Offset get editableCursorOffset {
     final composingText = _composingText;
     if (composingText == null || composingText.isEmpty) {
       return cursorOffset;
     }
     return resolveComposingEndOffset(
-      startOffset: compositionAnchorOffset,
+      startOffset: compositionOriginOffset,
       text: composingText,
       viewWidth: _terminal.viewWidth,
       cellSize: _painter.cellSize,
@@ -1309,7 +1382,7 @@ class RenderTerminal extends RenderBox
       return false;
     }
     return resolveComposingBackdropRects(
-      startOffset: compositionAnchorOffset,
+      startOffset: compositionOriginOffset,
       text: _composingText!,
       viewWidth: _terminal.viewWidth,
       cellSize: _painter.cellSize,
@@ -1445,25 +1518,42 @@ class RenderTerminal extends RenderBox
       color: _composingForegroundColor,
       underline: true,
     );
-
-    final builder = ParagraphBuilder(style.getParagraphStyle());
-    builder.addPlaceholder(
-      offset.dx,
-      _painter.cellSize.height,
-      PlaceholderAlignment.middle,
-    );
-    builder.pushStyle(style.getTextStyle(textScaler: _painter.textScaler));
-    builder.addText(composingText);
-
-    final paragraph = builder.build();
     final paragraphWidth = resolveComposingParagraphWidth(
       viewWidth: _terminal.viewWidth,
       cellSize: _painter.cellSize,
       fallbackWidth: size.width,
     );
-    paragraph.layout(ParagraphConstraints(width: paragraphWidth));
+    final cellHeight = _painter.cellSize.height;
+    final textScaler = _painter.textScaler;
+    if (_composingParagraph == null ||
+        _composingParagraphText != composingText ||
+        _composingParagraphStyle != style ||
+        _composingParagraphTextScaler != textScaler ||
+        _composingParagraphWidth != paragraphWidth ||
+        _composingParagraphDx != offset.dx ||
+        _composingParagraphCellHeight != cellHeight) {
+      _disposeComposingParagraph();
+      final builder = ParagraphBuilder(style.getParagraphStyle());
+      builder.addPlaceholder(
+        offset.dx,
+        cellHeight,
+        PlaceholderAlignment.middle,
+      );
+      builder.pushStyle(style.getTextStyle(textScaler: textScaler));
+      builder.addText(composingText);
 
-    canvas.drawParagraph(paragraph, Offset(0, offset.dy));
+      final paragraph = builder.build();
+      paragraph.layout(ParagraphConstraints(width: paragraphWidth));
+      _composingParagraph = paragraph;
+      _composingParagraphText = composingText;
+      _composingParagraphStyle = style;
+      _composingParagraphTextScaler = textScaler;
+      _composingParagraphWidth = paragraphWidth;
+      _composingParagraphDx = offset.dx;
+      _composingParagraphCellHeight = cellHeight;
+    }
+
+    canvas.drawParagraph(_composingParagraph!, Offset(0, offset.dy));
   }
 
   bool _selectionIntersectsLine(BufferRange selection, int line) {
@@ -1702,7 +1792,7 @@ class _RenderComposingLayer extends RenderBox {
       return Rect.zero;
     }
     final rects = RenderTerminal.resolveComposingBackdropRects(
-      startOffset: _terminal.compositionAnchorOffset,
+      startOffset: _terminal.compositionOriginOffset,
       text: _terminal._composingText!,
       viewWidth: _terminal._terminal.viewWidth,
       cellSize: _terminal.cellSize,
@@ -1724,7 +1814,7 @@ class _RenderComposingLayer extends RenderBox {
     if (_terminal.isComposing && _terminal.isCompositionInViewport) {
       _terminal._paintComposingText(
         context.canvas,
-        offset + _terminal.compositionAnchorOffset,
+        offset + _terminal.compositionOriginOffset,
       );
     }
   }

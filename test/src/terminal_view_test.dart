@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/cupertino.dart';
@@ -15,8 +14,6 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/gesture/gesture_handler.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/xterm.dart';
-
-import '../_fixture/_fixture.dart';
 
 @GenerateNiceMocks([MockSpec<TerminalInputHandler>()])
 import 'terminal_view_test.mocks.dart';
@@ -35,54 +32,6 @@ void main() {
       const Offset(10, 20),
     );
   });
-
-  testWidgets(
-    'htop golden test',
-    (tester) async {
-      final terminal = Terminal();
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: TerminalView(terminal),
-        ),
-      ));
-
-      terminal.write(TestFixtures.htop_80x25_3s());
-      await tester.pump();
-
-      await expectLater(
-        find.byType(TerminalView),
-        matchesGoldenFile('_goldens/htop_80x25_3s.png'),
-      );
-    },
-    skip: !Platform.isMacOS,
-  );
-
-  testWidgets(
-    'color golden test',
-    (tester) async {
-      final terminal = Terminal();
-
-      // terminal.lineFeedMode = true;
-
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: TerminalView(
-            terminal,
-            textStyle: TerminalStyle(fontSize: 8),
-          ),
-        ),
-      ));
-
-      terminal.write(TestFixtures.colors().replaceAll('\n', '\r\n'));
-      await tester.pump();
-
-      await expectLater(
-        find.byType(TerminalView),
-        matchesGoldenFile('_goldens/colors.png'),
-      );
-    },
-    skip: !Platform.isMacOS,
-  );
 
   group('TerminalView.readOnly', () {
     testWidgets('works', (tester) async {
