@@ -1325,7 +1325,6 @@ class EscapeParser {
       case 66:
         return handler.setAppKeypadMode(enabled);
       case 1000:
-      case 10061000:
         return enabled
             ? handler.setMouseMode(MouseMode.upDownScroll)
             : handler.setMouseMode(MouseMode.none);

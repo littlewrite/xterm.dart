@@ -10,7 +10,7 @@ Map<ShortcutActivator, Intent> get defaultTerminalShortcuts {
     case TargetPlatform.linux:
       return _defaultDesktopShortcuts;
     case TargetPlatform.windows:
-      return _defaultWindowsShortcuts;
+      return _defaultDesktopShortcuts;
     case TargetPlatform.iOS:
     case TargetPlatform.macOS:
       return _defaultAppleShortcuts;
@@ -41,23 +41,6 @@ final Map<ShortcutActivator, Intent> _defaultShortcuts = {
 final Map<ShortcutActivator, Intent> _defaultDesktopShortcuts = {
   SingleActivator(LogicalKeyboardKey.keyC, control: true, shift: true):
       CopySelectionTextIntent.copy,
-  SingleActivator(LogicalKeyboardKey.keyV, control: true, shift: true):
-      const PasteTextIntent(SelectionChangedCause.keyboard),
-  SingleActivator(LogicalKeyboardKey.keyA, control: true, shift: true):
-      const SelectAllTextIntent(SelectionChangedCause.keyboard),
-  SingleActivator(LogicalKeyboardKey.insert, control: true):
-      CopySelectionTextIntent.copy,
-  SingleActivator(LogicalKeyboardKey.insert, shift: true):
-      const PasteTextIntent(SelectionChangedCause.keyboard),
-};
-
-final Map<ShortcutActivator, Intent> _defaultWindowsShortcuts = {
-  SingleActivator(LogicalKeyboardKey.keyC, control: true):
-      CopySelectionTextIntent.copy,
-  SingleActivator(LogicalKeyboardKey.keyC, control: true, shift: true):
-      CopySelectionTextIntent.copy,
-  SingleActivator(LogicalKeyboardKey.keyV, control: true):
-      const PasteTextIntent(SelectionChangedCause.keyboard),
   SingleActivator(LogicalKeyboardKey.keyV, control: true, shift: true):
       const PasteTextIntent(SelectionChangedCause.keyboard),
   SingleActivator(LogicalKeyboardKey.keyA, control: true, shift: true):
