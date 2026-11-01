@@ -102,6 +102,9 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   bool _mouseDragWasHandledByTerminal = false;
   bool _mouseDownWasHandledByTerminal = false;
   bool _mousePressReported = false;
+  /// 这一次手势的抬起已经发给程序。pointer-up 先于 tap 回调清理状态，没有它
+  /// 一次点击会给程序发两对按下/抬起。
+  bool _mouseUpAlreadySent = false;
   TerminalHyperlink? _claimedLink;
   Offset? _linkPointerDownPosition;
   bool _linkSuppressedPtyDown = false;
@@ -260,6 +263,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
   void _onPointerDown(PointerDownEvent event) {
     _trackedPointers[event.pointer] = event.localPosition;
     _activePointerKind = event.kind;
+    _mousePressReported = false;
+    _mouseUpAlreadySent = false;
 
     if (_isPointerKindMouse(event.kind)) {
       _isMouseDeviceDown = true;
@@ -267,7 +272,6 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
       _mouseButton = _mouseButtonFor(event.buttons);
       _mouseDragWasHandledByTerminal = false;
       _mouseDownWasHandledByTerminal = false;
-      _mousePressReported = false;
       _mouseSelectionBase = renderTerminal.getCellOffset(
         event.localPosition,
       );
@@ -357,6 +361,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         TerminalMouseButtonState.up,
         event.localPosition,
       );
+      _mouseUpAlreadySent = true;
       _suppressNextTapUp = true;
       _resetMouseSelectionState();
       _trackedPointers.remove(event.pointer);
@@ -373,6 +378,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
           TerminalMouseButtonState.up,
           event.localPosition,
         );
+        _mouseUpAlreadySent = true;
         _suppressNextTapUp = true;
         _resetMouseSelectionState();
         _trackedPointers.remove(event.pointer);
@@ -389,6 +395,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
             TerminalMouseButtonState.up,
             event.localPosition,
           );
+          _mouseUpAlreadySent = true;
         }
         _finishMouseSelection();
       } else {
@@ -434,6 +441,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         event.localPosition,
       );
     }
+    _mouseUpAlreadySent = true;
     _resetInteractionState();
   }
 
@@ -1008,7 +1016,8 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     bool forceCallback = false,
   }) {
     var handled = false;
-    if (_shouldSendTapEvent &&
+    if (!_mouseUpAlreadySent &&
+        _shouldSendTapEvent &&
         !_shouldForceLocalMouseSelection &&
         !_isNearSelection(details.localPosition)) {
       handled = renderTerminal.mouseEvent(
@@ -1016,6 +1025,7 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
         TerminalMouseButtonState.up,
         details.localPosition,
       );
+      _mouseUpAlreadySent = handled;
     }
     if (!handled || forceCallback) {
       callback?.call(details);
@@ -1089,7 +1099,6 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     _isMouseSelectionInProgress = false;
     _mouseDragWasHandledByTerminal = false;
     _mouseDownWasHandledByTerminal = false;
-    _mousePressReported = false;
     _mouseSelectionBase = null;
     _mouseSelectionBaseAnchor?.dispose();
     _mouseSelectionBaseAnchor = null;
