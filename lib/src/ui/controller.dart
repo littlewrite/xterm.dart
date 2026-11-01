@@ -119,6 +119,44 @@ class TerminalController with ChangeNotifier {
         : _pointerInputs.inputs.contains(pointerInput);
   }
 
+  bool _batchingHighlightChanges = false;
+  int _highlightRevision = 0;
+  bool _disposed = false;
+
+  /// 批量增删高亮，期间的通知合并成结束时的一次。
+  ///
+  /// 渲染层每次收到通知都会重算整份高亮指纹，逐条加 n 条第 n 次就是 O(n²)；
+  /// 搜索框每敲一个键都要重建整份高亮，命中上千条时会明显卡。
+  void batchHighlightChanges(void Function() action) {
+    if (_batchingHighlightChanges) {
+      action();
+      return;
+    }
+    final before = _highlightRevision;
+    _batchingHighlightChanges = true;
+    try {
+      action();
+    } finally {
+      _batchingHighlightChanges = false;
+      if (_highlightRevision != before) {
+        notifyListeners();
+      }
+    }
+  }
+
+  @override
+  void notifyListeners() {
+    // 视图 dispose 时还会来清空搜索高亮，此时 controller 可能已经先一步销毁。
+    if (_disposed || _batchingHighlightChanges) return;
+    super.notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
   TerminalHighlight highlight({
     required CellAnchor p1,
     required CellAnchor p2,
@@ -132,10 +170,12 @@ class TerminalController with ChangeNotifier {
     );
 
     _highlights.add(highlight);
+    _highlightRevision++;
     notifyListeners();
 
     highlight.registerCallback(() {
       _highlights.remove(highlight);
+      _highlightRevision++;
       notifyListeners();
     });
 

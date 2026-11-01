@@ -43,12 +43,51 @@ enum TerminalLinkInteraction {
   /// Links stay inert (default; keeps the pre-OSC-8 behavior).
   none,
 
-  /// Desktop: hold ⌘ (macOS) / Ctrl (Windows, Linux) to underline links, show
-  /// a pointer cursor and open them on click.
+  /// Desktop: hold the modifier chosen by [TerminalView.linkModifier] to
+  /// underline links, show a pointer cursor and open them on click.
   modifier,
 
   /// Mobile: links are always underlined and a tap opens them.
   always,
+}
+
+/// 按住哪个修饰键时把链接当成可点击（悬停下划线、点击打开）。
+///
+/// 只有修饰键，没有普通字母键 —— 单击打开链接不该和输入抢按键。组合写法是
+/// 单值（[controlShift]），由调用方选择用哪个；本包不判断 OS。
+enum TerminalLinkModifier {
+  /// 不按修饰键就激活链接。
+  none,
+  control,
+  meta,
+  alt,
+  shift,
+  controlShift,
+  altShift,
+}
+
+/// 当前是否按着 [modifier]。
+///
+/// 调用方自己处理"修饰键 + 点击"（例如打开终端里打印出来的文件路径）时用它，
+/// 和 [TerminalView] 用同一套判断，不需要再复制一份键位逻辑。
+bool isTerminalLinkModifierPressed(TerminalLinkModifier modifier) {
+  final keyboard = HardwareKeyboard.instance;
+  switch (modifier) {
+    case TerminalLinkModifier.none:
+      return true;
+    case TerminalLinkModifier.control:
+      return keyboard.isControlPressed;
+    case TerminalLinkModifier.meta:
+      return keyboard.isMetaPressed;
+    case TerminalLinkModifier.alt:
+      return keyboard.isAltPressed;
+    case TerminalLinkModifier.shift:
+      return keyboard.isShiftPressed;
+    case TerminalLinkModifier.controlShift:
+      return keyboard.isControlPressed && keyboard.isShiftPressed;
+    case TerminalLinkModifier.altShift:
+      return keyboard.isAltPressed && keyboard.isShiftPressed;
+  }
 }
 
 class TerminalView extends StatefulWidget {
@@ -56,6 +95,7 @@ class TerminalView extends StatefulWidget {
     this.terminal, {
     super.key,
     this.controller,
+    this.linkModifier = TerminalLinkModifier.control,
     this.theme = TerminalThemes.defaultTheme,
     this.highlightSource,
     this.textStyle = const TerminalStyle(),
@@ -220,10 +260,14 @@ class TerminalView extends StatefulWidget {
   /// emulators. True by default.
   final bool simulateScroll;
 
-  /// Inverts the direction of wheel events sent to terminal applications.
+  /// 把滚轮增量的符号翻过来再发给终端程序。
   ///
-  /// This only affects wheel reports sent to applications that enabled mouse
-  /// reporting. Local scrollback keeps Flutter's platform scroll behavior.
+  /// Flutter 的 PointerScrollEvent 符号是按平台来的：macOS 是 AppKit 原样
+  /// 透传（正 = 上），Windows/Linux 沿用 GTK（正 = 下）。哪个平台需要翻由
+  /// 调用方决定，本包不做平台判断。
+  ///
+  /// 只影响发给已开启鼠标上报的程序的滚轮上报；本地回滚走 Flutter 的
+  /// Scrollable，与此无关。
   final bool invertWheelScroll;
 
   /// Number of terminal wheel reports to send per physical line of wheel delta.
@@ -268,6 +312,9 @@ class TerminalView extends StatefulWidget {
 
   /// How hyperlinks (OSC 8) on screen behave. See [TerminalLinkInteraction].
   final TerminalLinkInteraction linkInteraction;
+
+  /// 打开链接要按住的修饰键。见 [TerminalLinkModifier]。
+  final TerminalLinkModifier linkModifier;
 
   /// Called when a hyperlink is activated by the user (⌘/Ctrl+click on desktop,
   /// tap on mobile). The view claims the gesture: no PTY mouse event and no
@@ -325,6 +372,10 @@ class TerminalViewState extends State<TerminalView>
   late TerminalSearchController _searchController;
 
   bool _showSearchBox = false;
+
+  /// 默认查找框输入框的焦点节点；自定义 delegate 自己管焦点。
+  final FocusNode _searchFocusNode =
+      FocusNode(debugLabel: 'terminal-search-input');
 
   Offset _searchBoxPosition = const Offset(0, 0);
 
@@ -384,6 +435,7 @@ class TerminalViewState extends State<TerminalView>
     _searchController = TerminalSearchController(
       terminal: widget.terminal,
       controller: _controller,
+      theme: widget.theme,
       scrollToLine: _scrollToLine,
       setShowSearch: (show) => setState(() => _showSearchBox = show),
     );
@@ -403,6 +455,7 @@ class TerminalViewState extends State<TerminalView>
       _searchBox = DefaultTerminalSearchBox(
         theme: widget.theme,
         searchController: _searchController,
+        focusNode: _searchFocusNode,
       );
     }
   }
@@ -470,8 +523,10 @@ class TerminalViewState extends State<TerminalView>
       // controller，否则一次缩放就把查找状态清空。
       _rebuildSearchBox();
     }
+    _searchController.setTheme(widget.theme);
     if (oldWidget.linkInteraction != widget.linkInteraction ||
-        oldWidget.mouseCursor != widget.mouseCursor) {
+        oldWidget.mouseCursor != widget.mouseCursor ||
+        oldWidget.linkModifier != widget.linkModifier) {
       _hoverCursor.value = widget.mouseCursor;
       _syncLinkInteraction();
     }
@@ -511,6 +566,7 @@ class TerminalViewState extends State<TerminalView>
       widget.terminal.onCloseSearch = null;
     }
     _searchController.detach();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -844,10 +900,7 @@ class TerminalViewState extends State<TerminalView>
   }
 
   bool _isLinkModifierPressed() {
-    final keyboard = HardwareKeyboard.instance;
-    return defaultTargetPlatform == TargetPlatform.macOS
-        ? keyboard.isMetaPressed
-        : keyboard.isControlPressed;
+    return isTerminalLinkModifierPressed(widget.linkModifier);
   }
 
   @override
@@ -1319,6 +1372,9 @@ class TerminalViewState extends State<TerminalView>
       return;
     }
 
+    // 平台判断留给调用方，这里只按开关翻符号：macOS 的 PointerScrollEvent
+    // 来自 AppKit 原样透传（正 = 上），Windows/Linux 沿用 GTK（正 = 下）。
+    // 水平方向两端符号一致，不翻。
     final horizontal = delta.dx;
     final vertical = widget.invertWheelScroll ? -delta.dy : delta.dy;
     if (vertical != 0) {
@@ -1571,15 +1627,24 @@ class TerminalViewState extends State<TerminalView>
   }
 
   void _showSearch() {
-    setState(() {
-      _showSearchBox = true;
-    });
+    if (!_showSearchBox) {
+      setState(() {
+        _showSearchBox = true;
+      });
+    }
+    // 框已经开着时也要再发一次 show 信号：用户可能已经把焦点点去了终端或别的
+    // 面板，再按一次查找键应当回到输入框，而不是什么都不发生。自定义框在
+    // show() 里把自己的输入框重新聚焦。
+    final searchBox = _searchBox;
+    if (searchBox is TerminalSearchDelegate) {
+      (searchBox as TerminalSearchDelegate).show();
+    }
   }
 
   void _closeSearch() {
-    setState(() {
-      _showSearchBox = false;
-    });
+    // 只把框藏起来，匹配高亮会一直画在终端上（不透明色块盖住文字）；走
+    // controller 的 close，连同高亮和匹配表一起收掉。
+    _searchController.close();
   }
 
   void _scrollToLine(int line) {

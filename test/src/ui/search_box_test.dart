@@ -20,13 +20,19 @@ void main() {
     search.setSearchText('hello');
     expect(search.matchCount, 2);
     expect(search.currentIdx, 0);
-    expect(controller.selection, isNotNull);
+    expect(controller.highlights, isNotEmpty);
     expect(scrollLine, greaterThanOrEqualTo(0));
 
-    final firstY = controller.selection!.begin.y;
+    int currentRow() => controller.highlights
+        .firstWhere((h) => h.color == search.theme.searchHitBackgroundCurrent)
+        .range!
+        .begin
+        .y;
+
+    final firstY = currentRow();
     search.findNext();
     expect(search.currentIdx, 1);
-    expect(controller.selection!.begin.y, isNot(firstY));
+    expect(currentRow(), isNot(firstY));
   });
 
   test('search maps wrap without using viewWidth modulo', () {
@@ -48,11 +54,12 @@ void main() {
     final needle = long.substring(75, 85); // crosses 80
     search.setSearchText(needle);
     expect(search.matchCount, greaterThanOrEqualTo(1));
-    final match = search; // selection should be valid anchors
-    expect(controller.selection, isNotNull);
-    final sel = controller.selection!;
+    final highlight = controller.highlights.firstWhere(
+      (h) => h.color == search.theme.searchHitBackgroundCurrent,
+    );
+    final range = highlight.range!;
     // Multi-line wrap match should span more than one row or stay consistent.
-    expect(sel.begin.y, lessThanOrEqualTo(sel.end.y));
+    expect(range.begin.y, lessThanOrEqualTo(range.end.y));
   });
 
   test('geometry change re-runs search (F3)', () {

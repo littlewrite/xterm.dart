@@ -11,7 +11,7 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
-  test('windows shortcuts follow Windows Terminal clipboard bindings', () {
+  test('desktop shortcuts leave bare control keys to the terminal', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
 
     final shortcuts = defaultTerminalShortcuts;
@@ -20,6 +20,18 @@ void main() {
       return shortcuts.keys.whereType<SingleActivator>().any(predicate);
     }
 
+    // Copy / paste / select-all need Shift on Windows and Linux: bare Ctrl+C
+    // must stay SIGINT for the foreground program.
+    expect(
+      hasActivator(
+        (activator) =>
+            activator.trigger == LogicalKeyboardKey.keyC &&
+            activator.control &&
+            activator.shift,
+      ),
+      isTrue,
+    );
+
     expect(
       hasActivator(
         (activator) =>
@@ -27,7 +39,7 @@ void main() {
             activator.control &&
             !activator.shift,
       ),
-      isTrue,
+      isFalse,
     );
 
     expect(
@@ -47,7 +59,7 @@ void main() {
             activator.control &&
             !activator.shift,
       ),
-      isTrue,
+      isFalse,
     );
 
     expect(

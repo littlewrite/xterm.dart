@@ -3,7 +3,6 @@ import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/line.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
-import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/themes.dart';
 import 'package:xterm/src/ui/terminal_theme.dart'; // 导入 TerminalTheme
 
@@ -34,6 +33,9 @@ abstract class TerminalSearchDelegate {
   bool get isVisible;
 
   /// show search widget
+  ///
+  /// 已经可见时也会再次收到，用来把焦点放回输入框（用户可能刚把焦点点去了
+  /// 终端）。实现方应把「聚焦输入框」写在这里，而不是只依赖首次挂载。
   void show();
 
   /// hide search widget
@@ -47,6 +49,7 @@ abstract class TerminalSearchDelegate {
 class TerminalSearchController extends ChangeNotifier {
   final Terminal terminal;
   final TerminalController controller;
+  TerminalTheme theme;
   final void Function(int line) scrollToLine;
   final void Function(bool show) setShowSearch;
 
@@ -56,6 +59,11 @@ class TerminalSearchController extends ChangeNotifier {
   bool _regex = false;
   List<MatchInfo> _matches = [];
   int _currentMatchIndex = -1;
+
+  /// 候选匹配各一条高亮；当前匹配单独一条，用「当前」颜色。
+  /// 两者都不走选区 —— 走选区的话 find 高亮和用户手选的文本长得一模一样。
+  final _matchHighlights = <TerminalHighlight>[];
+  TerminalHighlight? _currentMatchHighlight;
 
   /// 当前匹配起点。独立于用户选区：点终端清选区 / 拖选复制都不会丢掉身份。
   /// 重排时由 buffer reparent，被动重搜再用它落到新匹配表。
@@ -69,6 +77,7 @@ class TerminalSearchController extends ChangeNotifier {
   TerminalSearchController({
     required this.terminal,
     required this.controller,
+    this.theme = TerminalThemes.defaultTheme,
     required this.scrollToLine,
     required this.setShowSearch,
   }) {
@@ -123,6 +132,7 @@ class TerminalSearchController extends ChangeNotifier {
       _listeningTerminal = false;
     }
     _clearCurrentMatchAnchor();
+    _clearMatchHighlights();
   }
 
   void _clearCurrentMatchAnchor() {
@@ -163,6 +173,16 @@ class TerminalSearchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 主题换了：记住新颜色，并把已经画着的匹配按新色重上一遍，否则查找框换了
+  /// 配色、高亮还是旧主题的那套。
+  void setTheme(TerminalTheme theme) {
+    if (identical(this.theme, theme)) return;
+    this.theme = theme;
+    if (_lastSearchText.isEmpty) return;
+    _handleSearch(_lastSearchText, preserveCurrent: true, scrollToMatch: false);
+    notifyListeners();
+  }
+
   /// find next match
   void findNext() {
     if (_matches.isEmpty) return;
@@ -186,8 +206,8 @@ class TerminalSearchController extends ChangeNotifier {
     _matches.clear();
     _currentMatchIndex = -1;
     _clearCurrentMatchAnchor();
+    _clearMatchHighlights();
     setShowSearch(false);
-    controller.clearSelection();
     notifyListeners();
   }
 
@@ -196,27 +216,66 @@ class TerminalSearchController extends ChangeNotifier {
       return;
     }
     final match = _matches[_currentMatchIndex];
-    final positions = match.wrappedPositions;
-    final CellAnchor start;
-    final CellAnchor end;
-    if (positions != null && positions.isNotEmpty) {
-      final first = positions.first;
-      final last = positions.last;
-      start = terminal.buffer.createAnchor(first.x, first.y);
-      end = terminal.buffer.createAnchor(last.x + 1, last.y);
-    } else {
-      start = terminal.buffer.createAnchor(match.x, match.y);
-      end = terminal.buffer.createAnchor(
-        match.x + match.length,
-        match.y,
-      );
-    }
-    // 身份锚点单独持有一份起点；选区锚点归 controller 管，两边互不影响。
-    _setCurrentMatchAnchor(terminal.buffer.createAnchor(start.x, start.y));
-    controller.setSelection(start, end, mode: SelectionMode.line);
+    final anchors = _matchAnchors(match);
+    // 身份锚点单独持有一份起点；高亮锚点归高亮自己，两边互不影响。
+    _setCurrentMatchAnchor(
+      terminal.buffer.createAnchor(anchors.p1.x, anchors.p1.y),
+    );
+    _replaceCurrentHighlight(anchors, theme.searchHitBackgroundCurrent);
     if (scroll) {
       scrollToLine(match.y);
     }
+  }
+
+  ({CellAnchor p1, CellAnchor p2}) _matchAnchors(MatchInfo match) {
+    final positions = match.wrappedPositions;
+    if (positions != null && positions.isNotEmpty) {
+      final first = positions.first;
+      final last = positions.last;
+      return (
+        p1: terminal.buffer.createAnchor(first.x, first.y),
+        p2: terminal.buffer.createAnchor(last.x + 1, last.y),
+      );
+    }
+    return (
+      p1: terminal.buffer.createAnchor(match.x, match.y),
+      p2: terminal.buffer.createAnchor(match.x + match.length, match.y),
+    );
+  }
+
+  void _replaceCurrentHighlight(
+    ({CellAnchor p1, CellAnchor p2}) anchors,
+    Color color,
+  ) {
+    final previous = _currentMatchHighlight;
+    if (previous != null) {
+      _disposeHighlight(previous);
+    }
+    _currentMatchHighlight = controller.highlight(
+      p1: anchors.p1,
+      p2: anchors.p2,
+      color: color,
+    );
+  }
+
+  void _clearMatchHighlights() {
+    controller.batchHighlightChanges(() {
+      for (final highlight in _matchHighlights) {
+        _disposeHighlight(highlight);
+      }
+      _matchHighlights.clear();
+      final current = _currentMatchHighlight;
+      if (current != null) {
+        _disposeHighlight(current);
+        _currentMatchHighlight = null;
+      }
+    });
+  }
+
+  void _disposeHighlight(TerminalHighlight highlight) {
+    highlight.dispose();
+    highlight.p1.dispose();
+    highlight.p2.dispose();
   }
 
   /// Physical line → list of (UTF-16 unit, cell) for index-aligned search.
@@ -257,10 +316,10 @@ class TerminalSearchController extends ChangeNotifier {
 
     _matches.clear();
     _currentMatchIndex = -1;
+    _clearMatchHighlights();
 
     if (text.isEmpty) {
       _clearCurrentMatchAnchor();
-      controller.clearSelection();
       return;
     }
 
@@ -271,7 +330,6 @@ class TerminalSearchController extends ChangeNotifier {
     final lines = buffer.lines;
     if (lines.length == 0) {
       _clearCurrentMatchAnchor();
-      controller.clearSelection();
       return;
     }
 
@@ -295,9 +353,22 @@ class TerminalSearchController extends ChangeNotifier {
 
     if (_matches.isEmpty) {
       _clearCurrentMatchAnchor();
-      controller.clearSelection();
       return;
     }
+
+    // 所有命中都上「候选」底色，当前那条在 [_selectCurrentMatch] 里换「当前」色。
+    controller.batchHighlightChanges(() {
+      for (final match in _matches) {
+        final anchors = _matchAnchors(match);
+        _matchHighlights.add(
+          controller.highlight(
+            p1: anchors.p1,
+            p2: anchors.p2,
+            color: theme.searchHitBackground,
+          ),
+        );
+      }
+    });
 
     _currentMatchIndex =
         previousStart == null ? 0 : _matchIndexNearest(previousStart);
@@ -443,6 +514,7 @@ class DefaultTerminalSearchBox extends StatefulWidget
   final VoidCallback? onHide;
   final VoidCallback? onClose;
   final TerminalTheme theme; // 添加主题参数
+  final FocusNode? focusNode;
 
   const DefaultTerminalSearchBox({
     super.key,
@@ -451,6 +523,7 @@ class DefaultTerminalSearchBox extends StatefulWidget
     this.onHide,
     this.onClose,
     this.theme = TerminalThemes.defaultTheme, // 初始化时需要传入主题
+    this.focusNode,
   }) : _searchController = searchController;
 
   @override
@@ -463,7 +536,26 @@ class DefaultTerminalSearchBox extends StatefulWidget
 
   @override
   void show() {
-    // 自定义实现
+    final node = focusNode;
+    if (node == null) {
+      return;
+    }
+    // 框已经挂进树就立刻要焦点。只排下一帧回调的写法在「框已可见、终端又没
+    // 输出」时没有帧可等，回调不会跑，焦点就留在终端里。
+    final context = node.context;
+    if (context != null && context.mounted) {
+      node.requestFocus();
+      return;
+    }
+    // 首次 show() 发生在框插进树之前，直接 requestFocus 会被丢掉，等这一帧结束再要。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = node.context;
+      if (context == null || !context.mounted) {
+        return;
+      }
+      node.requestFocus();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   @override
@@ -579,6 +671,7 @@ class _DefaultTerminalSearchBoxState extends State<DefaultTerminalSearchBox> {
                   Expanded(
                     child: TextField(
                       autofocus: true,
+                      focusNode: widget.focusNode,
                       controller: _controller,
                       style: TextStyle(color: theme.foreground),
                       decoration: InputDecoration(

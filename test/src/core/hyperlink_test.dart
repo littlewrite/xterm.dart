@@ -130,10 +130,22 @@ void main() {
     expect(matches.single.uri, 'https://example.com/docs');
   });
 
-  test('plain-text detection ignores non-http schemes', () {
+  test('plain-text detection covers non-http schemes', () {
     final terminal = Terminal();
     terminal.write('file:///tmp/report.txt');
 
-    expect(findTerminalUrlsInLine(terminal.buffer.lines[0]), isEmpty);
+    final matches = findTerminalUrlsInLine(terminal.buffer.lines[0]);
+    expect(matches.single.uri, 'file:///tmp/report.txt');
+  });
+
+  test('keeps balanced parentheses at the end of a URL', () {
+    final terminal = Terminal();
+    terminal.write('(https://en.wikipedia.org/wiki/Rust_(video_game))');
+
+    final matches = findTerminalUrlsInLine(terminal.buffer.lines[0]);
+    expect(
+      matches.single.uri,
+      'https://en.wikipedia.org/wiki/Rust_(video_game)',
+    );
   });
 }

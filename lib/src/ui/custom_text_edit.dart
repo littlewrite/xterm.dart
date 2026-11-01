@@ -1044,7 +1044,10 @@ class CustomTextEditState extends State<CustomTextEdit>
   void selectAll(SelectionChangedCause cause) {
     if (widget.onSelectAll != null) {
       widget.onSelectAll!();
-      _menuController.markNeedsBuild();
+      // 键盘全选时工具栏没开着，markNeedsBuild 会命中 isShown 断言。
+      if (_menuController.isShown) {
+        _menuController.markNeedsBuild();
+      }
       setState(() {});
     } else if (!widget.readOnly && _currentEditingState.text.isNotEmpty) {
       textEditingValue = _currentEditingState.copyWith(

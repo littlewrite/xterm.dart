@@ -12,6 +12,7 @@ Future<TerminalViewState> _pumpTerminal(
   WidgetTester tester, {
   required Terminal terminal,
   required TerminalLinkInteraction interaction,
+  TerminalLinkModifier linkModifier = TerminalLinkModifier.meta,
   TerminalController? controller,
   void Function(TapUpDetails, CellOffset)? onTapUp,
   void Function(TerminalHyperlink)? onLinkTap,
@@ -26,6 +27,7 @@ Future<TerminalViewState> _pumpTerminal(
           key: key,
           controller: controller,
           linkInteraction: interaction,
+          linkModifier: linkModifier,
           onTapUp: onTapUp,
           onLinkTap: onLinkTap,
           onLinkHover: onLinkHover,

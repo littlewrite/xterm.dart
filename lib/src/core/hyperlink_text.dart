@@ -90,14 +90,44 @@ List<TerminalLinkSpan> linkSpansInLine(
   return spans;
 }
 
-/// `http(s)://…`, stopping at whitespace, control characters and the usual
-/// delimiters of surrounding prose.
+/// Scheme URLs in terminal output.
+///
+/// Scheme list and character class are ported from ghostty's `url.zig` default
+/// matcher (`scheme_url_branch`): schemes without `//` (mailto/tel/news/magnet)
+/// are included, and the match stops at the characters that end prose.
 final _urlPattern = RegExp(
-  r'''https?://[^\s\x00-\x1f<>"'`]+''',
+  // 前面不能紧挨词字符：`profile:production` 里的 `file:` 不是链接。
+  r"(?<![\w@.\-])(?:https?://|ftp://|file:|ssh://|ssh:|git://|tel:|"
+  r'magnet:|ipfs://|ipns://|gemini://|gopher://|news:|mailto:)'
+  // 除空白/控制字符和引号外都算 URL 正文：IPv6 的 `[::1]`、括号片名、中文
+  // 路径都在里面，尾部的标点交给 [_urlEnd] 按配对规则裁。
+  r'''[^\s\x00-\x1f<>"'`]+''',
   caseSensitive: false,
 );
 
 const _trailingProse = '.,;:!?)]}\'"';
+
+/// Trim prose punctuation from the end of a scheme URL.
+///
+/// A trailing `)` or `]` survives when the URL opens a matching bracket — the
+/// same rule as ghostty's `url.zig`, so `…/Rust_(video_game)` keeps its
+/// parenthesis while `(https://example.com)` does not.
+int _urlEnd(String text, int start, int end) {
+  while (end > start) {
+    final char = text[end - 1];
+    if (char == ')' || char == ']') {
+      final slice = text.substring(start, end);
+      final open = char == ')' ? '(' : '[';
+      if (open.allMatches(slice).length >= char.allMatches(slice).length) {
+        break;
+      }
+    } else if (!_trailingProse.contains(char)) {
+      break;
+    }
+    end--;
+  }
+  return end;
+}
 
 /// Longest URL accepted from plain text; a dumped blob must not become a link.
 const _maxUrlLength = 2048;
@@ -127,16 +157,13 @@ List<TerminalUrlMatch> findTerminalUrlsInLine(BufferLine line) {
   }
 
   final text = builder.toString();
-  if (!text.contains('://')) {
+  if (!text.contains(':')) {
     return const [];
   }
 
   final matches = <TerminalUrlMatch>[];
   for (final match in _urlPattern.allMatches(text)) {
-    var end = match.end;
-    while (end > match.start && _trailingProse.contains(text[end - 1])) {
-      end--;
-    }
+    final end = _urlEnd(text, match.start, match.end);
     if (end <= match.start) {
       continue;
     }

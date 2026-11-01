@@ -40,7 +40,9 @@ void main() {
     expect(outputs, ['\x03']);
   });
 
-  testWidgets('Windows Ctrl+C copies an active selection', (tester) async {
+  testWidgets('Windows Ctrl+C reaches the terminal even with a selection', (
+    tester,
+  ) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     final outputs = <String>[];
     final clipboardText = <String>[];
@@ -83,6 +85,62 @@ void main() {
     await tester.pump();
     debugDefaultTargetPlatformOverride = null;
 
+    // 裸 Ctrl+C 是 SIGINT，有选区也一样：复制要按 Ctrl+Shift+C。
+    expect(outputs, ['\x03']);
+    expect(clipboardText, isEmpty);
+
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null);
+    controller.dispose();
+  });
+
+  testWidgets('Windows Ctrl+Shift+C copies an active selection', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    final outputs = <String>[];
+    final clipboardText = <String>[];
+    final terminal = Terminal(onOutput: outputs.add);
+    final controller = TerminalController();
+    terminal.write('copy');
+    controller.setSelection(
+      terminal.buffer.createAnchor(0, 0),
+      terminal.buffer.createAnchor(4, 0),
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          final arguments = call.arguments as Map<dynamic, dynamic>;
+          clipboardText.add(arguments['text'] as String);
+        }
+        return null;
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalView(
+            terminal,
+            controller: controller,
+            autofocus: true,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyC);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyC);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    debugDefaultTargetPlatformOverride = null;
+
     expect(outputs, isEmpty);
     expect(clipboardText, ['copy']);
 
@@ -91,7 +149,7 @@ void main() {
     controller.dispose();
   });
 
-  testWidgets('Windows Ctrl+V pastes clipboard text', (tester) async {
+  testWidgets('Windows Ctrl+V reaches the terminal', (tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     final outputs = <String>[];
     final terminal = Terminal(onOutput: outputs.add);
@@ -121,6 +179,49 @@ void main() {
     await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
     await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    debugDefaultTargetPlatformOverride = null;
+
+    // 裸 Ctrl+V 属于前台程序，粘贴要按 Ctrl+Shift+V。
+    expect(outputs, ['\x16']);
+
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null);
+  });
+
+  testWidgets('Windows Ctrl+Shift+V pastes clipboard text', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    final outputs = <String>[];
+    final terminal = Terminal(onOutput: outputs.add);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.getData') {
+          return <String, dynamic>{'text': 'paste'};
+        }
+        return null;
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TerminalView(
+            terminal,
+            autofocus: true,
+            hardwareKeyboardOnly: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     await tester.pump();
     debugDefaultTargetPlatformOverride = null;
