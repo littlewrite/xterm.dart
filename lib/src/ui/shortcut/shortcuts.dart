@@ -15,7 +15,7 @@ Map<ShortcutActivator, Intent> get defaultTerminalShortcuts {
     case TargetPlatform.macOS:
       return _defaultAppleShortcuts;
     default:
-      return _defaultShortcuts;
+      return _defaultAppleShortcuts;
   }
 }
 

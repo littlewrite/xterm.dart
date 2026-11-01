@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' show max;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
@@ -897,6 +898,20 @@ class RenderTerminal extends RenderBox
     );
   }
 
+  /// [getCellOffset] 的视口坐标版本：行号从屏幕顶行算起，不含回滚区。
+  /// 鼠标上报必须用它 —— 程序认的是屏幕行，不是 buffer 行；回滚时两者差
+  /// 了一整个滚动量，程序会把选区画在偏下几行。
+  CellOffset getViewportCellOffset(Offset offset) {
+    final x = offset.dx - _padding.left;
+    final y = offset.dy - _padding.top;
+    final col = x ~/ _painter.cellSize.width;
+    final row = y ~/ _painter.cellSize.height;
+    return CellOffset(
+      col.clamp(0, _terminal.viewWidth - 1),
+      row.clamp(0, _terminal.viewHeight - 1),
+    );
+  }
+
   CellOffset _selectionStartFor(CellOffset offset) {
     final line = _terminal.buffer.lines[offset.y];
     return CellOffset(line.getCharacterStart(offset.x), offset.y);
@@ -1045,13 +1060,23 @@ class RenderTerminal extends RenderBox
     Offset offset, {
     bool motion = false,
   }) {
-    final position = getCellOffset(offset);
-    return _terminal.mouseInput(
+    final position = getViewportCellOffset(offset);
+    final handled = _terminal.mouseInput(
       button,
       buttonState,
       position,
       motion: motion,
     );
+    if (kDebugMode && !motion) {
+      // 排查「这个按键到底归谁」：handled=false 说明没进鼠标上报模式，
+      // 事件留在终端本地（选区 / 右键菜单），true 说明原样发给了前台程序。
+      debugPrint(
+        '[xterm-mouse] ${button.name} ${buttonState.name} at '
+        '${position.x},${position.y} -> ${handled ? 'app' : 'terminal'} '
+        'mode=${_terminal.mouseMode.name}',
+      );
+    }
+    return handled;
   }
 
   void _notifyEditableRect() {

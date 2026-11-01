@@ -12,7 +12,7 @@ class TerminalScrollGestureHandler extends StatefulWidget {
   const TerminalScrollGestureHandler({
     super.key,
     required this.terminal,
-    required this.getCellOffset,
+    required this.getViewportCellOffset,
     required this.getLineHeight,
     this.simulateScroll = true,
     required this.child,
@@ -20,8 +20,8 @@ class TerminalScrollGestureHandler extends StatefulWidget {
 
   final Terminal terminal;
 
-  /// Returns the cell offset for the pixel offset.
-  final CellOffset Function(Offset) getCellOffset;
+  /// Returns the viewport cell offset for the pixel offset.
+  final CellOffset Function(Offset) getViewportCellOffset;
 
   /// Returns the pixel height of lines in the terminal.
   final double Function() getLineHeight;
@@ -86,7 +86,7 @@ class _TerminalScrollGestureHandlerState
   /// then if the application doesn't recognize mouse wheel events, this method
   /// will simulate scroll events by sending up/down arrow keys.
   void _sendScrollEvent(bool up) {
-    final position = widget.getCellOffset(lastPointerPosition);
+    final position = widget.getViewportCellOffset(lastPointerPosition);
 
     final handled = widget.terminal.mouseInput(
       up ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
