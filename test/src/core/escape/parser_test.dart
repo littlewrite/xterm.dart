@@ -197,5 +197,16 @@ void main() {
 
       verify(handler.setClipboard('c', 'aGVsbG8='));
     });
+
+    test('passes shell integration and progress OSCs to unknownOSC', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+
+      parser.write('\x1b]133;D;0\x07');
+      parser.write('\x1b]9;4;1;30\x07');
+
+      verify(handler.unknownOSC('133', ['D', '0']));
+      verify(handler.unknownOSC('9', ['4', '1', '30']));
+    });
   });
 }
