@@ -1,5 +1,4 @@
 import 'package:xterm/src/core/mouse/mode.dart';
-import 'package:xterm/src/core/program_status.dart';
 
 abstract class EscapeHandler {
   void writeChar(int char);
@@ -251,13 +250,6 @@ abstract class EscapeHandler {
   void unsupportedStyle(int param);
 
   /* OSC */
-
-  /// A program reporting its status: OSC 7501, OSC 9;4 progress, or an OSC 133
-  /// shell-integration mark.
-  void terminalStatus(TerminalStatusEvent event);
-
-  /// `OSC 7501 ; ?` — the program asks whether status reporting is supported.
-  void queryProgramStatus();
 
   /// OSC 8 hyperlink. [params] is the raw parameter list (only `id=` is
   /// defined by the spec); an empty [uri] closes the current hyperlink.

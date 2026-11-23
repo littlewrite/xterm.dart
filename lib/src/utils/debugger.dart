@@ -1,7 +1,6 @@
 import 'package:xterm/src/core/escape/handler.dart';
 import 'package:xterm/src/core/escape/parser.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
-import 'package:xterm/src/core/program_status.dart';
 import 'package:xterm/src/base/observable.dart';
 
 class TerminalCommand {
@@ -680,16 +679,6 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   @override
   void unknownOSC(String code, List<String> args) {
     onCommand('unknownOSC($code, $args)', error: true);
-  }
-
-  @override
-  void terminalStatus(TerminalStatusEvent event) {
-    onCommand('terminalStatus($event)');
-  }
-
-  @override
-  void queryProgramStatus() {
-    onCommand('queryProgramStatus');
   }
 
   @override

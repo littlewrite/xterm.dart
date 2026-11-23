@@ -1,6 +1,5 @@
 import 'package:xterm/src/core/color.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
-import 'package:xterm/src/core/program_status.dart';
 import 'package:xterm/src/core/escape/handler.dart';
 import 'package:xterm/src/utils/ascii.dart';
 import 'package:xterm/src/utils/byte_consumer.dart';
@@ -1431,23 +1430,6 @@ class EscapeParser {
           handler.setClipboard(selectionId, data);
           return true;
       }
-    }
-
-    // Program status: OSC 7501 (Program Status Protocol), OSC 9;4 (progress)
-    // and OSC 133 (shell integration marks).
-    final oscArgs = _osc.sublist(1);
-    if (_osc[0] == ProgramStatusReport.oscCode) {
-      if (ProgramStatusReport.isQuery(oscArgs)) {
-        handler.queryProgramStatus();
-      } else if (ProgramStatusReport.parse(oscArgs) case final report?) {
-        handler.terminalStatus(report);
-      }
-      // A refused report is dropped whole, as the spec requires.
-      return true;
-    }
-    if (TerminalStatusEvent.fromOsc(_osc[0], oscArgs) case final event?) {
-      handler.terminalStatus(event);
-      return true;
     }
 
     // Private extensions

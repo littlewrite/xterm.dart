@@ -20,7 +20,6 @@ import 'package:xterm/src/core/mouse/button_state.dart';
 import 'package:xterm/src/core/mouse/handler.dart';
 import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/core/platform.dart';
-import 'package:xterm/src/core/program_status.dart';
 import 'package:xterm/src/core/state.dart';
 import 'package:xterm/src/core/tabs.dart';
 import 'package:xterm/src/utils/ascii.dart';
@@ -113,14 +112,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   /// request, such as OSC 52.
   void Function(String selection, String data)? onClipboard;
 
-  /// What a program reports about itself: OSC 7501 state, OSC 9;4 progress and
-  /// OSC 133 shell-integration marks. The terminal keeps no records itself:
-  /// feed the events to a [ProgramStatusRecords].
-  ///
-  /// The support query (`OSC 7501 ; ?`) is answered only while this is set, so
-  /// programs do not send reports nothing reads.
-  void Function(TerminalStatusEvent event)? onStatus;
-
   /// Flag to toggle os specific behaviors.
   final TerminalTargetPlatform platform;
 
@@ -151,7 +142,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     this.mouseHandler = defaultMouseHandler,
     this.onPrivateOSC,
     this.onClipboard,
-    this.onStatus,
     this.reflowEnabled = true,
     this.allowCsiWindowResize = false,
     this.wordSeparators,
@@ -992,7 +982,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
     _altBuffer.reset();
     _buffer = _mainBuffer;
     _cursorStyle.hyperlink = null;
-    onStatus?.call(const TerminalStatusReset());
     _markPendingFlush();
   }
 
@@ -1394,19 +1383,6 @@ class Terminal with Observable implements TerminalState, EscapeHandler {
   @override
   void unknownOSC(String ps, List<String> pt) {
     onPrivateOSC?.call(ps, pt);
-  }
-
-  @override
-  void terminalStatus(TerminalStatusEvent event) {
-    onStatus?.call(event);
-  }
-
-  @override
-  void queryProgramStatus() {
-    if (onStatus == null) {
-      return;
-    }
-    _reply(ProgramStatusReport.queryReply);
   }
 
   static String? decodeOsc52Payload(String data) {
