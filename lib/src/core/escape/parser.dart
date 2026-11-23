@@ -40,6 +40,13 @@ class EscapeParser {
 
   void _process() {
     while (_queue.isNotEmpty) {
+      if (_discardingOsc) {
+        if (!_discardOsc()) {
+          return;
+        }
+        continue;
+      }
+
       // 一条字符串序列因为太长被放弃之后，剩下的载荷要一直吞到 ST 为止：
       // 交还给正文解析的话，大载荷会整段喷到屏幕上（见 [_maxStringScan]）。
       if (_discardingString) {
@@ -1399,7 +1406,6 @@ class EscapeParser {
       return true;
     }
 
-    // print("OSC: $_osc"); // TODO
     // Common OSCs
     if (_osc.length >= 2) {
       final ps = _osc[0];
@@ -1440,9 +1446,40 @@ class EscapeParser {
 
   final _osc = <String>[];
 
+  /// 未结束的 OSC 最多保留这么多个字符。
+  ///
+  /// 没有上限时，一条缺结尾的 OSC 会把之后所有输出留在队列里，每次 write
+  /// 都从头重扫，内存和 CPU 都随输出无限增长；超限后改为只吞到终止符。
+  static const maxOscLength = 2 * 1024 * 1024;
+
+  bool _discardingOsc = false;
+
+  /// 丢弃超长 OSC 的剩余载荷。返回 false 表示这一块里还没等到终止符。
+  bool _discardOsc() {
+    while (_queue.isNotEmpty) {
+      final char = _queue.consume();
+      if (char == Ascii.BEL) {
+        _discardingOsc = false;
+        return true;
+      }
+      if (char == Ascii.ESC) {
+        if (_queue.isEmpty) {
+          _queue.rollback();
+          return false;
+        }
+        if (_queue.consume() == Ascii.backslash) {
+          _discardingOsc = false;
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   bool _consumeOsc() {
     _osc.clear();
     final param = StringBuffer();
+    var length = 0;
 
     while (true) {
       if (_queue.isEmpty) {
@@ -1450,6 +1487,11 @@ class EscapeParser {
       }
 
       final char = _queue.consume();
+      if (++length > maxOscLength) {
+        _osc.clear();
+        _discardingOsc = true;
+        return true;
+      }
 
       // OSC terminates with BEL
       if (char == Ascii.BEL) {

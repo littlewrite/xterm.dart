@@ -692,21 +692,6 @@ class _TerminalDebuggerHandler implements EscapeHandler {
   }
 }
 
-bool _isAscii(String char) {
-  return char.codeUnitAt(0) <= 0x7F;
-}
-
-bool _isChinese(String char) {
-  final code = char.codeUnitAt(0);
-  return (code >= 0x4E00 && code <= 0x9FFF) ||
-      (code >= 0x3400 && code <= 0x4DBF);
-}
-
-bool _isControlChar(String char) {
-  final code = char.codeUnitAt(0);
-  return (code < 0x20 || code == 0x7F); // ASCII control characters
-}
-
 String formatChunk(String chunk) {
   final buffer = StringBuffer();
   for (var i = 0; i < chunk.length; i++) {
@@ -766,7 +751,6 @@ String formatInt(int code) {
   } else {
     return String.fromCharCode(code);
   }
-  return "";
 }
 
 bool _isControlCode(int code) {

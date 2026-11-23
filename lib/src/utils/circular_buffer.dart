@@ -2,7 +2,7 @@
 class IndexAwareCircularBuffer<T extends IndexedItem> {
   /// Creates a new circular list with the specified [maxLength].
   IndexAwareCircularBuffer(int maxLength)
-    : _array = List<T?>.filled(maxLength, null);
+      : _array = List<T?>.filled(maxLength, null);
 
   /// The backing array for this list. Length is always equal to [maxLength].
   late List<T?> _array;
@@ -302,8 +302,6 @@ class IndexAwareCircularBuffer<T extends IndexedItem> {
 
   List<T> getRange({int? x1, int? x2, int? y1, int? y2}) {
     final result = <T>[];
-    final startX = x1 ?? 0;
-    final endX = x2 ?? _length;
     final startY = y1 ?? 0;
     final endY = y2 ?? _length;
 

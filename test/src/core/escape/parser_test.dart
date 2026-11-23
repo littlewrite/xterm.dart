@@ -208,5 +208,26 @@ void main() {
       verify(handler.unknownOSC('133', ['D', '0']));
       verify(handler.unknownOSC('9', ['4', '1', '30']));
     });
+
+    test('discards an over-long OSC up to its terminator', () {
+      final handler = MockEscapeHandler();
+      final parser = EscapeParser(handler);
+      final chunk = 'A' * (64 * 1024);
+
+      parser.write('\x1b]52;c;');
+      for (var sent = 0;
+          sent <= EscapeParser.maxOscLength;
+          sent += chunk.length) {
+        parser.write(chunk);
+      }
+      // ST 被切成两次 write，后面的正文必须照常解析。
+      parser.write('\x1b');
+      parser.write('\\Z');
+      parser.write('\x1b]52;c;QQ==\x07');
+
+      verifyNever(handler.writeChar('A'.codeUnitAt(0)));
+      verify(handler.writeChar('Z'.codeUnitAt(0))).called(1);
+      verify(handler.setClipboard('c', 'QQ==')).called(1);
+    });
   });
 }
